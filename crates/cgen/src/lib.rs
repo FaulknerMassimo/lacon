@@ -553,14 +553,29 @@ impl<'p> Gen<'p> {
                 let _ = writeln!(f, "    S[{i}] = a[{i}];");
             } else {
                 let ty = self.ty(&p.ty);
-                let _ = writeln!(f, "    S[{i}] = lc_coerce_arg(a[{i}], {ty}, {}, {fname}, cs ? cs : \"\");", cstr(&p.name));
+                let slow = format!("lc_coerce_arg(a[{i}], {ty}, {}, {fname}, cs ? cs : \"\")", cstr(&p.name));
+                match exact_tag(&p.ty, &format!("a[{i}]")) {
+                    Some(check) => {
+                        let _ = writeln!(f, "    S[{i}] = {check} ? a[{i}] : {slow};");
+                    }
+                    None => {
+                        let _ = writeln!(f, "    S[{i}] = {slow};");
+                    }
+                }
             }
         }
         let _ = writeln!(f, "    lc_enter({id});");
         let _ = writeln!(f, "    ret = {body};\n    goto out;\nout:\n    lc_leave();");
         if let Some(t) = &fd.ret {
             let ty = self.ty(t);
-            let _ = writeln!(f, "    ret = lc_coerce_ret(ret, {ty}, {fname}, {fsite});");
+            match exact_tag(t, "ret") {
+                Some(check) => {
+                    let _ = writeln!(f, "    if (!{check}) ret = lc_coerce_ret(ret, {ty}, {fname}, {fsite});");
+                }
+                None => {
+                    let _ = writeln!(f, "    ret = lc_coerce_ret(ret, {ty}, {fname}, {fsite});");
+                }
+            }
         }
         for (i, p) in fd.params.iter().enumerate() {
             if p.mode == Mode::Mut {
@@ -705,7 +720,7 @@ impl<'p> Gen<'p> {
                         }
                     };
                     let (z, m) = if i + 1 == n { (zero.to_string(), method) } else { ("LC_UNIT".to_string(), 0) };
-                    let _ = write!(code, "{ptr} = lc_place_index({ptr}, {}, {this_viv}, {z}, {m}, {site}); ", keys[ki]);
+                    let _ = write!(code, "{ptr} = lc_place_index_fast({ptr}, {}, {this_viv}, {z}, {m}, {site}); ", keys[ki]);
                     ki += 1;
                 }
             }
@@ -740,7 +755,7 @@ impl<'p> Gen<'p> {
                     let site = self.site(*sp);
                     let k = self.t();
                     let v = self.expr(e);
-                    let _ = write!(code, "lc_v {k} = {v}; lc_v {next} = lc_index({cur}, {k}, {site}); lc_release({k}); lc_release({cur}); {cur} = {next}; ");
+                    let _ = write!(code, "lc_v {k} = {v}; lc_v {next} = lc_index_fast({cur}, {k}, {site}); lc_release({k}); lc_release({cur}); {cur} = {next}; ");
                 }
             }
         }
@@ -912,7 +927,7 @@ impl<'p> Gen<'p> {
                 let site = self.site(*span);
                 let (o, i, r) = (self.t(), self.t(), self.t());
                 let (ov, iv) = (self.expr(obj), self.expr(index));
-                format!("({{ lc_v {o} = {ov}; lc_v {i} = {iv}; lc_v {r} = lc_index({o}, {i}, {site}); lc_release({o}); lc_release({i}); {r}; }})")
+                format!("({{ lc_v {o} = {ov}; lc_v {i} = {iv}; lc_v {r} = lc_index_fast({o}, {i}, {site}); lc_release({o}); lc_release({i}); {r}; }})")
             }
             Ex::Slice { obj, start, end, inclusive, span } => {
                 let site = self.site(*span);
@@ -964,13 +979,7 @@ impl<'p> Gen<'p> {
                 let (a, b, res) = (self.t(), self.t(), self.t());
                 let (lv, rv) = (self.expr(l), self.expr(r));
                 let opc = binop_c(*op);
-                let fast = match op {
-                    BinOp::Add => format!("if ({a}.tag == T_INT && {b}.tag == T_INT && !__builtin_add_overflow({a}.u.i, {b}.u.i, &{res}.u.i)) {res}.tag = T_INT; else "),
-                    BinOp::Sub => format!("if ({a}.tag == T_INT && {b}.tag == T_INT && !__builtin_sub_overflow({a}.u.i, {b}.u.i, &{res}.u.i)) {res}.tag = T_INT; else "),
-                    BinOp::Mul => format!("if ({a}.tag == T_INT && {b}.tag == T_INT && !__builtin_mul_overflow({a}.u.i, {b}.u.i, &{res}.u.i)) {res}.tag = T_INT; else "),
-                    _ => String::new(),
-                };
-                format!("({{ lc_v {a} = {lv}; lc_v {b} = {rv}; lc_v {res}; {fast}{{ {res} = lc_binop_own({opc}, {a}, {b}, {site}); lc_release({b}); }} {res}; }})")
+                format!("({{ lc_v {a} = {lv}; lc_v {b} = {rv}; lc_v {res} = lc_arith_own({opc}, {a}, {b}, {site}); {res}; }})")
             }
             Ex::And(a, b, span) | Ex::Or(a, b, span) => {
                 let site = self.site(*span);
@@ -1576,7 +1585,7 @@ impl<'p> Gen<'p> {
                         let walk = self.place_walk(place, &keys, &ptr, "VIV_ZERO_OF", &v, 0);
                         let old = self.t();
                         format!(
-                            "{{ lc_v {v} = {vv}; {kc}{walk}lc_v {old} = lc_take({ptr}); *{ptr} = lc_binop_own({}, {old}, {v}, {site}); lc_release({v}); {rk}}} ",
+                            "{{ lc_v {v} = {vv}; {kc}{walk}lc_v {old} = lc_take({ptr}); *{ptr} = lc_arith_own({}, {old}, {v}, {site}); {rk}}} ",
                             binop_c(*op)
                         )
                     }
@@ -1669,6 +1678,24 @@ impl<'p> Gen<'p> {
             }
         }
     }
+}
+
+/// A C condition under which a value already has a declared type exactly,
+/// so the boundary check would leave it alone.
+fn exact_tag(t: &Ty, v: &str) -> Option<String> {
+    Some(match t {
+        Ty::Int { min, max, .. } if *min == i64::MIN && *max == i64::MAX => format!("({v}.tag == T_INT)"),
+        Ty::Float => format!("({v}.tag == T_FLOAT)"),
+        Ty::Bool => format!("({v}.tag == T_BOOL)"),
+        Ty::Str => format!("({v}.tag == T_STR)"),
+        Ty::Map(..) => format!("({v}.tag == T_MAP)"),
+        Ty::Set(_) => format!("({v}.tag == T_SET)"),
+        Ty::Heap(_) => format!("({v}.tag == T_HEAP)"),
+        Ty::List(e) if !matches!(**e, Ty::Float) => format!("({v}.tag == T_LIST)"),
+        Ty::Struct(id, _) => format!("({v}.tag == T_STRUCT && REC({v})->ty == {id})"),
+        Ty::Enum(id, _) => format!("({v}.tag == T_VARIANT && REC({v})->ty == {id})"),
+        _ => return None,
+    })
 }
 
 /// A C initializer for a parsed format spec.

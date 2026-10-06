@@ -1032,21 +1032,19 @@ void lc_out(const char *s, int64_t n) {
 /* ----- the call stack and panics ----- */
 
 #define MAX_DEPTH 20000
-typedef struct { int fn; const char *site; } lc_call_rec;
-static lc_call_rec *frames;
-static int64_t frames_cap;
+lc_call_rec *lc_frames;
+int64_t lc_frames_cap;
+#define frames lc_frames
 
-void lc_enter(int fn_id) {
+void lc_enter_slow(int fn_id) {
     if (lc_depth >= MAX_DEPTH)
         lc_panic("E0408", lc_callsite ? lc_callsite : "", "stack overflow: recursion deeper than %d calls (in `%s`)", MAX_DEPTH, lc_prog->fn_names[fn_id]);
-    if (lc_depth == frames_cap) {
-        frames_cap = frames_cap ? frames_cap * 2 : 256;
-        frames = xrealloc(frames, sizeof(lc_call_rec) * frames_cap);
+    if (lc_depth == lc_frames_cap) {
+        lc_frames_cap = lc_frames_cap ? lc_frames_cap * 2 : 256;
+        lc_frames = xrealloc(lc_frames, sizeof(lc_call_rec) * lc_frames_cap);
     }
-    frames[lc_depth++] = (lc_call_rec){fn_id, lc_callsite};
+    lc_frames[lc_depth++] = (lc_call_rec){fn_id, lc_callsite};
 }
-
-void lc_leave(void) { lc_depth--; }
 
 _Noreturn void lc_exit(int code) {
     lc_flush();

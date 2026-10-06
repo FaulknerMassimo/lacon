@@ -176,8 +176,20 @@ void lc_flush(void);
 
 extern const char *lc_callsite;
 extern int64_t lc_depth;
-void lc_enter(int fn_id);
-void lc_leave(void);
+void lc_enter_slow(int fn_id);
+typedef struct { int fn; const char *site; } lc_call_rec;
+extern lc_call_rec *lc_frames;
+extern int64_t lc_frames_cap;
+static inline void lc_enter(int fn_id) {
+    if (lc_depth < lc_frames_cap && lc_depth < 20000) {
+        lc_frames[lc_depth].fn = fn_id;
+        lc_frames[lc_depth].site = lc_callsite;
+        lc_depth++;
+    } else {
+        lc_enter_slow(fn_id);
+    }
+}
+static inline void lc_leave(void) { lc_depth--; }
 
 /* `?` inside a lambda leaves the enclosing named function: the lambda sets
  * this and returns, and every caller up to that function passes it on. */
@@ -332,6 +344,43 @@ static inline bool lc_cmp_fast(int op, lc_v a, lc_v b, const char *site) {
         }
     }
     return lc_compare(op, a, b, site);
+}
+/* `lc_binop_own` with ints done inline. Consumes both operands. */
+static inline lc_v lc_arith_own(int op, lc_v a, lc_v b, const char *site) {
+    if (a.tag == T_INT && b.tag == T_INT) {
+        int64_t r;
+        switch (op) {
+        case OP_ADD:
+            if (!__builtin_add_overflow(a.u.i, b.u.i, &r)) return lc_int(r);
+            break;
+        case OP_SUB:
+            if (!__builtin_sub_overflow(a.u.i, b.u.i, &r)) return lc_int(r);
+            break;
+        case OP_MUL:
+            if (!__builtin_mul_overflow(a.u.i, b.u.i, &r)) return lc_int(r);
+            break;
+        }
+    }
+    lc_v r = lc_binop_own(op, a, b, site);
+    lc_release(b);
+    return r;
+}
+/* `xs[i]` on a list with an int index in range, else the general case. */
+static inline lc_v lc_index_fast(lc_v o, lc_v i, const char *site) {
+    if ((o.tag == T_LIST || o.tag == T_TUPLE) && i.tag == T_INT) {
+        lc_vec *v = VEC(o);
+        int64_t k = i.u.i < 0 ? v->len + i.u.i : i.u.i;
+        if (k >= 0 && k < v->len) return lc_retain(v->items[k]);
+    }
+    return lc_index(o, i, site);
+}
+static inline lc_v *lc_place_index_fast(lc_v *p, lc_v key, int viv, lc_v zero, int method, const char *site) {
+    if (p->tag == T_LIST && key.tag == T_INT && p->u.o->rc == 1) {
+        lc_vec *v = VEC(*p);
+        int64_t k = key.u.i < 0 ? v->len + key.u.i : key.u.i;
+        if (k >= 0 && k < v->len) return &v->items[k];
+    }
+    return lc_place_index(p, key, viv, zero, method, site);
 }
 static inline bool lc_test(lc_v c, const char *site) {
     if (c.tag == T_BOOL) return c.u.i != 0;
