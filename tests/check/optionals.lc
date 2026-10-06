@@ -1,0 +1,32 @@
+# `T?` and `T!` values must be handled before they are used as `T`.
+fn parse(s str) int! =
+  if s.is_empty(): fail "empty"
+  int(s)?
+
+fn half(s str) int =
+  n = int(s)?
+  n / 2
+
+fn check(n int) int =
+  if n < 0: fail "negative"
+  n
+
+fn first(xs [str]) str? =
+  if xs.is_empty(): fail "empty"
+  xs[0]
+
+fn main() =
+  m = {"a": 1}
+  print(m.get("a") + 1)
+  w = ["x"].first
+  print(w.upper())
+  print(parse("3") * 2)
+  r = parse("4")
+  print(r)
+  parse("5")
+  (a, b) = "k=v".split_once("=")
+  for c in "abc".find("b"): print(c)
+  if m.get("z") > 0: print("pos")
+  x = io.read_line()
+  if x == none: return
+  print(x.upper())

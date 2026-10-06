@@ -1,0 +1,7 @@
+E0304 no_value.lc:4:4 `sign` must return str, but its body can end without a value; end it with an expression or `return`
+E0304 no_value.lc:8:4 `label` must return str, but its body can end without a value; end it with an expression or `return`
+E0305 no_value.lc:12:9 `double` declares no return type, so `double(4)` has no value; declare one: `fn double(x int) T =` | fix: fn double(x int) int =
+E0305 no_value.lc:13:7 `double` declares no return type, so `double(3)` has no value; declare one: `fn double(x int) T =` | fix: fn double(x int) int =
+E0305 no_value.lc:14:7 `double` declares no return type, so `double(1)` has no value; declare one: `fn double(x int) T =` | fix: fn double(x int) int =
+E0305 no_value.lc:15:3 `main` returns no value; to set the exit code, call `os.exit(code)` | fix: os.exit(5)
+[exit 1]

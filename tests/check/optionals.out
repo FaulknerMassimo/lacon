@@ -1,0 +1,12 @@
+E0302 optionals.lc:7:7 `?` passes the error up, but `half` returns int; make it `int!` (or `int?`) | fix: fn half(s str) int! =
+E0302 optionals.lc:11:13 `fail` needs a `T!` function; declare `check` with `!` | fix: fn check(n int) int! =
+E0302 optionals.lc:15:21 `fail` needs a `T!` function, but `first` returns an optional; `return none` instead, or make it `T!`
+E0407 optionals.lc:20:9 `m.get("a")` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (m.get("a") ?? 0)
+E0407 optionals.lc:22:9 `w` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (w ?? "")
+E0406 optionals.lc:23:9 `parse("3")` may be an error; add `?` to pass the error up | fix: parse("3")?
+E0406 optionals.lc:25:9 `r` may be an error; add `?` to pass the error up | fix: r?
+E0406 optionals.lc:26:3 error ignored: `parse("5")` may fail; add `?` to pass it up, or handle it with `??` or `match` | fix: parse("5")?
+E0407 optionals.lc:27:12 `"k=v".split_once("=")` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: "k=v".split_once("=")?
+E0407 optionals.lc:28:12 `"abc".find("b")` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: "abc".find("b") ?? 0
+E0407 optionals.lc:29:6 `m.get("z")` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (m.get("z") ?? 0)
+[exit 1]

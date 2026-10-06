@@ -1,2 +1,24 @@
-E0110 basics.lc:32:36 expected `)` or `,`, found `ab`
-[exit 1]
+total 21
+fib 610
+neg zero pos
+big
+yes
+i=1
+i=2
+i=4
+i=5
+7 3 1 1024 3.5 -3
+3.14 [   42] [ab  ] [005] ff 0.30000000000000004
+12 HELLO, WORLD hello, world H d Hello World
+["Hello", "World"] true 4 HeLLo, WorLd
+pad| a+b+c
+{literal} braces and 7
+nested ANN [2, 4, 6]
+line one
+  indented 7
+line three
+1 2 20 10
+true false false true
+43 3.0 5! 3 12
+9223372036854775807 3 4 1.4142135623730951 81 true
+[exit 0]

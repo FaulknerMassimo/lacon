@@ -1,0 +1,37 @@
+# Types are inferred inside bodies; these all check and run.
+fn cents(s str) int? = int(s)? * 100
+
+fn mean(xs [f64]) f64 =
+  var total = 0
+  for x in xs: total += x
+  total / xs.len
+
+fn eval(s str) int! =
+  if s == "": fail "empty"
+  int(s)?
+
+fn longest(words [str]) str? =
+  var best = none
+  for w in words:
+    if best == none or w.len > best.len: best = w
+  best
+
+fn main() =
+  # `?` in a `T?` function turns an error into `none`.
+  print(cents("3"), cents("x"))
+  # A var that starts as an int becomes a float when a float is added.
+  print(mean([1.5, 2.0]))
+  # Branches of different types can still be printed.
+  for s in ["7", ""]: print(eval(s) ?? "error")
+  row = ["total"] + [1, 2].map(it * 10)
+  print(row.join(","))
+  # `!= none` checks narrow the optional.
+  w = longest(["ab", "abc"])
+  if w != none: print(w.upper())
+  # Empty collections get their types from later use.
+  var stack = []
+  var log = {}
+  for tok in "1 2 3".split():
+    stack.push(int(tok) ?? 0)
+    log[tok].push(stack.len)
+  print(stack, log)

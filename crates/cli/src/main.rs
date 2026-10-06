@@ -96,7 +96,13 @@ fn load(path: &str) -> Option<(Source, Program)> {
         }
     };
     let src = Source::new(path, text);
-    let (prog, diags) = lacon_interp::load(&src);
+    let (prog, mut diags) = lacon_interp::load(&src);
+    // Type errors after a syntax error are mostly noise; after a name error,
+    // only the lines that already have one are.
+    if !diags.iter().any(|d| d.code.starts_with("E01")) {
+        let lines: std::collections::HashSet<usize> = diags.iter().map(|d| src.line_col(d.span.start).0).collect();
+        diags.extend(lacon_check::check(&prog, &src.text).into_iter().filter(|d| !lines.contains(&src.line_col(d.span.start).0)));
+    }
     if !diags.is_empty() {
         for line in render_all(&diags, &src, MAX_DIAGS) {
             eprintln!("{line}");

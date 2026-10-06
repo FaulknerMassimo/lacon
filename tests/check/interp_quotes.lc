@@ -1,0 +1,5 @@
+# Inside `{...}` in a string, a `"` ends the string; quote with `'`.
+fn main() =
+  depth = 2
+  print("{"  " * depth}x")
+  print("[{"ab":<4}]")

@@ -73,7 +73,7 @@ fn int_type(name: &str) -> Option<(&'static str, i64, i64)> {
     INT_TYPES.iter().find(|t| t.0 == name).copied()
 }
 
-pub(crate) fn conv_for(name: &str) -> Option<ConvTo> {
+pub fn conv_for(name: &str) -> Option<ConvTo> {
     if let Some((n, lo, hi)) = int_type(name) {
         return Some(ConvTo::Int(n, lo, hi));
     }
@@ -270,7 +270,7 @@ impl<'a> Resolver<'a> {
                     for f in &s.fields {
                         self.field_names.insert(f.name.name.clone());
                     }
-                    self.prog.structs.push(ir::StructDef { name: s.name.name.clone(), fields: Vec::new() });
+                    self.prog.structs.push(ir::StructDef { name: s.name.name.clone(), generics: s.generics.iter().map(|g| g.name.name.clone()).collect(), fields: Vec::new() });
                 }
                 Item::Enum(e) => {
                     let id = self.prog.enums.len() as u32;
@@ -278,7 +278,7 @@ impl<'a> Resolver<'a> {
                     for (tag, v) in e.variants.iter().enumerate() {
                         self.variants.entry(v.name.name.clone()).or_default().push((id, tag as u32));
                     }
-                    self.prog.enums.push(ir::EnumDef { name: e.name.name.clone(), variants: Vec::new() });
+                    self.prog.enums.push(ir::EnumDef { name: e.name.name.clone(), generics: e.generics.iter().map(|g| g.name.name.clone()).collect(), variants: Vec::new() });
                 }
                 Item::Alias(a) => {
                     self.aliases.insert(a.name.name.clone(), a.ty.clone());
@@ -296,9 +296,10 @@ impl<'a> Resolver<'a> {
                     self.fn_info.push(FnInfo { params, required });
                     self.prog.fns.push(ir::FnDef {
                         name: f.name.name.clone(),
+                        generics: f.generics.iter().map(|g| g.name.name.clone()).collect(),
                         params: Vec::new(),
                         ret: None,
-                        body: Ex::Lit(Value::Unit),
+                        body: Ex::Lit(Value::Unit, f.name.span),
                         nslots: 0,
                         span: f.name.span,
                         sig: self.sig_text(f),
@@ -314,7 +315,7 @@ impl<'a> Resolver<'a> {
                     }
                     let id = self.prog.consts.len() as u32;
                     self.const_ids.insert(c.name.name.clone(), id);
-                    self.prog.consts.push(ir::ConstDef { name: c.name.name.clone(), value: Ex::Lit(Value::Unit), nslots: 0 });
+                    self.prog.consts.push(ir::ConstDef { name: c.name.name.clone(), value: Ex::Lit(Value::Unit, c.name.span), nslots: 0 });
                 }
                 Item::Test(_) => {}
             }
@@ -480,7 +481,10 @@ impl<'a> Resolver<'a> {
         match t {
             TypeExpr::Name(id, args) => {
                 let n = id.name.as_str();
-                if gens.iter().any(|g| g == n) || n == "any" {
+                if gens.iter().any(|g| g == n) {
+                    return Ty::Param(n.into());
+                }
+                if n == "any" {
                     return Ty::Any;
                 }
                 if let Some((name, min, max)) = int_type(n) {
@@ -496,14 +500,12 @@ impl<'a> Resolver<'a> {
                     }
                     _ => {}
                 }
-                for a in args {
-                    self.ty_depth(a, gens, depth);
-                }
+                let targs: Vec<Ty> = args.iter().map(|a| self.ty_depth(a, gens, depth)).collect();
                 if let Some(&s) = self.struct_ids.get(n) {
-                    return Ty::Struct(s);
+                    return Ty::Struct(s, targs);
                 }
                 if let Some(&e) = self.enum_ids.get(n) {
-                    return Ty::Enum(e);
+                    return Ty::Enum(e, targs);
                 }
                 if let Some(a) = self.aliases.get(n).cloned() {
                     if depth > 20 {
@@ -553,13 +555,9 @@ impl<'a> Resolver<'a> {
                 Ty::Result(Box::new(self.ty_depth(t, gens, depth)))
             }
             TypeExpr::Fn(ps, r, _) => {
-                for p in ps {
-                    self.ty_depth(p, gens, depth);
-                }
-                if let Some(r) = r {
-                    self.ty_depth(r, gens, depth);
-                }
-                Ty::Fn
+                let ps = ps.iter().map(|p| self.ty_depth(p, gens, depth)).collect();
+                let r = r.as_ref().map_or(Ty::Unit, |r| self.ty_depth(r, gens, depth));
+                Ty::Fn(ps, Box::new(r))
             }
         }
     }
@@ -650,12 +648,17 @@ impl<'a> Resolver<'a> {
             || NAMESPACES.contains(&n)
     }
 
-    fn var_ex(&self, depth: u32, slot: u32) -> Ex {
+    fn var_ex(&self, depth: u32, slot: u32, span: Span) -> Ex {
         if depth == 0 {
-            Ex::Local(slot)
+            Ex::Local(slot, span)
         } else {
-            Ex::Up(depth, slot)
+            Ex::Up(depth, slot, span)
         }
+    }
+
+    /// Generic parameter names of the function being resolved.
+    fn cur_generics(&self) -> Vec<String> {
+        self.cur_fn.map(|id| self.prog.fns[id as usize].generics.clone()).unwrap_or_default()
     }
 
     fn note_call(&mut self, ids: &[FnId]) {
@@ -735,11 +738,10 @@ impl<'a> Resolver<'a> {
             }
             Stmt::Var { name, ty, value } => {
                 let v = self.expr(value);
-                if let Some(t) = ty {
-                    self.ty(t, &[]);
-                }
+                let gens = self.cur_generics();
+                let ty = ty.as_ref().map(|t| self.ty(t, &gens));
                 let slot = self.declare(&name.name, true);
-                St::Bind(PatIr::Bind(slot), v, name.span)
+                St::Bind(PatIr::Bind(slot), v, ty, name.span)
             }
             Stmt::Assign { targets, op, value, span } => return self.assign(targets, *op, value, *span),
             Stmt::For { pat, iter, body, span } => {
@@ -752,26 +754,26 @@ impl<'a> Resolver<'a> {
                 self.pop_scope();
                 St::For { pat, iter, body, span: *span }
             }
-            Stmt::While { cond, body, .. } => {
+            Stmt::While { cond, body, span } => {
                 let cond = self.expr(cond);
                 self.push_scope();
                 self.ctx().loops += 1;
                 let body = self.body_stmts(body);
                 self.ctx().loops -= 1;
                 self.pop_scope();
-                St::While { cond, body }
+                St::While { cond, body, span: *span }
             }
             Stmt::Break(sp) | Stmt::Continue(sp) => {
                 if self.ctx().loops == 0 {
                     self.err("E0211", *sp, "`break`/`continue` outside a loop");
                 }
                 if matches!(s, Stmt::Break(_)) {
-                    St::Break
+                    St::Break(*sp)
                 } else {
-                    St::Continue
+                    St::Continue(*sp)
                 }
             }
-            Stmt::Return(e, _) => St::Return(e.as_ref().map(|e| self.expr(e))),
+            Stmt::Return(e, sp) => St::Return(e.as_ref().map(|e| self.expr(e)), *sp),
             Stmt::Fail(e, sp) => St::Fail(self.expr(e), *sp),
             Stmt::Assert { cond, msg, span } => {
                 if let Some(eqx) = self.assert_eq(cond, msg.as_ref()) {
@@ -832,7 +834,7 @@ impl<'a> Resolver<'a> {
                             return None;
                         }
                         let slot = self.declare(n, false);
-                        return Some(St::Bind(PatIr::Bind(slot), v, t.span));
+                        return Some(St::Bind(PatIr::Bind(slot), v, None, t.span));
                     }
                     Some((depth, b, innermost)) => {
                         if b.mutable {
@@ -841,7 +843,7 @@ impl<'a> Resolver<'a> {
                         }
                         if innermost && op.is_none() {
                             let slot = self.declare(n, false);
-                            return Some(St::Bind(PatIr::Bind(slot), v, t.span));
+                            return Some(St::Bind(PatIr::Bind(slot), v, None, t.span));
                         }
                         self.immutable_err(n, t.span);
                         return None;
@@ -885,7 +887,7 @@ impl<'a> Resolver<'a> {
         }
         if all_new {
             let pats = ts.into_iter().map(|t| if let Target::Bind(s) = t { PatIr::Bind(s) } else { unreachable!() }).collect();
-            return Some(St::Bind(PatIr::Tuple(pats), v, span));
+            return Some(St::Bind(PatIr::Tuple(pats), v, None, span));
         }
         Some(St::AssignMulti { targets: ts, value: v, span })
     }
@@ -1168,14 +1170,14 @@ impl<'a> Resolver<'a> {
     pub fn expr(&mut self, e: &Expr) -> Ex {
         let span = e.span;
         match &e.kind {
-            ExprKind::Int(n) => Ex::Lit(Value::Int(*n)),
-            ExprKind::Float(f) => Ex::Lit(Value::Float(*f)),
-            ExprKind::Bool(b) => Ex::Lit(Value::Bool(*b)),
-            ExprKind::None => Ex::Lit(Value::None),
+            ExprKind::Int(n) => Ex::Lit(Value::Int(*n), span),
+            ExprKind::Float(f) => Ex::Lit(Value::Float(*f), span),
+            ExprKind::Bool(b) => Ex::Lit(Value::Bool(*b), span),
+            ExprKind::None => Ex::Lit(Value::None, span),
             ExprKind::Str(segs) => {
                 if segs.iter().all(|s| matches!(s, StrSeg::Lit(_))) {
                     let s: String = segs.iter().map(|s| if let StrSeg::Lit(l) = s { l.as_str() } else { "" }).collect();
-                    return Ex::Lit(Value::str(s));
+                    return Ex::Lit(Value::str(s), span);
                 }
                 let pieces = segs
                     .iter()
@@ -1184,24 +1186,24 @@ impl<'a> Resolver<'a> {
                         StrSeg::Expr(e, spec, args) => StrPiece::Expr(self.expr(e), spec.as_ref().and_then(|s| FmtSpec::parse(s)).map(Box::new), args.iter().map(|a| self.expr(a)).collect()),
                     })
                     .collect();
-                Ex::Str(pieces)
+                Ex::Str(pieces, span)
             }
             ExprKind::Name(n) => self.name(n, span),
-            ExprKind::List(xs) => Ex::List(self.exprs(xs)),
+            ExprKind::List(xs) => Ex::List(self.exprs(xs), span),
             ExprKind::Set(xs) => {
                 if xs.len() == 1 && self.has_free_it(&xs[0]) {
                     self.err("E0129", span, "lambdas have no braces: write the expression directly, e.g. `xs.filter(it > 0)`");
                 }
-                Ex::Set(self.exprs(xs))
+                Ex::Set(self.exprs(xs), span)
             }
             ExprKind::Tuple(xs) => {
                 if xs.is_empty() {
-                    Ex::Lit(Value::Unit)
+                    Ex::Lit(Value::Unit, span)
                 } else {
-                    Ex::Tuple(self.exprs(xs))
+                    Ex::Tuple(self.exprs(xs), span)
                 }
             }
-            ExprKind::Map(ps) => Ex::Map(ps.iter().map(|(k, v)| (self.expr(k), self.expr(v))).collect()),
+            ExprKind::Map(ps) => Ex::Map(ps.iter().map(|(k, v)| (self.expr(k), self.expr(v))).collect(), span),
             ExprKind::StructLit { name, fields } => self.struct_lit(name, fields, span),
             ExprKind::Field { obj, name } => self.field(obj, name, span),
             ExprKind::Index { obj, index } => Ex::Index { obj: Box::new(self.expr(obj)), index: Box::new(self.expr(index)), span },
@@ -1218,11 +1220,11 @@ impl<'a> Resolver<'a> {
             ExprKind::Binary { op, lhs, rhs } => Ex::Binary { op: *op, l: Box::new(self.expr(lhs)), r: Box::new(self.expr(rhs)), span },
             ExprKind::And(a, b) => Ex::And(Box::new(self.expr(a)), Box::new(self.expr(b)), span),
             ExprKind::Or(a, b) => Ex::Or(Box::new(self.expr(a)), Box::new(self.expr(b)), span),
-            ExprKind::Coalesce(a, b) => Ex::Coalesce(Box::new(self.expr(a)), Box::new(self.expr(b))),
+            ExprKind::Coalesce(a, b) => Ex::Coalesce(Box::new(self.expr(a)), Box::new(self.expr(b)), span),
             ExprKind::Compare { first, rest } => {
                 let first = Box::new(self.expr(first));
                 let rest = rest.iter().map(|(op, x)| (*op, self.expr(x), x.span)).collect();
-                Ex::Compare { first, rest }
+                Ex::Compare { first, rest, span }
             }
             ExprKind::Range { start, end, inclusive } => Ex::Range {
                 start: start.as_ref().map(|x| Box::new(self.expr(x))),
@@ -1262,14 +1264,14 @@ impl<'a> Resolver<'a> {
 
     fn name(&mut self, n: &str, span: Span) -> Ex {
         if let Some((depth, b, _)) = self.lookup(n) {
-            return self.var_ex(depth, b.slot);
+            return self.var_ex(depth, b.slot, span);
         }
         if let Some(&g) = self.const_ids.get(n) {
-            return Ex::Global(g);
+            return Ex::Global(g, span);
         }
         if let Some(ids) = self.fn_ids.get(n).cloned() {
             self.note_call(&ids);
-            return Ex::Lit(Value::Func(Rc::new(Func::User(ids.into()))));
+            return Ex::Lit(Value::Func(Rc::new(Func::User(ids.into()))), span);
         }
         if let Some(vs) = self.variants.get(n).cloned() {
             if vs.len() == 1 {
@@ -1277,20 +1279,20 @@ impl<'a> Resolver<'a> {
                 if self.prog.enums[eid as usize].variants[tag as usize].fields.is_empty() {
                     return Ex::Variant { id: eid, tag, args: vec![], span };
                 }
-                return Ex::Lit(Value::Func(Rc::new(Func::Ctor(eid, tag))));
+                return Ex::Lit(Value::Func(Rc::new(Func::Ctor(eid, tag))), span);
             }
             self.variant_named(&Ident { name: n.to_string(), span }, None);
-            return Ex::Lit(Value::Unit);
+            return Ex::Poison(span);
         }
         if conv_for(n).is_some() || is_method(n) {
-            return Ex::Lit(Value::Func(Rc::new(Func::Method(n.into()))));
+            return Ex::Lit(Value::Func(Rc::new(Func::Method(n.into()))), span);
         }
         if NAMESPACES.contains(&n) {
             self.err("E0201", span, format!("`{n}` is a module; call one of its functions, e.g. `{n}.read(...)`"));
-            return Ex::Lit(Value::Unit);
+            return Ex::Poison(span);
         }
         self.undefined(n, span);
-        Ex::Lit(Value::Unit)
+        Ex::Poison(span)
     }
 
     fn struct_lit(&mut self, name: &Ident, fields: &[FieldInit], span: Span) -> Ex {
@@ -1300,7 +1302,7 @@ impl<'a> Resolver<'a> {
             } else {
                 self.err("E0204", name.span, format!("unknown type `{}`", name.name));
             }
-            return Ex::Lit(Value::Unit);
+            return Ex::Poison(span);
         };
         let defs: Vec<String> = self.prog.structs[sid as usize].fields.iter().map(|f| f.name.clone()).collect();
         let has_default: Vec<bool> = self.prog.structs[sid as usize].fields.iter().map(|f| f.default.is_some()).collect();
@@ -1397,10 +1399,10 @@ impl<'a> Resolver<'a> {
                     "nan" => f64::NAN,
                     _ => {
                         self.err("E0203", name.span, format!("`math` has `pi`, `e`, `tau`, `inf`, `nan`; for `{n}` call the method on the number: `x.{n}()`"));
-                        return Some(Ex::Lit(Value::Unit));
+                        return Some(Ex::Poison(span));
                     }
                 };
-                return Some(Ex::Lit(Value::Float(v)));
+                return Some(Ex::Lit(Value::Float(v), span));
             }
             "os" | "io" | "fs" | "time" => {
                 return Some(self.ns_call(ns, name, &[], span));
@@ -1409,24 +1411,24 @@ impl<'a> Resolver<'a> {
         }
         if let Some((_, min, max)) = int_type(ns) {
             return Some(match n {
-                "max" => Ex::Lit(Value::Int(max)),
-                "min" => Ex::Lit(Value::Int(min)),
+                "max" => Ex::Lit(Value::Int(max), span),
+                "min" => Ex::Lit(Value::Int(min), span),
                 _ => {
                     self.err("E0203", name.span, format!("`{ns}` has `max` and `min`"));
-                    Ex::Lit(Value::Unit)
+                    Ex::Poison(span)
                 }
             });
         }
         if ns == "f64" || ns == "f32" {
             return Some(match n {
-                "max" => Ex::Lit(Value::Float(f64::MAX)),
-                "min" => Ex::Lit(Value::Float(f64::MIN)),
-                "inf" => Ex::Lit(Value::Float(f64::INFINITY)),
-                "nan" => Ex::Lit(Value::Float(f64::NAN)),
-                "eps" | "epsilon" => Ex::Lit(Value::Float(f64::EPSILON)),
+                "max" => Ex::Lit(Value::Float(f64::MAX), span),
+                "min" => Ex::Lit(Value::Float(f64::MIN), span),
+                "inf" => Ex::Lit(Value::Float(f64::INFINITY), span),
+                "nan" => Ex::Lit(Value::Float(f64::NAN), span),
+                "eps" | "epsilon" => Ex::Lit(Value::Float(f64::EPSILON), span),
                 _ => {
                     self.err("E0203", name.span, format!("`{ns}` has `max`, `min`, `inf`, `nan`, `eps`"));
-                    Ex::Lit(Value::Unit)
+                    Ex::Poison(span)
                 }
             });
         }
@@ -1435,7 +1437,7 @@ impl<'a> Resolver<'a> {
             if self.prog.enums[eid as usize].variants[tag as usize].fields.is_empty() {
                 return Some(Ex::Variant { id: eid, tag, args: vec![], span });
             }
-            return Some(Ex::Lit(Value::Func(Rc::new(Func::Ctor(eid, tag)))));
+            return Some(Ex::Lit(Value::Func(Rc::new(Func::Ctor(eid, tag))), span));
         }
         None
     }
@@ -1471,7 +1473,7 @@ impl<'a> Resolver<'a> {
                     _ => "",
                 };
                 self.err("E0203", name.span, format!("`{ns}` has no `{n}`; it has {have}{hint}"));
-                return Ex::Lit(Value::Unit);
+                return Ex::Poison(span);
             }
         };
         if !arity.contains(&args.len()) {
@@ -1542,11 +1544,11 @@ impl<'a> Resolver<'a> {
             return Ex::CallFn { fns: ids.into(), args: lowered, places, span };
         }
         if let Some(&g) = self.const_ids.get(n) {
-            return Ex::CallValue { f: Box::new(Ex::Global(g)), args: self.exprs(args), span };
+            return Ex::CallValue { f: Box::new(Ex::Global(g, callee.span)), args: self.exprs(args), span };
         }
         if self.variants.contains_key(n) {
             let Some((eid, tag)) = self.variant_named(&Ident { name: n.clone(), span: callee.span }, None) else {
-                return Ex::Lit(Value::Unit);
+                return Ex::Poison(span);
             };
             return self.variant_ctor(eid, tag, args, span);
         }
@@ -1563,7 +1565,7 @@ impl<'a> Resolver<'a> {
         if let Some(to) = conv_for(n) {
             if args.len() != 1 {
                 self.err("E0206", span, format!("`{n}(x)` takes one argument"));
-                return Ex::Lit(Value::Unit);
+                return Ex::Poison(span);
             }
             return Ex::CallBuiltin { f: Builtin::Conv(to), args: self.exprs(args), span };
         }
@@ -1605,7 +1607,7 @@ impl<'a> Resolver<'a> {
             return self.method(&args[0], &name, &args[1..], span);
         }
         self.undefined(n, callee.span);
-        Ex::Lit(Value::Unit)
+        Ex::Poison(span)
     }
 
     fn variant_ctor(&mut self, eid: u32, tag: u32, args: &[Expr], span: Span) -> Ex {
@@ -1630,19 +1632,19 @@ impl<'a> Resolver<'a> {
                             }
                         }
                         self.err("E0203", name.span, format!("`math` has no `{n}`; call the method on the number: `x.{n}()`"));
-                        return Ex::Lit(Value::Unit);
+                        return Ex::Poison(span);
                     }
                     return self.ns_call(ns, name, args, span);
                 }
                 if self.enum_ids.contains_key(ns) {
                     let Some((eid, tag)) = self.variant_named(name, Some(&Ident { name: ns.clone(), span: obj.span })) else {
-                        return Ex::Lit(Value::Unit);
+                        return Ex::Poison(span);
                     };
                     return self.variant_ctor(eid, tag, args, span);
                 }
                 if self.struct_ids.contains_key(ns) && !self.fn_ids.contains_key(n) {
                     self.err_fix("E0203", name.span, format!("no static methods; construct with braces: `{ns}{{...}}`"), format!("{ns}{{...}}"));
-                    return Ex::Lit(Value::Unit);
+                    return Ex::Poison(span);
                 }
                 if conv_for(ns).is_some() && !self.fn_ids.contains_key(n) {
                     let hint = match n {
@@ -1650,7 +1652,7 @@ impl<'a> Resolver<'a> {
                         _ => format!("`{ns}` has no `{n}`"),
                     };
                     self.err("E0203", name.span, hint);
-                    return Ex::Lit(Value::Unit);
+                    return Ex::Poison(span);
                 }
             }
         }

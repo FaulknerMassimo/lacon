@@ -163,7 +163,7 @@ impl<'p> Interp<'p> {
                 }
                 Ok(())
             }
-            St::Bind(pat, e, span) => {
+            St::Bind(pat, e, _, span) => {
                 let v = self.eval(e, f)?;
                 if !self.match_pat(pat, &v, f) {
                     return Err(panic("E0414", *span, format!("cannot destructure {}", self.short(&v))));
@@ -210,7 +210,7 @@ impl<'p> Interp<'p> {
                 Ok(())
             }
             St::For { pat, iter, body, span } => self.exec_for(pat, iter, body, *span, f),
-            St::While { cond, body } => {
+            St::While { cond, body, .. } => {
                 loop {
                     let c = self.eval(cond, f)?;
                     if !self.truth(&c, cond_span(cond))? {
@@ -224,9 +224,9 @@ impl<'p> Interp<'p> {
                 }
                 Ok(())
             }
-            St::Break => Err(Ctrl::Break),
-            St::Continue => Err(Ctrl::Continue),
-            St::Return(e) => {
+            St::Break(_) => Err(Ctrl::Break),
+            St::Continue(_) => Err(Ctrl::Continue),
+            St::Return(e, _) => {
                 let v = match e {
                     Some(e) => self.eval(e, f)?,
                     None => Value::Unit,
@@ -355,11 +355,12 @@ impl<'p> Interp<'p> {
 
     pub fn eval(&self, e: &Ex, f: &Rc<Frame>) -> R<Value> {
         match e {
-            Ex::Lit(v) => Ok(v.clone()),
-            Ex::Local(s) => Ok(f.get(*s)),
-            Ex::Up(d, s) => Ok(f.up(*d).get(*s)),
-            Ex::Global(g) => Ok(self.globals.borrow()[*g as usize].clone()),
-            Ex::Str(pieces) => {
+            Ex::Lit(v, _) => Ok(v.clone()),
+            Ex::Local(s, _) => Ok(f.get(*s)),
+            Ex::Up(d, s, _) => Ok(f.up(*d).get(*s)),
+            Ex::Global(g, _) => Ok(self.globals.borrow()[*g as usize].clone()),
+            Ex::Poison(span) => Err(panic("E0000", *span, "internal error: evaluated an expression that failed to resolve")),
+            Ex::Str(pieces, _) => {
                 let mut out = String::new();
                 for p in pieces {
                     match p {
@@ -397,28 +398,28 @@ impl<'p> Interp<'p> {
                 }
                 Ok(Value::str(out))
             }
-            Ex::List(xs) => {
+            Ex::List(xs, _) => {
                 let mut v = Vec::with_capacity(xs.len());
                 for x in xs {
                     v.push(self.eval(x, f)?);
                 }
                 Ok(Value::list(v))
             }
-            Ex::Tuple(xs) => {
+            Ex::Tuple(xs, _) => {
                 let mut v = Vec::with_capacity(xs.len());
                 for x in xs {
                     v.push(self.eval(x, f)?);
                 }
                 Ok(Value::tuple(v))
             }
-            Ex::Set(xs) => {
+            Ex::Set(xs, _) => {
                 let mut s = value::Set::default();
                 for x in xs {
                     s.insert(self.eval(x, f)?);
                 }
                 Ok(Value::Set(Rc::new(s)))
             }
-            Ex::Map(ps) => {
+            Ex::Map(ps, _) => {
                 let mut m = value::Map::default();
                 for (k, v) in ps {
                     let k = self.eval(k, f)?;
@@ -568,14 +569,14 @@ impl<'p> Interp<'p> {
                 let y = self.eval(b, f)?;
                 Ok(Value::Bool(self.truth(&y, *span)?))
             }
-            Ex::Coalesce(a, b) => {
+            Ex::Coalesce(a, b, _) => {
                 let x = self.eval(a, f)?;
                 match x {
                     Value::None | Value::Err(_) => self.eval(b, f),
                     x => Ok(x),
                 }
             }
-            Ex::Compare { first, rest } => {
+            Ex::Compare { first, rest, .. } => {
                 let mut prev = self.eval(first, f)?;
                 for (op, e, span) in rest {
                     let next = self.eval(e, f)?;
@@ -603,6 +604,8 @@ impl<'p> Interp<'p> {
             Ex::Try { e, fn_optional, span: _ } => {
                 let v = self.eval(e, f)?;
                 match v {
+                    // In a `T?` function a failure of either kind is `none`.
+                    Value::Err(_) if *fn_optional => Err(Ctrl::Return(Value::None)),
                     Value::Err(_) => Err(Ctrl::Return(v)),
                     Value::None => {
                         if *fn_optional {
@@ -1154,7 +1157,7 @@ impl<'p> Interp<'p> {
 
     pub fn ty_matches(&self, v: &Value, t: &Ty) -> bool {
         match (t, v) {
-            (Ty::Any, _) => true,
+            (Ty::Any | Ty::Param(_), _) => true,
             (Ty::Int { .. }, Value::Int(_)) => true,
             (Ty::Float, Value::Float(_) | Value::Int(_)) => true,
             (Ty::Bool, Value::Bool(_)) | (Ty::Str, Value::Str(_)) | (Ty::Unit, Value::Unit) => true,
@@ -1165,9 +1168,9 @@ impl<'p> Interp<'p> {
             (Ty::Optional(t), v) => self.ty_matches(v, t),
             (Ty::Result(_), Value::Err(_)) => true,
             (Ty::Result(t), v) => self.ty_matches(v, t),
-            (Ty::Fn, Value::Func(_)) => true,
-            (Ty::Struct(id), Value::Struct(o)) => o.ty == *id,
-            (Ty::Enum(id), Value::Variant(o)) => o.ty == *id,
+            (Ty::Fn(..), Value::Func(_)) => true,
+            (Ty::Struct(id, _), Value::Struct(o)) => o.ty == *id,
+            (Ty::Enum(id, _), Value::Variant(o)) => o.ty == *id,
             _ => false,
         }
     }
@@ -1177,7 +1180,7 @@ impl<'p> Interp<'p> {
     /// On mismatch returns a description of what was found.
     pub fn coerce(&self, v: Value, t: &Ty) -> Result<Value, String> {
         match (t, &v) {
-            (Ty::Any, _) => Ok(v),
+            (Ty::Any | Ty::Param(_), _) => Ok(v),
             (Ty::Int { min, max, name }, Value::Int(n)) => {
                 if n < min || n > max {
                     Err(format!("{n} (out of range for {name})"))
@@ -1301,30 +1304,7 @@ fn zero_of(v: &Value) -> Option<Value> {
 
 /// Best-effort span of an expression, for errors about a sub-expression.
 pub fn cond_span(e: &Ex) -> Span {
-    match e {
-        Ex::Struct { span, .. }
-        | Ex::Variant { span, .. }
-        | Ex::Field { span, .. }
-        | Ex::Index { span, .. }
-        | Ex::Slice { span, .. }
-        | Ex::CallFn { span, .. }
-        | Ex::CallValue { span, .. }
-        | Ex::CallBuiltin { span, .. }
-        | Ex::Method { span, .. }
-        | Ex::Unary { span, .. }
-        | Ex::Binary { span, .. }
-        | Ex::And(_, _, span)
-        | Ex::Or(_, _, span)
-        | Ex::Range { span, .. }
-        | Ex::Try { span, .. }
-        | Ex::If { span, .. }
-        | Ex::Match { span, .. }
-        | Ex::Cast { span, .. }
-        | Ex::AssertEq { span, .. } => *span,
-        Ex::Compare { rest, .. } => rest.first().map_or(Span::default(), |r| r.2),
-        Ex::Lambda(d) => d.span,
-        _ => Span::default(),
-    }
+    e.span()
 }
 
 fn cond_span_or(e: &Ex, fallback: Span) -> Span {
@@ -1351,8 +1331,21 @@ pub fn ty_name(t: &Ty, p: &Program) -> String {
         Ty::Tuple(ts) => format!("({})", ts.iter().map(|t| ty_name(t, p)).collect::<Vec<_>>().join(", ")),
         Ty::Optional(t) => format!("{}?", ty_name(t, p)),
         Ty::Result(t) => format!("{}!", ty_name(t, p)),
-        Ty::Fn => "fn".into(),
-        Ty::Struct(id) => p.structs[*id as usize].name.clone(),
-        Ty::Enum(id) => p.enums[*id as usize].name.clone(),
+        Ty::Param(name) => name.to_string(),
+        Ty::Fn(ps, r) => {
+            let ps: Vec<String> = ps.iter().map(|t| ty_name(t, p)).collect();
+            match &**r {
+                Ty::Unit => format!("fn({})", ps.join(", ")),
+                r => format!("fn({}) {}", ps.join(", "), ty_name(r, p)),
+            }
+        }
+        Ty::Struct(id, args) | Ty::Enum(id, args) => {
+            let name = if matches!(t, Ty::Struct(..)) { &p.structs[*id as usize].name } else { &p.enums[*id as usize].name };
+            if args.is_empty() {
+                name.clone()
+            } else {
+                format!("{name}[{}]", args.iter().map(|t| ty_name(t, p)).collect::<Vec<_>>().join(", "))
+            }
+        }
     }
 }

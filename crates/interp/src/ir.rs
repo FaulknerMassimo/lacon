@@ -25,6 +25,8 @@ pub struct Program {
 
 pub struct FnDef {
     pub name: String,
+    /// Generic parameter names, in declaration order.
+    pub generics: Vec<String>,
     pub params: Vec<ParamDef>,
     pub ret: Option<Ty>,
     pub body: Ex,
@@ -47,6 +49,7 @@ pub struct ParamDef {
 
 pub struct StructDef {
     pub name: String,
+    pub generics: Vec<String>,
     pub fields: Vec<FieldDef>,
 }
 
@@ -58,6 +61,7 @@ pub struct FieldDef {
 
 pub struct EnumDef {
     pub name: String,
+    pub generics: Vec<String>,
     pub variants: Vec<VariantDef>,
 }
 
@@ -79,11 +83,13 @@ pub struct ConstDef {
     pub nslots: u32,
 }
 
-/// A declared type, checked shallowly at function, struct and return
-/// boundaries.
+/// A declared type. The interpreter checks it shallowly at function, struct
+/// and return boundaries; the type checker uses all of it.
 #[derive(Clone, Debug)]
 pub enum Ty {
     Any,
+    /// A generic parameter of the enclosing declaration.
+    Param(Rc<str>),
     Int { name: &'static str, min: i64, max: i64 },
     Float,
     Bool,
@@ -96,9 +102,9 @@ pub enum Ty {
     Tuple(Vec<Ty>),
     Optional(Box<Ty>),
     Result(Box<Ty>),
-    Fn,
-    Struct(u32),
-    Enum(u32),
+    Fn(Vec<Ty>, Box<Ty>),
+    Struct(u32, Vec<Ty>),
+    Enum(u32, Vec<Ty>),
 }
 
 pub struct LambdaDef {
@@ -177,15 +183,15 @@ pub enum ConvTo {
 }
 
 pub enum Ex {
-    Lit(Value),
-    Str(Vec<StrPiece>),
-    Local(u32),
-    Up(u32, u32),
-    Global(u32),
-    List(Vec<Ex>),
-    Map(Vec<(Ex, Ex)>),
-    Set(Vec<Ex>),
-    Tuple(Vec<Ex>),
+    Lit(Value, Span),
+    Str(Vec<StrPiece>, Span),
+    Local(u32, Span),
+    Up(u32, u32, Span),
+    Global(u32, Span),
+    List(Vec<Ex>, Span),
+    Map(Vec<(Ex, Ex)>, Span),
+    Set(Vec<Ex>, Span),
+    Tuple(Vec<Ex>, Span),
     Struct { id: u32, fields: Vec<Option<Ex>>, span: Span },
     Variant { id: u32, tag: u32, args: Vec<Ex>, span: Span },
     /// `a.b`: a struct field, a tuple index, or a zero-argument method.
@@ -200,8 +206,8 @@ pub enum Ex {
     Binary { op: BinOp, l: Box<Ex>, r: Box<Ex>, span: Span },
     And(Box<Ex>, Box<Ex>, Span),
     Or(Box<Ex>, Box<Ex>, Span),
-    Coalesce(Box<Ex>, Box<Ex>),
-    Compare { first: Box<Ex>, rest: Vec<(CmpOp, Ex, Span)> },
+    Coalesce(Box<Ex>, Box<Ex>, Span),
+    Compare { first: Box<Ex>, rest: Vec<(CmpOp, Ex, Span)>, span: Span },
     Range { start: Option<Box<Ex>>, end: Option<Box<Ex>>, inclusive: bool, span: Span },
     Try { e: Box<Ex>, fn_optional: bool, span: Span },
     Lambda(Rc<LambdaDef>),
@@ -212,6 +218,53 @@ pub enum Ex {
     /// `a == b` as a test's last expression or an `assert`: on failure,
     /// reports both sides.
     AssertEq { l: Box<Ex>, r: Box<Ex>, msg: Option<Box<Ex>>, span: Span },
+    /// Stands in for an expression that failed to resolve; never evaluated,
+    /// because a program with errors does not run.
+    Poison(Span),
+}
+
+impl Ex {
+    pub fn span(&self) -> Span {
+        match self {
+            Ex::Lit(_, s)
+            | Ex::Str(_, s)
+            | Ex::Local(_, s)
+            | Ex::Up(_, _, s)
+            | Ex::Global(_, s)
+            | Ex::List(_, s)
+            | Ex::Map(_, s)
+            | Ex::Set(_, s)
+            | Ex::Tuple(_, s)
+            | Ex::Coalesce(_, _, s)
+            | Ex::And(_, _, s)
+            | Ex::Or(_, _, s)
+            | Ex::Poison(s) => *s,
+            Ex::Struct { span, .. }
+            | Ex::Variant { span, .. }
+            | Ex::Field { span, .. }
+            | Ex::Index { span, .. }
+            | Ex::Slice { span, .. }
+            | Ex::CallFn { span, .. }
+            | Ex::CallValue { span, .. }
+            | Ex::CallBuiltin { span, .. }
+            | Ex::Method { span, .. }
+            | Ex::Unary { span, .. }
+            | Ex::Binary { span, .. }
+            | Ex::Compare { span, .. }
+            | Ex::Range { span, .. }
+            | Ex::Try { span, .. }
+            | Ex::If { span, .. }
+            | Ex::Match { span, .. }
+            | Ex::Cast { span, .. }
+            | Ex::AssertEq { span, .. } => *span,
+            Ex::Lambda(d) => d.span,
+            Ex::Block(stmts, tail) => match (stmts.first(), tail) {
+                (_, Some(t)) => t.span(),
+                (Some(s), None) => s.span(),
+                (None, None) => Span::default(),
+            },
+        }
+    }
 }
 
 pub struct Arm {
@@ -222,17 +275,27 @@ pub struct Arm {
 
 pub enum St {
     Expr(Ex, Span),
-    Bind(PatIr, Ex, Span),
+    /// A binding, with the declared type of `var x T = e`.
+    Bind(PatIr, Ex, Option<Ty>, Span),
     Assign { place: Place, op: Option<BinOp>, value: Ex, span: Span },
     /// `a, b = b, a` where some targets are existing variables.
     AssignMulti { targets: Vec<Target>, value: Ex, span: Span },
     For { pat: PatIr, iter: Ex, body: Vec<St>, span: Span },
-    While { cond: Ex, body: Vec<St> },
-    Break,
-    Continue,
-    Return(Option<Ex>),
+    While { cond: Ex, body: Vec<St>, span: Span },
+    Break(Span),
+    Continue(Span),
+    Return(Option<Ex>, Span),
     Fail(Ex, Span),
     Assert { cond: Ex, msg: Option<Ex>, span: Span },
+}
+
+impl St {
+    pub fn span(&self) -> Span {
+        match self {
+            St::Expr(_, s) | St::Bind(_, _, _, s) | St::Break(s) | St::Continue(s) | St::Return(_, s) | St::Fail(_, s) => *s,
+            St::Assign { span, .. } | St::AssignMulti { span, .. } | St::For { span, .. } | St::While { span, .. } | St::Assert { span, .. } => *span,
+        }
+    }
 }
 
 pub enum Target {

@@ -1,0 +1,18 @@
+E0301 type_mismatch.lc:10:19 field `age` of User: want u32 got str
+E0301 type_mismatch.lc:11:14 `Circle` field: want f64 got str
+E0301 type_mismatch.lc:12:15 argument `xs` of `total`: want [int] got [str]
+E0301 type_mismatch.lc:13:15 argument `u` of `greet`: want User got str
+E0301 type_mismatch.lc:15:9 cannot add str and int; interpolate instead: "{a}{b}"
+E0301 type_mismatch.lc:16:6 condition must be bool, got int; compare explicitly, e.g. `n != 0`
+E0301 type_mismatch.lc:17:13 cannot compare str with int
+E0301 type_mismatch.lc:19:11 map key: want str got int
+E0301 type_mismatch.lc:20:14 `in` looks for int among the [str]
+E0203 type_mismatch.lc:22:9 [int] has no method `trim`
+E0203 type_mismatch.lc:23:9 [str] has no method `upper`; to apply it to each item: `.map(it.upper())` | fix: ["a"].map(it.upper())
+E0203 type_mismatch.lc:24:9 `.0` needs a tuple, got [int]; index a list with `[0]` | fix: xs[0]
+E0203 type_mismatch.lc:25:9 int has no field `name`
+E0301 type_mismatch.lc:27:11 `count` holds int, got str
+E0301 type_mismatch.lc:28:9 cannot negate str; to sort descending, sort then `.rev()`
+E0206 type_mismatch.lc:29:23 this lambda takes 2 arguments, but gets one int
+E0301 type_mismatch.lc:30:12 cannot loop over int
+[exit 1]

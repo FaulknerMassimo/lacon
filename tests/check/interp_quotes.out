@@ -1,0 +1,3 @@
+E0110 interp_quotes.lc:4:14 a `{` right before `"` is a literal brace, so the string ended there; inside `{...}`, quote strings with `'`: "{'-' * n}"
+E0110 interp_quotes.lc:5:13 a `{` right before `"` is a literal brace, so the string ended there; inside `{...}`, quote strings with `'`: "{'-' * n}"
+[exit 1]

@@ -1,0 +1,30 @@
+# Type errors the checker finds before the program runs.
+type User {name str, age u32}
+enum Shape = Circle(f64) | Square(f64)
+
+fn total(xs [int]) int = xs.sum()
+
+fn greet(u User) str = "hi {u.name}"
+
+fn main() =
+  u = User{"ann", "30"}
+  s = Circle("big")
+  print(total(["a", "b"]))
+  print(greet("ann"))
+  n = 5
+  print("n=" + n)
+  if n: print("nonzero")
+  if "a" == 1: print("never")
+  m = {"a": 1}
+  print(m[1])
+  print(3 in ["a"])
+  xs = [1, 2]
+  print(xs.trim())
+  print(["a"].upper())
+  print(xs.0)
+  print(n.name)
+  var count = 0
+  count = "many"
+  print(-"abc")
+  print(xs.map(|a, b| a + b))
+  for c in 42: print(c)

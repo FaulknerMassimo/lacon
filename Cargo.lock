@@ -25,9 +25,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lacon-check"
+version = "0.0.1"
+dependencies = [
+ "lacon-interp",
+ "lacon-syntax",
+]
+
+[[package]]
 name = "lacon-cli"
 version = "0.0.1"
 dependencies = [
+ "lacon-check",
  "lacon-interp",
  "lacon-syntax",
 ]

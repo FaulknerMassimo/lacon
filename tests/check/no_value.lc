@@ -1,0 +1,15 @@
+# Functions without a declared return type have no value.
+fn double(x int) = x * 2
+
+fn sign(n int) str =
+  if n > 0: return "+"
+  if n < 0: return "-"
+
+fn label(n int) str =
+  if n > 0: "pos"
+
+fn main() =
+  print(double(4))
+  y = double(3) + 1
+  z = double(1)
+  return 5

@@ -170,9 +170,10 @@ test "maps":
   var m = {"a": 1}
   m["b"] = 2
   m["c"] += 5
-  m["l"].push(1)
+  var g = {}
+  g["l"].push(1)
   assert m["a"] == 1 and m.get("z") == none and m.get("z", 0) == 0 and "a" in m
-  m.remove("l")
+  g.remove("l")
   assert m.keys() == ["a", "b", "c"] and m.values() == [1, 2, 5] and m.items()[0] == ("a", 1) and m.len == 3
   m.sort_by(-it.1)[0] == ("c", 5) and m.filter(it.1 > 1).to_map() == {"b": 2, "c": 5}
 test "sets and ranges":

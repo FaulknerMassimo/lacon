@@ -30,7 +30,23 @@ pub fn parse(src: &str) -> (Module, Vec<Diag>) {
     let mut p = Parser { src, toks, pos: 0, indent: 0, col_stop: None, diags: Vec::new() };
     let m = p.module();
     diags.extend(p.diags);
+    for d in diags.iter_mut().filter(|d| d.code == "E0110") {
+        if brace_quote_before(src, d.span.start as usize) {
+            d.msg = "a `{` right before `\"` is a literal brace, so the string ended there; inside `{...}`, quote strings with `'`: \"{'-' * n}\"".into();
+        }
+    }
     (m, diags)
+}
+
+/// Does the line before `pos` have `{"` with a `}` after it, the sign of
+/// `"{"x" * n}"`, where the lexer takes the `{` as a literal brace?
+fn brace_quote_before(src: &str, pos: usize) -> bool {
+    let pos = pos.min(src.len());
+    let line_start = src[..pos].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = src[pos..].find('\n').map_or(src.len(), |i| pos + i);
+    let line = &src[line_start..line_end];
+    let before = pos - line_start;
+    line.match_indices("{\"").any(|(i, _)| i < before && line[i + 2..].contains('}'))
 }
 
 fn is_upper(s: &str) -> bool {
@@ -439,7 +455,7 @@ impl<'a> Parser<'a> {
         self.expect(&Tok::RParen, "`)` after parameters")?;
         let ret = if self.eat(&Tok::Arrow) {
             Some(self.ty()?)
-        } else if self.at(&Tok::Assign) || self.at(&Tok::Colon) || self.at(&Tok::LBrace) || self.at(&Tok::Newline) {
+        } else if self.at(&Tok::Assign) || self.at(&Tok::Colon) || (self.at(&Tok::LBrace) && !self.brace_is_type()) || self.at(&Tok::Newline) {
             None
         } else {
             Some(self.ty()?)
@@ -454,6 +470,28 @@ impl<'a> Parser<'a> {
         }
         let body = self.block()?;
         Ok(FnDecl { name, generics, params, ret, body, doc, span: start })
+    }
+
+    /// After a parameter list, is `{` a map or set return type (`{str: int} =`)
+    /// rather than a braced body? The type is followed by `=`, `!` or `?`.
+    fn brace_is_type(&self) -> bool {
+        let mut depth = 0;
+        let mut i = 0;
+        loop {
+            match self.peek_at(i) {
+                Tok::LBrace | Tok::LBracket | Tok::LParen => depth += 1,
+                Tok::RBrace | Tok::RBracket | Tok::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Tok::Newline | Tok::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        matches!(self.peek_at(i + 1), Tok::Assign | Tok::Bang | Tok::Question)
     }
 
     fn param(&mut self) -> P<Param> {
