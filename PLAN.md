@@ -640,10 +640,13 @@ Where it stands against §6:
 
 | | Interpreter | Native |
 |---|---|---|
-| `fib(27)` | 0.14 s | 0.016 s |
-| sieve of 2,000,000 | 1.17 s | 0.28 s |
+| `fib(27)` | 0.14 s | 0.0095 s |
+| sieve of 2,000,000 | 1.17 s | 0.18 s |
 | 300,000 map updates | 0.10 s | 0.05 s |
-| 200,000 structs filtered, mapped, sorted | 0.24 s | 0.16 s |
+| 200,000 structs filtered, mapped, sorted | 0.24 s | 0.14 s |
+
+(Native with integer arithmetic, list indexing, calls and boundary checks on
+values that already have the declared type done inline.)
 
 That is a tree-walker's overhead removed, not Rust's speed: every value is
 still a tagged cell, every operation a runtime call with a type check, and

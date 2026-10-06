@@ -19,7 +19,7 @@ Phase 1 adds a static type checker and a C backend. `run`, `test` and `check`
 report type errors before anything runs, each on one line with a fix where
 there is one. `build` compiles a program to a native executable through C;
 its output matches the interpreter's byte for byte on every golden program
-and task, and it runs 2-9x faster. Typed representations, which close the
+and task, and it runs 2-15x faster. Typed representations, which close the
 rest of the gap to Rust, come next. The design and build plan is in
 [PLAN.md](PLAN.md).
 
