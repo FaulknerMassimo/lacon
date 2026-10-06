@@ -1,0 +1,9 @@
+# `main` returning an error prints it and exits 1.
+fn check(n int) int! =
+  if n > 2: fail "too big: {n}"
+  n
+
+fn main()! =
+  print(check(1)?)
+  nums = "1 2 x".split().map(int(it)?)
+  print(nums)

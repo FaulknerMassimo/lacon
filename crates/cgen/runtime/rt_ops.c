@@ -893,6 +893,73 @@ lc_v lc_try_none(bool fn_optional) {
     return lc_err_new(lc_cstr("unexpected none"));
 }
 
+/* The first place two values differ, as a path like `[2].age`, with both
+ * sides there. Mirrors `value::first_diff`. */
+static bool first_diff(lc_v a, lc_v b, lc_buf *path, lc_buf *x, lc_buf *y) {
+    if (lc_eq(a, b) == 1) return false;
+    char t[64];
+    if ((a.tag == T_LIST && b.tag == T_LIST) || (a.tag == T_TUPLE && b.tag == T_TUPLE)) {
+        lc_vec *p = VEC(a), *q = VEC(b);
+        for (int64_t i = 0; i < p->len && i < q->len; i++) {
+            int64_t n = path->len;
+            snprintf(t, sizeof t, a.tag == T_LIST ? "[%lld]" : ".%lld", (long long)i);
+            lc_buf_puts(path, t);
+            if (first_diff(p->items[i], q->items[i], path, x, y)) return true;
+            path->len = n;
+            if (path->p) path->p[n] = 0;
+        }
+        if (p->len != q->len) {
+            lc_buf_puts(path, ".len");
+            snprintf(t, sizeof t, "%lld", (long long)p->len);
+            lc_buf_puts(x, t);
+            snprintf(t, sizeof t, "%lld", (long long)q->len);
+            lc_buf_puts(y, t);
+            return true;
+        }
+    } else if (a.tag == T_STRUCT && b.tag == T_STRUCT && REC(a)->ty == REC(b)->ty) {
+        lc_rec *p = REC(a), *q = REC(b);
+        const lc_struct_info *si = &lc_prog->structs[p->ty];
+        for (int64_t i = 0; i < p->n && i < q->n; i++) {
+            int64_t n = path->len;
+            lc_buf_putc(path, '.');
+            lc_buf_puts(path, si->field_names[i]);
+            if (first_diff(p->f[i], q->f[i], path, x, y)) return true;
+            path->len = n;
+            if (path->p) path->p[n] = 0;
+        }
+    } else if (a.tag == T_MAP && b.tag == T_MAP) {
+        lc_map *p = MAP(a), *q = MAP(b);
+        for (int64_t i = 0; i < p->len; i++) {
+            int64_t n = path->len;
+            lc_buf_putc(path, '[');
+            lc_buf_repr(path, p->e[i].k);
+            lc_buf_putc(path, ']');
+            lc_entry *e = lc_map_find(q, p->e[i].k);
+            if (!e) {
+                lc_buf_repr(x, p->e[i].v);
+                lc_buf_puts(y, "(missing)");
+                return true;
+            }
+            if (first_diff(p->e[i].v, e->v, path, x, y)) return true;
+            path->len = n;
+            if (path->p) path->p[n] = 0;
+        }
+        for (int64_t i = 0; i < q->len; i++) {
+            if (!lc_map_find(p, q->e[i].k)) {
+                lc_buf_putc(path, '[');
+                lc_buf_repr(path, q->e[i].k);
+                lc_buf_putc(path, ']');
+                lc_buf_puts(x, "(missing)");
+                lc_buf_repr(y, q->e[i].v);
+                return true;
+            }
+        }
+    }
+    lc_buf_repr(x, a);
+    lc_buf_repr(y, b);
+    return true;
+}
+
 bool lc_assert_eq(lc_v a, lc_v b, lc_v msg, bool has_msg, const char *site) {
     char k1[64], k2[64];
     int r = lc_eq(a, b);
@@ -905,7 +972,12 @@ bool lc_assert_eq(lc_v a, lc_v b, lc_v msg, bool has_msg, const char *site) {
         lc_buf_display(&m, msg);
         lc_buf_putc(&m, ' ');
     }
-    lc_flush();
+    lc_buf path = {0}, dx = {0}, dy = {0};
+    lc_buf_puts(&path, "");
+    first_diff(a, b, &path, &dx, &dy);
+    if (path.len > 0)
+        lc_panic("E0420", site, "%sleft != right\n  left:  %s\n  right: %s\n  first difference at %s: %s vs %s", m.p ? m.p : "", x.p ? x.p : "",
+                 y.p ? y.p : "", path.p, dx.p ? dx.p : "", dy.p ? dy.p : "");
     lc_panic("E0420", site, "%sleft != right\n  left:  %s\n  right: %s", m.p ? m.p : "", x.p ? x.p : "", y.p ? y.p : "");
 }
 

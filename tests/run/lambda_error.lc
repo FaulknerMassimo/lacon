@@ -1,0 +1,6 @@
+# Errors inside lambdas report the call chain.
+fn get(xs [int], i int) int = xs[i]
+
+fn main() =
+  xs = [1, 2]
+  print([0, 1, 5].map(get(xs, it)))

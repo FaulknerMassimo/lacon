@@ -1,0 +1,6 @@
+checking
+E0420 assert_diff.lc:6:10 users left != right
+  left:  U{name: "a", tags: [1, 2]}
+  right: U{name: "a", tags: [1, 3]}
+  first difference at .tags[1]: 2 vs 3
+[exit 1]

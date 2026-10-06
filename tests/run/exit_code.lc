@@ -1,0 +1,4 @@
+# `os.exit` flushes output and sets the exit code.
+fn main() =
+  print("bye")
+  os.exit(3)

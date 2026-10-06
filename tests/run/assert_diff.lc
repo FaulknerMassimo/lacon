@@ -1,0 +1,6 @@
+# A failing `assert a == b` shows both sides and where they first differ.
+type U {name str, tags [int]}
+
+fn main() =
+  print("checking")
+  assert U{"a", [1, 2]} == U{"a", [1, 3]}, "users"
