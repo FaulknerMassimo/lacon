@@ -1,0 +1,17 @@
+# Spellings from other languages that mean the same thing in Lacon.
+type Counter {var count int, pub name str, mut hits [int]}
+
+fn bump(c mut Counter) =
+  c.count += 1
+
+fn add_hit(c: mut Counter, n int) =
+  c.hits.push(n)
+
+fn main() =
+  var c = Counter{0, "a", []}
+  bump(mut c)
+  bump(c)
+  add_hit(mut c, 7)
+  if c.count > 5:
+    pass
+  print(c)

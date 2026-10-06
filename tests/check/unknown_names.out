@@ -1,3 +1,4 @@
 E0201 unknown_names.lc:2:3 `console` is not defined: print with `print("...{x}...")`
 E0203 unknown_names.lc:3:14 no method `ljust`: use `pad_right(n)`, or a spec: "{s:<{n}}"
+E0201 unknown_names.lc:4:10 `sys` is not defined: stdin is `io.read()` or `io.lines()`, arguments are `os.args`, and `os.exit(code)` exits
 [exit 1]

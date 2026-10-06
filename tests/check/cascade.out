@@ -1,0 +1,2 @@
+E0110 cascade.lc:2:19 expected `}` or `,` between fields, found `;`
+[exit 1]

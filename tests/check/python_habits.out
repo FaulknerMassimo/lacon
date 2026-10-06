@@ -2,5 +2,6 @@ E0138 python_habits.lc:2:14 no named arguments; to print without a newline use `
 E0138 python_habits.lc:3:20 no named arguments; sort descending with `xs.sort_by(-it)` or `xs.sort().rev()`
 E0121 python_habits.lc:4:3 no nested functions; move it to the top level, or bind a lambda: `add = |a, b| a + b`
 E0129 python_habits.lc:5:25 a lambda body is one expression and cannot assign; update variables in a `for` loop
-E0121 python_habits.lc:7:1 functions are declared with `fn name(param Type) Ret =` | fix: fn add(a int, b int) -> int =
+E0148 python_habits.lc:6:3 no `del`: remove a map entry with `m.remove(k)`, a list item with `xs.remove(i)` | fix: m.remove("a")
+E0121 python_habits.lc:8:1 functions are declared with `fn name(param Type) Ret =` | fix: fn add(a int, b int) -> int =
 [exit 1]

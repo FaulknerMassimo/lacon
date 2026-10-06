@@ -28,7 +28,11 @@ pub fn load(src: &Source) -> (Program, Vec<Diag>) {
         diags = rdiags;
     } else {
         let parse_lines: std::collections::HashSet<usize> = diags.iter().map(|d| src.line_col(d.span.start).0).collect();
-        diags.extend(rdiags.into_iter().filter(|d| !parse_lines.contains(&src.line_col(d.span.start).0) && d.code != "E0201"));
+        let follow_on = |d: &Diag| {
+            module.broken.iter().any(|n| d.msg.contains(&format!("`{n}`")))
+                || (module.broken_type && matches!(d.code, "E0203" | "E0207" | "E0208" | "E0210"))
+        };
+        diags.extend(rdiags.into_iter().filter(|d| !parse_lines.contains(&src.line_col(d.span.start).0) && d.code != "E0201" && !follow_on(d)));
     }
     (prog, diags)
 }

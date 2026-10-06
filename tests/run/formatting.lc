@@ -12,6 +12,10 @@ fn main() =
   num_w = rows.map(str(it.1).len).max()
   for (name, n) in rows:
     print("{name:<{name_w}} {n:>{num_w}}")
+  # The rest of Python's specs; output matches Python's f-strings.
+  x = 1234.5678
+  n = 1234567
+  print("{n:,}|{x:,.2f}|{0.256:.1%}|{x:e}|{x:g}|{n:#x}|{n:_}|{-5:=+6}|{x: .1f}|{97:c}|{-0.5:.0f}")
   # Python's map(f, xs) and filter(f, xs) mean xs.map(f) and xs.filter(f).
   xs = [1, 2, 3, 4]
   print(" ".join(map(str, xs)), filter(even, xs), map(|x| x * 10, xs), sum(map(int, ["4", "5"])))

@@ -56,6 +56,11 @@ def main() -> int:
         by_lang[r["lang"]].append(r)
     langs = sorted(by_lang, key=lambda k: ORDER.index(k) if k in ORDER else 99)
 
+    # Runs from before `served_by` was recorded fall back to the requested model.
+    served = sorted({m for r in recs for m in (r.get("served_by") or [r.get("model")]) if m})
+    if served:
+        print(f"models: {', '.join(served)}\n")
+
     rows = [["language", "episodes", "passed", "1st build ok", "median tokens-to-green", "mean output tok", "mean calls", "mean $/episode"]]
     for lang in langs:
         rs = by_lang[lang]

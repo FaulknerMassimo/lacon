@@ -1,3 +1,4 @@
 fn main() =
   console.log("hi")
   print("ab".ljust(5), "7".zfill(3))
+  data = sys.stdin.read()

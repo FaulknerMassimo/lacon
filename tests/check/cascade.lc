@@ -1,0 +1,9 @@
+# One mistake in a declaration is one error, not one per use.
+type P {toks [str]; pos int}
+
+fn peek(p P) str? = p.toks.get(p.pos)
+
+fn main() =
+  var p = P{["a"], 0}
+  p.pos += 1
+  print(peek(p))

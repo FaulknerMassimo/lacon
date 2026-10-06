@@ -116,6 +116,7 @@ fn name_hint(name: &str) -> Option<&'static str> {
         "it" => "`it` only works inside an argument to a function-taking call such as `map`, `filter` or `sort_by`",
         "input" | "readline" | "read_line" | "stdin" => "read input with `io.read_line()` (str?), `io.lines()` or `io.read()`",
         "open" => "read files with `fs.read(path)?`",
+        "sys" => "stdin is `io.read()` or `io.lines()`, arguments are `os.args`, and `os.exit(code)` exits",
         "sorted" => "sort with `xs.sort()` (returns a new list)",
         "heapq" | "BinaryHeap" | "PriorityQueue" | "heapify" | "heappush" | "heappop" => {
             "use the min-heap `h = heap()` (or `heap(xs)`), `h.push(x)`, `h.pop()` (smallest, T?), `h.first`"
@@ -135,28 +136,39 @@ fn name_hint(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Edit distance where swapping two adjacent characters is one edit, so
+/// `fitler` is closer to `filter` than to `iter`.
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
     for i in 1..=a.len() {
-        let mut cur = vec![i; b.len() + 1];
         for j in 1..=b.len() {
             let c = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + c);
+            d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + c);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
         }
-        prev = cur;
     }
-    prev[b.len()]
+    d[a.len()][b.len()]
 }
 
 fn closest<'b>(name: &str, cands: impl Iterator<Item = &'b str>) -> Option<&'b str> {
-    let max = if name.len() <= 3 { 1 } else { 2 };
+    // Two edits turn short names into unrelated ones (`chain` -> `chars`).
+    let max = if name.len() <= 5 { 1 } else { 2 };
     cands
         .filter(|c| *c != name)
         .map(|c| (edit_distance(name, c), c))
         .filter(|(d, _)| *d <= max)
-        .min_by_key(|(d, _)| *d)
+        // On a tie, a swap (same length) beats a dropped letter: `sotr` is `sort`.
+        .min_by_key(|(d, c)| (*d, c.len().abs_diff(name.len())))
         .map(|(_, c)| c)
 }
 

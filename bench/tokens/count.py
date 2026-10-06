@@ -5,13 +5,18 @@
 """Count tokens for the same program written in Rust, Go, Python and Lacon,
 and for the Lacon primer.
 
-Run with: uv run bench/tokens/count.py [--model claude-opus-5]
+Run with: uv run bench/tokens/count.py [--model claude-opus-5-5] [--claude-code]
 
 Counts come from Claude's token-counting endpoint when API credentials are
-available. Without them the script falls back to `o200k_base`, which is not
-Claude's tokenizer, so read those numbers as relative between languages only.
+available. `--claude-code` counts through `claude -p` on a Claude Code login
+instead (one short model call per file). Without either, the script falls back
+to `o200k_base`, which is not Claude's tokenizer, so read those numbers as
+relative between languages only.
 """
 import argparse
+import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,13 +37,31 @@ def claude_counter(model: str):
     return lambda text: count(text) - framing
 
 
+def claude_code_counter(model: str):
+    """Sends the text as the system prompt of a one-line `claude -p` exchange
+    with no tools, and counts the input tokens beyond a near-empty baseline."""
+    # Without the parent session's variables, so this also works inside Claude Code.
+    env = {k: v for k, v in os.environ.items() if not (k.startswith("CLAUDE_CODE_") or k in ("CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT"))}
+
+    def total(system: str) -> int:
+        cmd = ["claude", "-p", "Reply with OK.", "--model", model, "--system-prompt", system, "--tools", "", "--effort", "low",
+               "--output-format", "json", "--no-session-persistence", "--safe-mode", "--strict-mcp-config"]
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=HERE, check=True)
+        u = json.loads(r.stdout)["usage"]
+        return u["input_tokens"] + u["cache_creation_input_tokens"] + u["cache_read_input_tokens"]
+
+    base = total("x") - 1
+    return lambda text: total(text) - base
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="claude-opus-5")
+    ap.add_argument("--model", default="claude-opus-5-5")
+    ap.add_argument("--claude-code", action="store_true", help="count through `claude -p` (no API key needed)")
     args = ap.parse_args()
     try:
-        count = claude_counter(args.model)
-        source = f"Claude tokenizer ({args.model})"
+        count = claude_code_counter(args.model) if args.claude_code else claude_counter(args.model)
+        source = f"Claude tokenizer ({args.model}{', via Claude Code' if args.claude_code else ''})"
     except Exception as e:
         import tiktoken
 

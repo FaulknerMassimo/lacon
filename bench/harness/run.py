@@ -7,7 +7,8 @@ tokens it spends getting to passing tests (tokens-to-green).
 
     uv run bench/harness/run.py                                # every task and language
     uv run bench/harness/run.py --langs lacon,python --tasks rpn,calc --trials 3
-    uv run bench/harness/run.py --agent replay                 # no API: submit the reference solutions
+    uv run bench/harness/run.py --agent claude-code            # through Claude Code: no API key
+    uv run bench/harness/run.py --agent replay                 # no model: submit the reference solutions
     uv run bench/harness/report.py bench/results/<run>         # summarize a run
 
 In each episode the model gets the task prompt, one example, and two tools:
@@ -15,6 +16,15 @@ In each episode the model gets the task prompt, one example, and two tools:
 the hidden tests and returns the first failing one. The episode is green when a
 submission passes. Lacon episodes also get the primer in the system prompt;
 nothing else differs between languages.
+
+Agents:
+- `claude` calls the Messages API (needs ANTHROPIC_API_KEY or similar).
+- `claude-code` runs `claude -p` in the episode's directory on your Claude
+  Code login. The tools are the scripts `./run` and `./submit`; Bash may run
+  nothing else, file tools are confined to the directory, and the session
+  starts with this harness's system prompt and no CLAUDE.md, skills, plugins
+  or settings. Tokens are summed from the session's API calls.
+- `replay` submits each task's reference solution, to test the harness.
 
 Results go to bench/results/<run>/: config.json, episodes.jsonl (one line per
 episode) and transcripts/. Passing an existing run to --out resumes it,
@@ -45,7 +55,7 @@ TASKS = ROOT / "bench" / "tasks"
 PRIMER = ROOT / "docs" / "primer.md"
 RESULTS = ROOT / "bench" / "results"
 
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MODEL = "claude-opus-5-5"
 # $ per million tokens: (input, output, cache read). Cache writes with the
 # default 5-minute lifetime cost 1.25x input. Used for an estimated cost only.
 PRICES = {
@@ -93,6 +103,18 @@ Use the `run` tool to try the program on inputs you choose and the `submit` tool
 
 NUDGE = "Submit your program with the `submit` tool when it is ready."
 
+SYSTEM_CC = """You are solving a programming task. Write one complete program in {lang} that reads standard input and writes standard output, in the file `main{ext}` in the current directory.
+
+Environment: {environment}
+
+`./run input.txt` (or `printf '1 2\\n' | ./run`) builds the program and runs it on that input, printing the build errors or the exit code and output. `./submit` runs it against the hidden tests and prints the first failing one. The task is finished when a submission passes.
+
+Bash can run only `./run`, `./submit`, `ls`, `printf` and `echo`; piping into `./run` works, but redirection and other commands are blocked. Create and change files with the Write and Edit tools."""
+
+# Claude Code's Bash may run only the episode's own tools, `ls`, and
+# printf/echo to pipe input into `./run`.
+CC_ALLOWED = ["Read", "Write", "Edit", "Bash(./run)", "Bash(./run *)", "Bash(./submit)", "Bash(ls)", "Bash(ls *)", "Bash(printf *)", "Bash(echo *)"]
+
 
 # ----- tasks -----
 
@@ -119,8 +141,9 @@ def all_tasks() -> list[str]:
     return sorted(p.name for p in TASKS.iterdir() if (p / "prompt.md").exists())
 
 
-def system_prompt(lang: L.Lang) -> str:
-    s = SYSTEM.format(lang=lang.name, environment=lang.environment)
+def system_prompt(lang: L.Lang, agent: str = "claude") -> str:
+    template = SYSTEM_CC if agent == "claude-code" else SYSTEM
+    s = template.format(lang=lang.name, ext=lang.ext, environment=lang.environment)
     if lang.key == "lacon":
         s += "\n\n" + PRIMER.read_text()
     return s
@@ -172,6 +195,10 @@ class Episode:
     final_code: str | None = None
     usage: Usage = field(default_factory=Usage)
     api_calls: int = 0
+    # Claude Code's own cost figure (list price; notional on a subscription).
+    reported_cost: float | None = None
+    # The models that actually answered, to catch a run on the wrong one.
+    served: set[str] = field(default_factory=set)
 
     def _build(self, code: str) -> L.Build:
         src = self.workdir / f"main{self.lang.ext}"
@@ -250,6 +277,7 @@ def claude_agent(ep: Episode, client, args) -> tuple[str, list]:
             return "api_error", messages
         ep.api_calls += 1
         ep.usage.add(resp.usage)
+        ep.served.add(resp.model)
         messages.append({"role": "assistant", "content": resp.content})
         if resp.stop_reason == "refusal":
             return "refusal", messages
@@ -290,6 +318,126 @@ def replay_agent(ep: Episode) -> tuple[str, list]:
     return ("pass" if ep.passed else "fail"), log
 
 
+TOOL_SCRIPT = """#!{python}
+import sys
+sys.path.insert(0, {harness!r})
+from run import tool_main
+sys.exit(tool_main({tool!r}, {task!r}, {lang!r}, {events!r}))
+"""
+
+
+def tool_main(tool: str, task_name: str, lang_key: str, events: str) -> int:
+    """`./run [input-file]` and `./submit` inside a Claude Code episode."""
+    lang_cls = L.LANGS[lang_key]
+    lang = lang_cls(build=False) if lang_cls is L.Lacon else lang_cls()
+    src = Path.cwd() / f"main{lang.ext}"
+    if not src.exists():
+        print(f"there is no {src.name} yet; write the program first")
+        return 1
+    ep = Episode(Task.load(task_name), lang, 0, Path.cwd())
+    if tool == "run":
+        stdin = Path(sys.argv[1]).read_text() if len(sys.argv) > 1 else sys.stdin.read()
+        text = ep.tool("run", {"code": src.read_text(), "stdin": stdin})
+    else:
+        text = ep.tool("submit", {"code": src.read_text()})
+    with open(events, "a") as f:
+        f.write(json.dumps({"tool": tool, "build_ok": ep.first_build_ok, "passed": ep.passed, "code": src.read_text()}) + "\n")
+    print(text)
+    return 0
+
+
+def child_env() -> dict:
+    """The environment for a nested `claude`: without the parent session's
+    variables, so the harness also works when run from inside Claude Code."""
+    import os
+
+    return {k: v for k, v in os.environ.items() if not (k.startswith("CLAUDE_CODE_") or k in ("CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT"))}
+
+
+def claude_code_agent(ep: Episode, args) -> tuple[str, list]:
+    import subprocess
+
+    with tempfile.TemporaryDirectory(prefix="lacon-bench-events-") as side:
+        events = Path(side) / "events.jsonl"
+        for tool in ("run", "submit"):
+            script = ep.workdir / tool
+            script.write_text(TOOL_SCRIPT.format(python=sys.executable, harness=str(HERE), tool=tool, task=ep.task.name, lang=ep.lang.key, events=str(events)))
+            script.chmod(0o755)
+        cmd = [
+            args.claude, "-p", ep.task.user_message(),
+            "--output-format", "stream-json", "--verbose",
+            "--model", args.model,
+            "--system-prompt", system_prompt(ep.lang, "claude-code"),
+            "--tools", "Bash,Read,Write,Edit",
+            "--allowedTools", *CC_ALLOWED,
+            "--permission-prompts", "none",
+            "--restricted", "--safe-mode", "--no-session-persistence",
+            "--max-budget-usd", str(args.max_budget),
+        ]
+        if args.effort:
+            cmd += ["--effort", args.effort]
+        try:
+            r = subprocess.run(cmd, cwd=ep.workdir, env=child_env(), capture_output=True, text=True, timeout=args.session_timeout)
+            stdout, stderr, timed_out = r.stdout, r.stderr, False
+        except subprocess.TimeoutExpired as e:
+            stdout = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            stderr, timed_out = "", True
+        log = [json.loads(line) for line in stdout.splitlines() if line.startswith("{")]
+        if events.exists():
+            evs = [json.loads(line) for line in events.read_text().splitlines()]
+        else:
+            evs = []
+
+    # One API call can appear as several assistant messages sharing an id.
+    ep.api_calls = len({m["message"]["id"] for m in log if m.get("type") == "assistant" and (m.get("message") or {}).get("id")})
+    # The usage on streamed messages is captured as each starts (partial
+    # output counts); the result record has the session's totals, per model.
+    result = next((m for m in reversed(log) if m.get("type") == "result"), {})
+    per_model = (result.get("modelUsage") or {}).values()
+    ep.served.update(u.get("canonicalModel") or name for name, u in (result.get("modelUsage") or {}).items())
+    if per_model:
+        for u in per_model:
+            ep.usage.add(SimpleUsage({
+                "input_tokens": u.get("inputTokens"),
+                "cache_creation_input_tokens": u.get("cacheCreationInputTokens"),
+                "cache_read_input_tokens": u.get("cacheReadInputTokens"),
+                "output_tokens": u.get("outputTokens"),
+            }))
+    elif result.get("usage"):
+        ep.usage.add(SimpleUsage(result["usage"]))
+    ep.runs = sum(e["tool"] == "run" for e in evs)
+    ep.submits = sum(e["tool"] == "submit" for e in evs)
+    ep.first_build_ok = evs[0]["build_ok"] if evs else None
+    ep.passed = any(e["passed"] for e in evs)
+    submitted = [e for e in evs if e["tool"] == "submit"]
+    ep.final_code = submitted[-1]["code"] if submitted else None
+    ep.reported_cost = result.get("total_cost_usd")
+    if ep.passed:
+        outcome = "pass"
+    elif timed_out:
+        outcome = "timeout"
+    elif not result:
+        outcome = "cc_error"
+        log.append({"stderr": stderr[-4000:]})
+    elif "budget" in str(result.get("subtype", "")):
+        outcome = "budget_limit"
+    elif "turns" in str(result.get("subtype", "")):
+        outcome = "turn_limit"
+    else:
+        outcome = "gave_up"
+    return outcome, log
+
+
+class SimpleUsage:
+    """A usage dict from Claude Code's output, shaped like the SDK's."""
+
+    def __init__(self, u: dict) -> None:
+        self.input_tokens = u.get("input_tokens")
+        self.cache_creation_input_tokens = u.get("cache_creation_input_tokens")
+        self.cache_read_input_tokens = u.get("cache_read_input_tokens")
+        self.output_tokens = u.get("output_tokens")
+
+
 def run_episode(task_name: str, lang: L.Lang, trial: int, args, client, out: Path) -> dict:
     task = Task.load(task_name)
     start = time.monotonic()
@@ -299,6 +447,8 @@ def run_episode(task_name: str, lang: L.Lang, trial: int, args, client, out: Pat
         try:
             if args.agent == "replay":
                 outcome, transcript = replay_agent(ep)
+            elif args.agent == "claude-code":
+                outcome, transcript = claude_code_agent(ep, args)
             else:
                 outcome, transcript = claude_agent(ep, client, args)
         except Exception:
@@ -308,7 +458,8 @@ def run_episode(task_name: str, lang: L.Lang, trial: int, args, client, out: Pat
         "lang": lang.key,
         "trial": trial,
         "agent": args.agent,
-        "model": args.model if args.agent == "claude" else None,
+        "model": args.model if args.agent != "replay" else None,
+        "served_by": sorted(ep.served),
         "effort": args.effort,
         "outcome": outcome,
         "passed": ep.passed,
@@ -317,13 +468,15 @@ def run_episode(task_name: str, lang: L.Lang, trial: int, args, client, out: Pat
         "submits": ep.submits,
         "first_build_ok": ep.first_build_ok,
         "tokens": {**asdict(ep.usage), "total": ep.usage.total},
-        "cost_usd": ep.usage.cost(args.model) if args.agent == "claude" else 0.0,
+        # Claude Code's own figure when it gives one (it caches with a 1-hour
+        # lifetime, which costs more to write); otherwise an estimate.
+        "cost_usd": 0.0 if args.agent == "replay" else ep.reported_cost if ep.reported_cost is not None else ep.usage.cost(args.model),
         "wall_s": round(time.monotonic() - start, 2),
         "final_code": ep.final_code,
         "error": error,
     }
     name = f"{task_name}.{lang.key}.{trial}.json"
-    (out / "transcripts" / name).write_text(json.dumps({"system": system_prompt(lang), "messages": jsonable(transcript)}, indent=1))
+    (out / "transcripts" / name).write_text(json.dumps({"system": system_prompt(lang, args.agent), "messages": jsonable(transcript)}, indent=1))
     return record
 
 
@@ -342,7 +495,7 @@ def prompt_tokens(client, model: str, lang: L.Lang, task: Task) -> int | None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--agent", choices=["claude", "replay"], default="claude")
+    ap.add_argument("--agent", choices=["claude", "claude-code", "replay"], default="claude")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], help="output_config.effort (default: the model's)")
     ap.add_argument("--langs", default="lacon,python,rust,go")
@@ -352,6 +505,9 @@ def main() -> int:
     ap.add_argument("--max-turns", type=int, default=25, help="API calls per episode")
     ap.add_argument("--max-tokens", type=int, default=16000)
     ap.add_argument("--out", type=Path, help="run directory (default: a new one in bench/results)")
+    ap.add_argument("--claude", default="claude", help="the Claude Code executable (claude-code agent)")
+    ap.add_argument("--max-budget", type=float, default=2.0, help="claude-code: --max-budget-usd per episode")
+    ap.add_argument("--session-timeout", type=int, default=1800, help="claude-code: seconds per episode")
     args = ap.parse_args()
 
     tasks = args.tasks.split(",") if args.tasks else all_tasks()
@@ -392,7 +548,7 @@ def main() -> int:
         "agent": args.agent,
         "model": args.model,
         "effort": args.effort,
-        "max_turns": args.max_turns,
+        "max_turns": args.max_turns if args.agent == "claude" else None,
         "max_tokens": args.max_tokens,
         "sandbox": L.SANDBOX,
         "languages": {lang.key: lang.environment for lang in langs},
@@ -415,7 +571,9 @@ def main() -> int:
             with log_path.open("a") as f:
                 f.write(json.dumps(rec) + "\n")
             cost = f" ${rec['cost_usd']:.3f}" if rec["cost_usd"] else ""
-            print(f"{t:18} {lang.key:7} #{trial} {rec['outcome']:12} {rec['tokens']['total']:>8} tok {rec['api_calls']:>2} calls{cost}", file=sys.stderr)
+            other = [m for m in rec["served_by"] if m != args.model]
+            warn = f"  (answered by {', '.join(other)}, not {args.model})" if other else ""
+            print(f"{t:18} {lang.key:7} #{trial} {rec['outcome']:12} {rec['tokens']['total']:>8} tok {rec['api_calls']:>2} calls{cost}{warn}", file=sys.stderr)
         return rec
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:

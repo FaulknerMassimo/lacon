@@ -1,0 +1,9 @@
+# Name suggestions: swaps count as one edit, and short names only get
+# one-edit suggestions, so `chain` isn't "fixed" to `chars`.
+fn main() =
+  xs = [3, 1, 2]
+  a = xs.fitler(it > 1)
+  b = xs.sotr()
+  c = xs.chain([4])
+  d = xs.scan(0, |s, x| s + x)
+  pirnt(a, b, c, d)

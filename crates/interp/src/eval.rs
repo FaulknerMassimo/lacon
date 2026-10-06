@@ -1262,27 +1262,15 @@ impl<'p> Interp<'p> {
     // ----- formatting -----
 
     fn format_spec(&self, v: &Value, spec: &FmtSpec, span: Span) -> R<String> {
-        let numeric = matches!(v, Value::Int(_) | Value::Float(_));
-        let body = match (v, spec.kind) {
-            (Value::Int(n), Some('x')) => format!("{n:x}"),
-            (Value::Int(n), Some('X')) => format!("{n:X}"),
-            (Value::Int(n), Some('b')) => format!("{n:b}"),
-            (Value::Int(n), Some('o')) => format!("{n:o}"),
-            (Value::Int(n), Some('e')) => format!("{:.*e}", spec.precision.unwrap_or(6), *n as f64),
-            (Value::Float(x), Some('e')) => format!("{:.*e}", spec.precision.unwrap_or(6), x),
-            (Value::Int(n), Some('f')) => format!("{:.*}", spec.precision.unwrap_or(6), *n as f64),
-            (Value::Int(n), _) if spec.precision.is_some() => format!("{:.*}", spec.precision.unwrap(), *n as f64),
-            (Value::Float(x), Some('f')) => format!("{:.*}", spec.precision.unwrap_or(6), x),
-            (Value::Float(x), _) if spec.precision.is_some() => format!("{:.*}", spec.precision.unwrap(), x),
-            (Value::Float(x), Some('d')) => format!("{}", x.round() as i64),
-            (_, Some(k)) if matches!(k, 'x' | 'X' | 'b' | 'o' | 'e' | 'f' | 'd') && !numeric => {
-                return Err(panic("E0301", span, format!("format `{k}` needs a number, got {}", self.kind(v))));
+        Ok(match v {
+            Value::Int(n) => spec.int(*n),
+            Value::Float(x) => spec.float(*x, &self.display(v)),
+            _ if spec.numeric_kind() => {
+                return Err(panic("E0301", span, format!("format `{}` needs a number, got {}", spec.kind.unwrap(), self.kind(v))));
             }
-            (Value::Str(s), _) if spec.precision.is_some() => s.chars().take(spec.precision.unwrap()).collect(),
-            _ => self.display(v),
-        };
-        let body = if spec.plus && numeric && !body.starts_with('-') { format!("+{body}") } else { body };
-        Ok(spec.pad(body, numeric))
+            Value::Str(s) => spec.text(s),
+            _ => spec.text(&self.display(v)),
+        })
     }
 
     pub fn print(&self, s: &str) {

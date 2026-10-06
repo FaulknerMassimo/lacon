@@ -1,0 +1,6 @@
+E0203 near_names.lc:5:10 no method `fitler` | fix: filter
+E0203 near_names.lc:6:10 no method `sotr` | fix: sort
+E0203 near_names.lc:7:10 no method `chain`: concatenate with `+`
+E0203 near_names.lc:8:10 no method `scan`: accumulate in a `for` loop
+E0201 near_names.lc:9:3 `pirnt` is not defined | fix: print
+[exit 1]

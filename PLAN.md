@@ -71,21 +71,23 @@ fn main()! =
     print("{city}: {n}")
 ```
 
-The same program in each language, counted with `o200k_base`
-(`uv run bench/tokens/count.py`):
+The same program in each language, counted in Claude's tokenizer
+(`uv run bench/tokens/count.py --claude-code`):
 
 | Language | Tokens | Lacon saves |
 |---|---|---|
-| Go | 338 | 59% |
-| Rust | 302 | 54% |
-| Python | 168 | 17% |
-| **Lacon** | **139** | — |
+| Go | 553 | 65% |
+| Rust | 471 | 59% |
+| Python | 239 | 20% |
+| **Lacon** | **192** | — |
 
-`o200k_base` stands in for Claude's tokenizer, which isn't published as a
-library, so the numbers are relative. With API credentials set, `count.py`
-uses Claude's token-counting endpoint instead.
+Claude's tokenizer isn't published as a library. `count.py` uses the
+token-counting endpoint when API credentials are set, measures through
+`claude -p` with `--claude-code`, and otherwise falls back to `o200k_base`,
+which gives smaller counts and smaller savings (17% against Python, 54%
+against Rust).
 
-Against Python the syntax alone saves only about 17%, because Python is already
+Against Python the syntax alone saves only about 20%, because Python is already
 terse. What Lacon adds over Python is native speed and static safety; further
 token savings have to come from fewer retries and from the toolchain (§4).
 
@@ -264,12 +266,13 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
 first attempts parse. If not, change the syntax and rerun. This phase is the
 cheapest place to find out the idea doesn't work.
 
-**Status.** Built: the primer (2,411 tokens), the parser, the resolver and
+**Status.** Built: the primer (2,988 tokens in Claude's tokenizer), the parser, the resolver and
 interpreter (`crates/`), the `lacon` CLI with `run`, `test`, `check`, `sig` and
 `explain`, golden tests over `tests/`, all 30 tasks with hidden tests, a Python
 reference and a Lacon solution each (`bench/tasks/`), and the harness that has
-Claude solve them (`bench/harness/`). Not done yet: running the harness, which
-needs API credentials and a Go toolchain. See §12 for the semantics the
+Claude solve them (`bench/harness/`), through the API or through Claude Code
+(`claude -p`, no API key needed). Not done yet: a full run, and a Go
+toolchain on the benchmark machine. See §12 for the semantics the
 interpreter settled on and §13 for what writing the tasks taught.
 
 ### Phase 1 — MVP
@@ -395,10 +398,11 @@ overturn.
   site.
 - **Accept foreign spellings with the same meaning; hint the rest.** The
   parser accepts `->`, `&&`, `||`, `!`, `else if`, `name: Type`, `f"..."`,
-  `case` and `=>` in match arms, `loop:`, `User(a, b)`, and Rust no-ops like
-  `.iter()`, `.collect()` and `.clone()`. It rejects `let`, `//`, braces,
-  `::`, `:=`, `++`, `if let`, comprehensions and macros, each with a one-line
-  hint. This breaks §8's "no second way to do anything" on purpose: accepting
+  `case` and `=>` in match arms, `loop:`, `User(a, b)`, `var`/`mut`/`pub`
+  before a field, `p mut P` for `mut p P`, `f(mut x)` at a call site, `pass`,
+  and Rust no-ops like `.iter()`, `.collect()` and `.clone()`. It rejects
+  `let`, `//`, `del`, braces, `::`, `:=`, `++`, `if let`, comprehensions and
+  macros, each with a one-line hint. This breaks §8's "no second way to do anything" on purpose: accepting
   costs no retry, and a formatter can rewrite aliases to the canonical form.
   Whether the aliases cost accuracy later is a Phase 0 question.
 - **No truthiness.** Conditions must be `bool`.
@@ -445,6 +449,61 @@ fixed and has a golden test.
 - **`"{}"`** for an empty JSON object is an error (an empty interpolation). It
   stays an error, because silently printing `{}` for a Rust-style
   `print("{} items", n)` costs more than one retry; the hint names `{{}}`.
+
+### First harness run
+
+Three tasks (`calc`, `dijkstra`, `ledger`) in Lacon and Python through
+Claude Code, `claude-opus-5`, one trial each. All six passed. Lacon took 1.76x
+Python's tokens (geometric mean), and two of three first attempts built.
+
+- **The primer is about 3,400 tokens in Claude's tokenizer**, not the 2,411
+  `o200k_base` counts, so it is over the 3,000-token budget. Every API call
+  re-reads it: on `dijkstra` both languages took four calls, and the primer
+  accounts for about 13.7k of Lacon's 15.7k extra tokens. Shrinking it is the
+  biggest lever this run found.
+- **The failed first build** in `calc` came from three guesses with obvious
+  meanings: `var` on a struct field, `p mut P`, and `f(mut p)`. All three are
+  now accepted, and the model's first program runs unchanged. Its three
+  mistakes produced eight errors, because the failed `type` made every use of
+  it an error too; errors that follow from a failed declaration are now
+  suppressed.
+- **The harness itself** caused denied commands in four of six episodes (`ls`,
+  `sed`, shell redirection), in both languages. `ls` is now allowed and the
+  system prompt says what Bash can run.
+- **The run used the wrong model.** The harness defaulted to `claude-opus-5`.
+  It now defaults to `claude-opus-5-5`, records the model that answered each
+  episode (`served_by`), and flags a mismatch as it runs.
+
+### Cutting the primer
+
+The primer went from 3,412 to 2,988 tokens in Claude's tokenizer, under the
+3,000 budget. Rather than guess what was safe to cut, the cuts were checked
+against probes: short programs written the way a model would guess without the
+primer (Python and Rust habits), run through the interpreter. A line stayed in
+the primer only if its guess fails.
+
+- **Cut:** things the guess gets right: Python slicing, `range(n)`,
+  `min(a, b)`, `", ".join(xs)`, `x == none`, `m.contains_key(k)`, `.iter()`
+  chains, `s.insert(x)`, rarely used `fs`/`os` functions, and the operator
+  list (now "Python's, except `//` and `~`, plus `??`").
+- **Kept:** what fails or means something different: `var`, `=` bodies, `it`,
+  `T!`/`?`/`fail`, methods returning new values, missing map keys, no
+  truthiness, and the list and string method names.
+- **Format specs** now take all of Python's mini-language (`,` and `_`
+  grouping, `%`, `g`, `#`, `=`, a space sign, `e` with a signed two-digit
+  exponent), so the primer can say "Python's". The one difference is
+  deliberate: `{x:.2}` is two decimals, as in Rust, not two significant
+  digits.
+- **Fixes the probes found:** `chain` got the machine-applicable fix `chars`
+  and `scan` got `sign`, because names five letters or shorter allowed two
+  edits; they now get one, and a swapped pair of letters counts as one edit
+  (`fitler` suggested `iter`, now `filter`). `sys.stdin.read()` had no hint;
+  `del m[k]` was a confusing parse error and now gets `E0148` with the fix
+  `m.remove(k)`; Python's `pass` is accepted. `chain`, `filter_map`,
+  `sort_unstable`, `char_indices` and `scan` got hints.
+
+Not measured yet: whether the cut primer costs first-build accuracy. The next
+run answers that.
 
 The tasks themselves split into parsing (`calc`, `json-format`, `ini-query`,
 `csv-column`, `roman`, `log-summary`, `rpn`, `brackets`), data processing

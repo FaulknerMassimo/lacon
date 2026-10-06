@@ -277,6 +277,11 @@ impl<'a> Parser<'a> {
                 self.sync_item();
                 continue;
             }
+            // `fn name`, `type Name`, `enum Name`: the name, if the item fails.
+            let decl = match (self.peek(), self.peek_at(1)) {
+                (Tok::Fn | Tok::Type | Tok::Enum, Tok::Ident(n)) => Some((n.clone(), !matches!(self.peek(), Tok::Fn))),
+                _ => None,
+            };
             match self.item() {
                 Ok(item) => {
                     m.items.push(item);
@@ -285,7 +290,13 @@ impl<'a> Parser<'a> {
                         self.sync_item();
                     }
                 }
-                Err(()) => self.sync_item(),
+                Err(()) => {
+                    if let Some((name, is_type)) = decl {
+                        m.broken.push(name);
+                        m.broken_type |= is_type;
+                    }
+                    self.sync_item()
+                }
             }
         }
         m
@@ -461,6 +472,12 @@ impl<'a> Parser<'a> {
         }
         let name = self.ident("a parameter name")?;
         self.eat(&Tok::Colon);
+        if let Some(m @ ("mut" | "own")) = self.ident_at(0) {
+            if mode == Mode::Borrow && matches!(self.peek_at(1), Tok::Ident(_) | Tok::LBracket | Tok::LBrace | Tok::LParen | Tok::Fn) {
+                mode = if m == "mut" { Mode::Mut } else { Mode::Own };
+                self.bump();
+            }
+        }
         if self.at(&Tok::Comma) || self.at(&Tok::RParen) {
             self.hint("E0140", name.span, format!("parameter `{}` needs a type: `{} int`", name.name, name.name), None);
             return Err(());
@@ -515,6 +532,12 @@ impl<'a> Parser<'a> {
     }
 
     fn field(&mut self) -> P<FieldDecl> {
+        // `var x int` / `mut x int` / `pub x int`: fields are mutable through
+        // a `var` binding and always visible, so the marker means nothing.
+        let marker = self.at(&Tok::Var) || matches!(self.ident_at(0), Some("mut" | "pub"));
+        if marker && matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Ident(_) | Tok::LBracket | Tok::LBrace | Tok::LParen | Tok::Colon | Tok::Fn) {
+            self.bump();
+        }
         let name = self.ident("a field name")?;
         self.eat(&Tok::Colon);
         let ty = self.ty()?;
@@ -871,6 +894,16 @@ impl<'a> Parser<'a> {
                     }
                     ("def" | "func" | "fun" | "function", Tok::Ident(_)) => {
                         self.hint("E0121", start, "nested functions aren't supported; use a lambda `|x| expr` or a top-level fn", None);
+                        Err(())
+                    }
+                    // Python's empty statement means the same here, so it is accepted.
+                    ("pass", Tok::Newline | Tok::Dedent | Tok::Eof) => {
+                        self.bump();
+                        Ok(Stmt::Expr(Expr { kind: ExprKind::Tuple(vec![]), span: start }))
+                    }
+                    ("del", Tok::Ident(_)) => {
+                        let fix = del_fix(self.line_of(start));
+                        self.hint("E0148", start, "no `del`: remove a map entry with `m.remove(k)`, a list item with `xs.remove(i)`", fix);
                         Err(())
                     }
                     _ => self.simple_stmt(),
@@ -1244,6 +1277,11 @@ impl<'a> Parser<'a> {
                 };
                 self.hint("E0138", self.span(), msg, None);
                 return Err(());
+            }
+            // `f(mut x)`, like Swift's `f(&x)`: a `mut` parameter needs no
+            // marker at the call site.
+            if self.at_ident("mut") && matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Comma | Tok::RParen | Tok::Dot | Tok::LBracket) {
+                self.bump();
             }
             args.push(self.expr()?);
             if !self.eat(&Tok::Comma) {
@@ -1893,4 +1931,20 @@ impl<'a> Parser<'a> {
         self.expect(&Tok::RParen, "`)`")?;
         Ok(args)
     }
+}
+
+/// `del m[k]` -> `m.remove(k)`.
+fn del_fix(line: &str) -> Option<String> {
+    let target = line.strip_prefix("del ")?.trim().strip_suffix(']')?;
+    let mut depth = 0;
+    for (i, c) in target.char_indices().rev() {
+        match c {
+            ']' | ')' => depth += 1,
+            '(' => depth -= 1,
+            '[' if depth == 0 => return Some(format!("{}.remove({})", &target[..i], &target[i + 1..])),
+            '[' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }

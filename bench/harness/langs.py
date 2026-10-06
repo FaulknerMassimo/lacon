@@ -97,12 +97,12 @@ class Lang:
 
 class Lacon(Lang):
     key, name, ext = "lacon", "Lacon", ".lc"
-    environment = "Lacon, run with `lacon run main.lc`. The language is described below; no other documentation is available."
+    environment = "Lacon. The language is described below; no other documentation is available."
 
-    def __init__(self) -> None:
+    def __init__(self, build: bool = True) -> None:
         self.exe = os.environ.get("LACON") or str(ROOT / "target" / "release" / "lacon")
         self.error: str | None = None
-        cargo = find_tool("cargo", CARGO_BIN / "cargo")
+        cargo = find_tool("cargo", CARGO_BIN / "cargo") if build else None
         if cargo:
             r = subprocess.run([cargo, "build", "-q", "--release", "-p", "lacon-cli"], cwd=ROOT, capture_output=True, text=True)
             if r.returncode != 0 and not Path(self.exe).exists():
@@ -126,7 +126,7 @@ class Python(Lang):
     def __init__(self) -> None:
         self.exe = sys.executable
         v = sys.version_info
-        self.environment = f"Python {v.major}.{v.minor}, standard library only, run with `python3 main.py`."
+        self.environment = f"Python {v.major}.{v.minor}, standard library only."
 
     def build(self, src: Path) -> Build:
         r = sandboxed([self.exe, "-m", "py_compile", src.name], src.parent, timeout=BUILD_TIMEOUT)

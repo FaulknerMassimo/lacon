@@ -29,6 +29,7 @@ const ENTRIES: &[(&str, &str)] = &[
     ("E0145", "Optionals and results have no wrapper constructors. An optional is the value itself or `none`; a result is the value itself or an error. In `match`, use `none:` and `err(e):` arms, then a plain name for the value."),
     ("E0146", "Inside brackets, line breaks do not make blocks. A `match` there takes arms on their own lines, each one expression:\n  print(match op\n    \"+\": a + b\n    _: a - b)\nWhen an arm needs statements, bind the match first: `v = match op` with indented arms, then use `v`."),
     ("E0147", "There is no `if let` or `while let`. An optional is the value itself or `none`: `x = m.get(k)` then `if x != none:`, or `match` with a `none:` arm. Loop with `while !stack.is_empty():` and `x = stack.pop().unwrap()`."),
+    ("E0148", "There is no `del`. Remove a map entry with `m.remove(k)` and a list item by index with `xs.remove(i)`; both need a `var`."),
     ("E0201", "The name is not defined at this point. Names bound inside a block (`if`, `for`, a match arm) end with the block: declare `var x = ...` before it, or bind the block's value: `x = if c: 1 else: 2`."),
     ("E0202", "The binding is immutable. Declare it with `var` to assign to it, change its fields or call `push`/`insert`/`remove` on it. A parameter can be changed when declared `mut p T`; the caller's variable is updated."),
     ("E0203", "No such field or method. Zero-argument methods may be written without parentheses (`xs.len`). Any function `fn f(x T, ...)` is also a method on `T`: `x.f(...)`."),

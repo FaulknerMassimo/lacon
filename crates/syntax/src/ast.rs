@@ -9,6 +9,12 @@ pub struct Ident {
 #[derive(Debug, Default)]
 pub struct Module {
     pub items: Vec<Item>,
+    /// Names of declarations that failed to parse, so errors about them
+    /// elsewhere can be recognized as follow-on noise.
+    pub broken: Vec<String>,
+    /// A `type` or `enum` declaration failed to parse, so field names are
+    /// unknown.
+    pub broken_type: bool,
 }
 
 #[derive(Debug)]

@@ -1,8 +1,7 @@
 # Lacon primer
 
-Lacon is a statically typed, memory-safe language. Files end in `.lc`.
-`lacon run f.lc [args]` runs `main`; `lacon test f.lc` runs tests and prints only
-failures; `lacon check f.lc` reports errors; `lacon sig f.lc` lists signatures.
+Lacon is a statically typed, memory-safe language. `lacon run f.lc` runs `main`;
+`lacon test|check|sig f.lc` runs the tests, reports errors, lists signatures.
 
 ```
 # comment
@@ -26,56 +25,48 @@ test "parses": parse_line("ann, 30, Oslo")? == User{"ann", 30, "Oslo"}
 
 ## Layout and bindings
 
-- Indented blocks. `:` opens a block, `=` opens a function body. A block may be
-  the rest of the line: `if x < 0: return 0`.
-- No `let`, braces, semicolons or imports; the standard library is always in
-  scope. No top-level statements: `fn main()` runs.
-- `x = 1` is immutable, `var x = 0` is mutable. Assigning, `+=`, setting fields
-  and `push` all need `var`. Rebinding in the same block is fine
-  (`line = line.trim()`).
-- A name bound inside a block ends with it. Use the block's value instead:
+- Indented blocks: `:` opens a block and `=` a function body; a block can be the
+  rest of the line (`if x < 0: return 0`). No `let`, braces, semicolons, imports
+  (the standard library is in scope) or top-level statements.
+- `x = 1` is immutable, `var x = 0` mutable. Assigning to a name from an outer
+  block, `+=`, setting fields and `push` need `var`; rebinding in the same block
+  is fine (`line = line.trim()`). Names bound in a block end with it, so write
   `y = if c: 1 else: 2`.
-- `a, b = pair` destructures; `a, b = b, a` swaps `var`s. Top-level `MAX = 100`
-  is a constant.
+- `a, b = pair` destructures. A top-level `MAX = 100` is a constant.
 
 ## Types
 
-`int` (64-bit), `i8`..`i64`, `u8`..`u64`, `f64`, `f32`, `bool`, `str` (UTF-8;
-one-character strings stand in for chars). `[T]` list, `{K:V}` map
-(insertion-ordered), `{T}` set, `(A, B)` tuple, `T?` optional (a value or
-`none`), `T!` result (a value or an error). Literals: `[1, 2]`, `{"a": 1}`, `{}`
-(empty map), `{1, 2}`, `set()`, `(1, "a")`, `none`.
-
-Ints and floats mix (the result is `f64`); int `/` truncates; overflow traps.
-Convert with `int(x)`, `f64(x)`, `str(x)` or `x as f64`.
+`int` (i64), `i8`..`u64`, `f64`, `f32`, `bool`, `str` (UTF-8; a one-character
+`str` is a char). `[T]` list, `{K:V}` map (insertion-ordered), `{T}` set,
+`(A, B)` tuple, `T?` optional (a value or `none`), `T!` result (a value or an
+error). `{}` is an empty map, `set()` an empty set. Ints and floats mix into
+`f64`; overflow traps. Convert with `int(x)`, `f64(x)`, `str(x)` or `x as f64`.
 
 ## Functions
 
 ```
-fn add(a int, b int) int = a + b
 fn clamp(x int, lo int = 0, hi int = 9) int =
   if x < lo: return lo
-  x.min(hi)                       # the last expression is the result
-fn log(msg str) = print(msg)      # no return type: returns nothing
+  x.min(hi)  # the last expression is the result
 fn biggest[T](a T, b T) T = if a > b: a else: b
-fn bump(mut n int) = n += 1       # `mut`: changes the caller's variable
+fn bump(mut n int) = n += 1  # `mut` changes the caller's variable
 ```
 
-- Every parameter is typed. A function is also a method on its first
-  parameter's type: `fn area(s Shape) f64` is called `s.area()` or `area(s)`.
-  Builtin methods also work as functions: `len(xs)`, `abs(x)`.
-- Methods with no arguments can drop the parentheses: `xs.len`, `s.lines`.
-- Lambdas: `it` is the implicit parameter (`xs.filter(it.age > 18)`), or write
-  `|a, b| a + b`. Function types are `fn(int) int`.
+- Every parameter is typed. A function is also a method of its first
+  parameter's type: `fn area(s Shape)` is called `s.area()` or `area(s)`, and
+  builtins work both ways (`len(xs)`). Methods without arguments may drop the
+  `()`: `xs.len`, `s.lines`.
+- Lambdas use the implicit `it` (`xs.filter(it.age > 18)`) or `|a, b| a + b`.
+  Function types are `fn(int) int`.
 - No classes, `impl`, `self`, exceptions, macros or `async`.
 
 ## Structs and enums
 
 ```
-type Point {x int, y int = 0}     # field default
-p = Point{1, 2}                   # or Point{x: 1, y: 2}, or Point{x, y}
-var q = p                         # a copy: values, not references
-q.x = 5                           # p is unchanged
+type Point {x int, y int = 0}
+p = Point{1, 2}  # or Point{x: 1, y: 2}, or Point{x, y}
+var q = p  # a copy: values, not references
+q.x = 5  # p is unchanged
 
 enum Shape = Circle(f64) | Rect(f64, f64) | Empty
 
@@ -85,83 +76,77 @@ fn area(s Shape) f64 = match s
   Empty: 0.0
 ```
 
-A match must cover every variant or end with `_:`. Patterns: literals, `1 | 2`,
+A match covers every variant or ends with `_:`. Patterns: literals, `1 | 2`,
 `1..=9`, `_`, names, `(a, _)`, `[first, ..rest]`, `Shape.Circle(r)`, `none`,
-`err(e)`, and guards `n if n > 0:`. Arms can be indented blocks.
+`err(e)`, guards `n if n > 0:`. Arms can be indented blocks.
 
 ## Control flow
 
-`if`/`elif`/`else`, `while c:`, `break`, `continue`, `return x`. `for x in xs:`,
-`for i in 0..n:` (`0..=n` includes n), `for i, x in xs.enumerate():`,
-`for k, v in m:` (`for k in m:` gives keys). `if` and `match` are expressions;
-`a if c else b` works too. Inside brackets lines do not matter, except that a
-`match` there takes arms on their own lines, one expression each.
-
-Operators: `+ - * / % **`, `and or not`, `== != < <= > >=` (chains allowed),
-`in`, `not in`, `??`, `& | ^ << >>`. Conditions must be `bool`; there is no
-truthiness, so write `!xs.is_empty()` or `n != 0`.
+`if`/`elif`/`else` and `while` as in Python. `for x in xs:`, `for i in 0..n:`
+(`0..=n` includes n), `for i, x in xs.enumerate():`, `for k, v in m:`
+(`for k in m:` gives keys). `if` and `match` are expressions;
+`a if c else b` works too. Operators are Python's except `//` and `~`, plus `??`;
+int `/` and `%` truncate as in Rust. Conditions must be `bool` (no truthiness):
+`!xs.is_empty()`, `n != 0`.
 
 ## Errors and optionals
 
 - A `T!` function fails with `fail "msg"`. `f()?` passes an error up, also from
-  inside a lambda: `lines.map(parse(it)?)`.
-- `x ?? d` replaces `none` or an error with `d`.
-- Handle an error with `match r` and arms `err(e): ...` then `v: ...`.
-- `m.get(k)`, `xs.get(i)`, `xs.first`, `xs.find(pred)`, `s.find(sub)` and
-  `io.read_line()` return `T?`. In a `T?` function, `x?` returns `none`.
-- Ignoring an error value is a runtime error.
+  inside a lambda (`lines.map(parse(it)?)`); in a `T?` function, `x?` returns
+  `none`. Ignoring an error value is a runtime error.
+- `x ?? d` replaces `none` or an error with `d`. To handle an error, `match r`
+  with arms `err(e): ...` then `v: ...`.
+- `m.get(k)`, `xs.get(i)`, `xs.first`, `xs.find(pred)`, `s.find(sub)`,
+  `xs.pop()`, `h.pop()` and `io.read_line()` return `T?`.
 
 ## Strings
 
-Every string interpolates: `"{name} is {age}"`. Specs: `{x:.2}`, `{n:>5}`,
-`{n:05}`, `{n:x}`, `{s:<{w}}` (computed width). `{{` is a literal brace (a `{` with no closing `}` is literal
-too). `'single'` works; `"""` strings span lines and drop their common
-indentation.
+Every string interpolates: `"{name} is {age}"`. Format specs are Python's
+(`{n:>5}`, `{x:,.2f}`, `{s:<{w}}`), but `{x:.2}` means two decimals. `{{` is a
+literal brace, as is a `{` with no closing `}`. `"""` strings span lines and
+drop common indentation.
 
-`s.len` (characters), `s[i]`, `s[a..b]`, `s[-1]`, `+`, `s * 3`, `split(",")`,
-`split()` (whitespace), `lines`, `trim`, `upper`, `lower`, `replace(a, b)`,
-`starts_with`, `ends_with`, `contains`, `find` (int?), `parse()` (a number, or
-an error), `chars`, `rev`, `repeat(n)`, `is_digit`, `is_alpha`, `is_space`,
-`ord`, `n.chr()`, `split_once(sep)` ((str, str)?), `pad_left(n, "0")`,
-`xs.join(", ")`.
+Strings index and slice like lists, by character. `len`, `split(",")`,
+`split()` (on whitespace), `lines`, `trim`, `upper`, `lower`, `replace(a, b)`,
+`starts_with`, `ends_with`, `contains`, `find`, `parse()` (a number or an
+error), `chars`, `rev`, `repeat(n)`, `is_digit`, `is_alpha`, `is_space`, `ord`,
+`n.chr()`, `split_once(sep)` ((str, str)?), `pad_left(n, "0")`, `xs.join(", ")`.
 
 ## Collections
 
-Methods return new values and leave the receiver alone, so `xs.sort()` on its
-own line is an error: write `xs = xs.sort()`.
+Methods return new values and leave the receiver alone, so `xs.sort()` alone on
+a line is an error: write `xs = xs.sort()`.
 
-Lists: `len is_empty first last get(i) contains index(x) map filter find
-position any all count sum product min max min_by max_by sort sort_by rev unique
-enumerate zip flat_map flatten take skip take_while skip_while chunks windows
-group_by partition fold(init, f) reduce join to_set to_map`. Slices `xs[1..3]`,
-`xs[2:]`; `xs[-1]` is the last item; `xs + ys` concatenates. Sort descending
-with `sort_by(-it.score)`, by two keys with `sort_by((it.city, -it.age))`.
+Lists: `len first last contains index(x) map filter find position any all
+count sum product min max min_by max_by sort sort_by rev unique enumerate zip
+flat_map flatten take skip take_while skip_while chunks windows group_by
+partition fold(init, f) reduce join to_set to_map`. Slices `xs[1..3]` or
+`xs[1:3]`; `xs[-1]` and `xs + ys` work as in Python. Sort descending with
+`sort_by(-it.score)`, on two keys with `sort_by((it.city, -it.age))`.
 
-Mutators (need `var`): `push(x)`, `pop()` (T?), `insert(i, x)`, `remove(i)`,
+Mutators (need `var`): `push(x)`, `pop()`, `insert(i, x)`, `remove(i)`,
 `extend(ys)`, `clear()`, `swap(i, j)`, `retain(pred)`.
 
-Maps: `m[k]` (a missing key is an error), `m.get(k)`, `m.get(k, d)`,
-`m[k] = v`, `k in m`, `m.remove(k)`, `keys`, `values`, `items`, `len`.
-`m[k] += 1` and `m[k].push(x)` create a missing entry first. Other methods see
-`(k, v)` pairs: `m.sort_by(-it.1)`, `m.filter(it.1 > 2).to_map()`.
+Maps: `m[k]` (a missing key is an error), `m.get(k)`, `m.get(k, d)`, `k in m`,
+`m.remove(k)`, `keys`, `values`, `items`, `len`. `m[k] += 1` and
+`m[k].push(x)` create a missing entry first. Other methods see `(k, v)` pairs:
+`m.sort_by(-it.1)`, `m.filter(it.1 > 2).to_map()`.
 
 Sets: `s.add(x)`, `s.remove(x)`, `x in s`, `a | b`, `a & b`, `a - b`. Ranges:
-`(0..n).rev()`, `.step_by(2)`, `.to_list()`. Heaps: `heap()` or `heap(xs)` is a
-min-heap (type `heap[T]`): `h.push(x)`, `h.pop()` (smallest, T?), `h.first`,
+`(0..n).rev()`, `.step_by(2)`, `.to_list()`. `heap()` or `heap(xs)` is a
+min-heap (type `heap[T]`) with `push(x)`, `pop()` (the smallest), `first`,
 `len`; push `(-priority, x)` for a max-heap.
 
 ## Standard library
 
-`print(a, b)` (space-separated), `eprint`, `io.read()` (all stdin),
-`io.lines()`, `io.read_line()` (str?), `io.write(s)` (no newline),
-`fs.read(path)` (str!), `fs.write(path, s)`, `fs.lines(path)`, `fs.exists(p)`,
-`os.args` ([str], without the program name), `os.env(k)` (str?),
-`os.exit(code)`, `math.pi`, `math.inf`, `int.max`, `range(a, b, step)`,
-`min(a, b)`, `max(xs)`, `panic(msg)`. Numbers: `abs min max pow sqrt floor
-ceil round clamp`.
+`print(a, b)` (space-separated), `eprint`, `io.read()` (all of stdin),
+`io.lines()`, `io.read_line()`, `io.write(s)` (no newline),
+`fs.read(path)` (str!), `fs.write(path, s)`, `os.args` (without the program
+name), `os.exit(code)`, `math.pi`, `math.inf`, `int.max`, `panic(msg)`.
+Numbers: `abs min max pow sqrt floor ceil round clamp`.
 
 ## Tests
 
-`test "name": expr` passes when `expr` is true; a test can also be a block.
-`assert cond, "msg"` checks inside it. When a test's last line is `a == b`, a
-failure shows both sides and where they first differ.
+`test "name": expr` passes when `expr` is true. A test can be a block with
+`assert cond, "msg"` inside; a failing `a == b` on its last line shows both
+sides.

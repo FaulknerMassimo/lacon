@@ -122,7 +122,7 @@ test "strings":
   assert "{name} is {age}" == "Ann is 30" and "{3.14159:.2}" == "3.14" and "{7:>3}" == "  7"
   assert "{7:03}" == "007" and "{255:x}" == "ff" and "{{x}}".len == 3 and 'q' == "q"
   w = 4
-  assert "{name:<{w}}|" == "Ann |" and "{age:>{w}}" == "  30"
+  assert "{name:<{w}}|" == "Ann |" and "{age:>{w}}" == "  30" and "{1234.5:,.2f}" == "1,234.50"
   t = """
     one
       two
@@ -149,7 +149,7 @@ test "lists":
   assert xs.take(1) == [3] and xs.skip(2) == [2] and xs.take_while(it > 2) == [3] and xs.skip_while(it > 2) == [1, 2]
   assert xs.chunks(2) == [[3, 1], [2]] and xs.windows(2) == [[3, 1], [1, 2]] and xs.group_by(it % 2) == {1: [3, 1], 0: [2]}
   assert xs.partition(it > 1) == ([3, 2], [1]) and xs.reduce(|a, b| a + b) == 6 and xs.join("-") == "3-1-2"
-  assert xs.to_set() == {1, 2, 3} and [("a", 1)].to_map() == {"a": 1} and xs[1..3] == [1, 2] and xs[1:] == [1, 2]
+  assert xs.to_set() == {1, 2, 3} and [("a", 1)].to_map() == {"a": 1} and xs[1..3] == [1, 2] and xs[1:3] == [1, 2]
   assert xs[-1] == 2 and xs + [9] == [3, 1, 2, 9]
   people = [("bo", 3), ("al", 3), ("cy", 9)]
   people.sort_by((-it.1, it.0)) == [("cy", 9), ("al", 3), ("bo", 3)]
