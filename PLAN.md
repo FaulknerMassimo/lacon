@@ -82,8 +82,8 @@ The same program in each language, counted with `o200k_base`
 | **Lacon** | **139** | — |
 
 `o200k_base` stands in for Claude's tokenizer, which isn't published as a
-library, so the numbers are relative. Phase 0 switches to the Claude API's
-token-counting endpoint.
+library, so the numbers are relative. With API credentials set, `count.py`
+uses Claude's token-counting endpoint instead.
 
 Against Python the syntax alone saves only about 17%, because Python is already
 terse. What Lacon adds over Python is native speed and static safety; further
@@ -264,11 +264,13 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
 first attempts parse. If not, change the syntax and rerun. This phase is the
 cheapest place to find out the idea doesn't work.
 
-**Status.** Built: the primer (2,343 tokens), the parser, the resolver and
+**Status.** Built: the primer (2,411 tokens), the parser, the resolver and
 interpreter (`crates/`), the `lacon` CLI with `run`, `test`, `check`, `sig` and
-`explain`, golden tests over `tests/`, and 6 of the 30 tasks with a checker
-(`bench/tasks/`). Not built yet: the other 24 tasks and the harness that has
-Claude solve them. See §12 for the semantics the interpreter settled on.
+`explain`, golden tests over `tests/`, all 30 tasks with hidden tests, a Python
+reference and a Lacon solution each (`bench/tasks/`), and the harness that has
+Claude solve them (`bench/harness/`). Not done yet: running the harness, which
+needs API credentials and a Go toolchain. See §12 for the semantics the
+interpreter settled on and §13 for what writing the tasks taught.
 
 ### Phase 1 — MVP
 
@@ -347,8 +349,10 @@ can overturn.
   bracket and JSON code hit it at once. *A `{` that can't start an
   interpolation is literal.*
 - **Blocks inside brackets.** Layout is off inside `( )`, so
-  `push(match x ...)` with indented arms can't parse. *A hint says to bind it
-  first.* An agent writing Rust-style code will hit this; measure how often.
+  `push(match x ...)` with indented arms couldn't parse, and writing the tasks
+  hit it at once (§13). *A `match` inside brackets finds its arms by column:
+  each starts a line at the first arm's column and is one expression. Arms
+  that need statements get a hint to bind the match first.*
 
 ---
 
@@ -365,10 +369,11 @@ crates/cli       the `lacon` binary
 tests/           golden tests: run/ (stdout), check/ (diagnostics), unit/ (`lacon test`)
 bench/tokens/    the same program in Rust, Go, Python and Lacon, plus a token counter
 bench/tasks/     Phase 0 tasks (prompt, hidden tests, reference) and a checker
+bench/harness/   has Claude solve the tasks in each language and reports tokens-to-green
+bench/results/   harness runs (created by the harness)
 ```
 
-Planned: the model harness in `bench/tasks/`, and `check`, `ir` and `cgen`
-crates for the Phase 1 compiler.
+Planned: `check`, `ir` and `cgen` crates for the Phase 1 compiler.
 
 ---
 
@@ -406,3 +411,45 @@ overturn.
   for `char`.
 - **Iteration.** `for k, v in m` gives pairs and `for k in m` gives keys.
   Other methods on a map see `(k, v)` tuples and return lists.
+- **Heaps.** `heap()` / `heap(xs)` is a min-heap ordered by `<`, with type
+  `heap[T]`: `push`, `pop` (the smallest, `T?`), `first`, `len`, `extend`, and
+  iteration in ascending order. A max-heap pushes `(-priority, x)`, as in
+  Python. Python, Rust and Go all ship one, and shortest paths, scheduling and
+  top-k need one; without it the Dijkstra task took 30 more lines.
+- **Format specs** take computed widths and precisions, as in Python:
+  `{name:<{w}}`, `{x:.{digits}}`.
+- **`map(f, xs)`** and `filter(f, xs)` mean `xs.map(f)` and `xs.filter(f)` when
+  `f` is clearly a function (a lambda, or the name of a function, conversion
+  or variant). Python habit; same meaning, so accepted.
+
+---
+
+## 13. Findings from writing the tasks
+
+Writing Lacon solutions for the 24 new tasks found these. (The solutions were
+written by the interpreter's author, so they are a lower bound on what a model
+working from the primer alone will hit; the harness measures that.) Each is
+fixed and has a golden test.
+
+- **A `match` inside a call** (`print(match op ...)`) was written by reflex
+  even with the primer rule in mind. Now parsed (§10).
+- **No priority queue** cost 30 lines in Dijkstra. Added `heap` (§12).
+- **Computed widths** (`{n:>{w}}`) are the natural way to align columns and
+  failed with an unrelated parse error. Now supported (§12).
+- **Misleading or missing hints:** `def f():` suggested `fn f():` instead of
+  `fn f() =`; `print(x, end="")`, `sort(reverse=true)` and `key=` got a generic
+  "no named arguments" (now they name `io.write`, `sort_by(-it)` and
+  `sort_by(key)`); a nested `fn` and `|x| total += x` got lambda-syntax hints
+  that didn't apply; `console.log(x)` reported an unused result instead of an
+  unknown name; `"%d" % x`, `ljust`, `rjust`, `zfill` and `heapq` had no hint.
+- **`"{}"`** for an empty JSON object is an error (an empty interpolation). It
+  stays an error, because silently printing `{}` for a Rust-style
+  `print("{} items", n)` costs more than one retry; the hint names `{{}}`.
+
+The tasks themselves split into parsing (`calc`, `json-format`, `ini-query`,
+`csv-column`, `roman`, `log-summary`, `rpn`, `brackets`), data processing
+(`group-stats`, `grade-report`, `ledger`, `anagrams`, `meeting-rooms`, `pivot`,
+`adults-per-city`, `word-freq`), CLI tools (`wc`, `uniq-count`,
+`column-align`, `line-diff`, `kv-store`, `path-normalize`) and algorithms
+(`dijkstra`, `topo-order`, `edit-distance`, `knapsack`, `life`, `big-arith`,
+`grid-path`, `merge-intervals`). Lacon solutions average 26 lines.

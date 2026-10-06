@@ -104,6 +104,9 @@ test "control flow":
     if w > 4: break
   assert out == [0, 1, 2, 0, 1, 0, 9] and w == 5
   z = "yes" if w == 5 else "no"
+  assert [1, 2].map(match it
+    1: "one"
+    _: "more") == ["one", "more"]
   z == "yes" and 1 < 2 <= 2 and 2 in [1, 2] and 3 not in [1] and (none ?? 4) == 4 and (6 & 3) == 2 and 1 << 3 == 8
 test "no truthiness": !([1].is_empty()) and not false
 test "errors":
@@ -118,6 +121,8 @@ test "strings":
   age = 30
   assert "{name} is {age}" == "Ann is 30" and "{3.14159:.2}" == "3.14" and "{7:>3}" == "  7"
   assert "{7:03}" == "007" and "{255:x}" == "ff" and "{{x}}".len == 3 and 'q' == "q"
+  w = 4
+  assert "{name:<{w}}|" == "Ann |" and "{age:>{w}}" == "  30"
   t = """
     one
       two
@@ -175,7 +180,13 @@ test "sets and ranges":
   s.add(2)
   s.remove(1)
   assert 2 in s and {1, 2} | {3} == {1, 2, 3} and {1, 2} & {2} == {2} and {1, 2} - {2} == {1}
-  (0..3).rev().to_list() == [2, 1, 0] and (0..5).step_by(2).to_list() == [0, 2, 4]
+  assert (0..3).rev().to_list() == [2, 1, 0] and (0..5).step_by(2).to_list() == [0, 2, 4]
+  var h = heap([5, 1])
+  h.push(3)
+  var mx = heap()
+  mx.push((-2, "b"))
+  mx.push((-9, "a"))
+  h.pop() == 1 and h.first == 3 and h.len == 2 and mx.pop() == (-9, "a") and heap().first == none
 test "stdlib":
   assert math.pi > 3.14 and math.inf > 1e300 and int.max > 0 and range(0, 6, 2).to_list() == [0, 2, 4]
   assert min(3, 1) == 1 and max([1, 5]) == 5 and os.args == [] and os.env("LACON_NOPE") == none

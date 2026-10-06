@@ -1,0 +1,22 @@
+fn main() =
+  lines = io.lines()
+  var data = {}
+  var section = ""
+  var i = 0
+  while lines[i] != "---":
+    line = lines[i].trim()
+    i += 1
+    if line.is_empty() or line[0] in ";#": continue
+    if line.starts_with("[") and line.ends_with("]"):
+      section = line[1..-1].trim()
+      continue
+    match line.split_once("=")
+      none: continue
+      (k, v): data[(section, k.trim())] = v.trim()
+  for q in lines[i + 1..]:
+    q = q.trim()
+    if q.is_empty(): continue
+    key = match q.split_once(".")
+      none: ("", q)
+      (s, k): (s, k)
+    print(data.get(key) ?? "missing")

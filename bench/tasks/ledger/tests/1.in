@@ -1,0 +1,13 @@
+open ann 100
+open bob 20.5
+deposit ann 0.10
+withdraw bob 25
+transfer ann bob 50.25
+open ann 5
+withdraw cy 1
+transfer ann ann 1
+deposit bob -3
+deposit bob 1.234
+pay bob 3
+
+transfer bob dan 1

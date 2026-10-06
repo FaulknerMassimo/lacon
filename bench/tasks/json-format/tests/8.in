@@ -1,0 +1,8 @@
+{
+	"list": [
+		1,
+		2
+	],
+	"key with spaces": "value: {braces} [brackets], commas",
+	"B": "upper sorts first"
+} 

@@ -1,0 +1,16 @@
+{
+  "address": {
+    "city": "Oslo",
+    "zip": "0150"
+  },
+  "admin": false,
+  "age": 30,
+  "boss": null,
+  "empty": {},
+  "name": "Ann",
+  "none": [],
+  "tags": [
+    "a",
+    "b"
+  ]
+}

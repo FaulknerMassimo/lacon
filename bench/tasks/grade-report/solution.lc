@@ -1,0 +1,20 @@
+fn grade(avg f64) str =
+  if avg >= 90: "A"
+  elif avg >= 80: "B"
+  elif avg >= 70: "C"
+  elif avg >= 60: "D"
+  else: "F"
+
+fn main()! =
+  var students = []
+  for line in io.lines():
+    p = line.split()
+    if p.is_empty(): continue
+    scores = p[1..].map(int(it)?)
+    students.push((p[0], scores.sum() / f64(scores.len)))
+  if students.is_empty():
+    print("no students")
+    return
+  for (name, avg) in students.sort_by((-it.1, it.0)):
+    print("{name} {avg:.1} {grade(avg)}")
+  print("class average: {students.map(it.1).sum() / students.len:.1}")

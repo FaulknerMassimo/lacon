@@ -1,0 +1,17 @@
+fn main()! =
+  nums = io.read().split().map(int(it)?)
+  n = nums[0]
+  m = nums[1]
+  var adj = [[]] * (n + 1)
+  for k in 0..m:
+    adj[nums[3 + 3 * k]].push((nums[4 + 3 * k], nums[5 + 3 * k]))
+  var dist = [-1] * (n + 1)
+  var queue = heap([(0, nums[2])])
+  while !queue.is_empty():
+    (d, u) = queue.pop()?
+    if dist[u] != -1: continue
+    dist[u] = d
+    for (v, w) in adj[u]:
+      if dist[v] == -1: queue.push((d + w, v))
+  for d in dist[1..]:
+    print(d)

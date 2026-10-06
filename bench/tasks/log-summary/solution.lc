@@ -1,0 +1,46 @@
+type Req {path str, status str, bytes int}
+
+fn parse(line str) Req? =
+  # ip, two unused fields, then [timestamp]
+  parts = line.split(" ")
+  if parts.len < 4: return none
+  rest = parts[3..].join(" ")
+  if !rest.starts_with("["): return none
+  close = rest.find("]")?
+  after = rest[close + 1..]
+  if !after.starts_with(" \""): return none
+  body = after[2..]
+  q = body.find("\"")?
+  req = body[..q].split(" ")
+  tail = body[q + 1..].split(" ")
+  if req.len != 3 or req.any(it.is_empty()) or tail.len != 3 or tail[0] != "": return none
+  status = tail[1]
+  size = tail[2]
+  if status.len != 3 or !status.is_digit(): return none
+  if size != "-" and !size.is_digit(): return none
+  if parts[0].is_empty() or parts[1].is_empty() or parts[2].is_empty(): return none
+  Req{req[1].split("?")[0], status, if size == "-": 0 else: int(size) ?? 0}
+
+fn main() =
+  var reqs = 0
+  var total = 0
+  var bad = 0
+  var status = {}
+  var paths = {}
+  for line in io.lines():
+    if line.trim().is_empty(): continue
+    match parse(line)
+      none: bad += 1
+      r:
+        reqs += 1
+        total += r.bytes
+        status[r.status[0]] += 1
+        paths[r.path] += 1
+  print("requests: {reqs}")
+  print("bytes: {total}")
+  for c, n in status.sort():
+    print("status {c}xx: {n}")
+  print("top paths:")
+  for p, n in paths.sort_by((-it.1, it.0)).take(3):
+    print("  {p} {n}")
+  print("malformed: {bad}")

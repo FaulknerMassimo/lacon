@@ -1,0 +1,61 @@
+# Numbers are digit lists, least significant first.
+fn digits(s str) [int] = s.chars.rev().map(int(it) ?? 0)
+
+fn show(d [int]) str =
+  var d = d
+  while d.len > 1 and d[-1] == 0: d.pop()
+  d.rev().join()
+
+fn cmp_mag(a [int], b [int]) int =
+  if a.len != b.len: return a.len - b.len
+  for i in (0..a.len).rev():
+    if a[i] != b[i]: return a[i] - b[i]
+  0
+
+fn add(a [int], b [int]) [int] =
+  var out = []
+  var carry = 0
+  for i in 0..max(a.len, b.len):
+    s = (a.get(i) ?? 0) + (b.get(i) ?? 0) + carry
+    out.push(s % 10)
+    carry = s / 10
+  if carry > 0: out.push(carry)
+  out
+
+# a - b where a >= b.
+fn sub(a [int], b [int]) [int] =
+  var out = []
+  var borrow = 0
+  for i in 0..a.len:
+    var s = a[i] - (b.get(i) ?? 0) - borrow
+    borrow = if s < 0: 1 else: 0
+    if s < 0: s += 10
+    out.push(s)
+  out
+
+fn mul(a [int], b [int]) [int] =
+  var out = [0] * (a.len + b.len)
+  for i in 0..a.len:
+    var carry = 0
+    for j in 0..b.len:
+      t = out[i + j] + a[i] * b[j] + carry
+      out[i + j] = t % 10
+      carry = t / 10
+    var k = i + b.len
+    while carry > 0:
+      t = out[k] + carry
+      out[k] = t % 10
+      carry = t / 10
+      k += 1
+  out
+
+fn main() =
+  for line in io.lines():
+    if line.is_empty(): continue
+    p = line.split(" ")
+    a = digits(p[0])
+    b = digits(p[2])
+    print(match p[1]
+      "+": show(add(a, b))
+      "*": show(mul(a, b))
+      _: if cmp_mag(a, b) >= 0: show(sub(a, b)) else: "-" + show(sub(b, a)))

@@ -2,5 +2,10 @@ fn main() =
   var stack = []
   tok = "+"
   stack.push(match tok
-    "+": 1
+    "+":
+      x = 1
+      x + 1
+    _: 2)
+  print(match tok
+    "+": return
     _: 2)

@@ -1,0 +1,36 @@
+fn fields(line str) [str] =
+  var out = []
+  var cur = ""
+  var quoted = false
+  var i = 0
+  while i < line.len:
+    c = line[i]
+    if quoted:
+      if c == "\"":
+        if i + 1 < line.len and line[i + 1] == "\"":
+          cur += "\""
+          i += 1
+        else:
+          quoted = false
+      else:
+        cur += c
+    elif c == "\"":
+      quoted = true
+    elif c == ",":
+      out.push(cur)
+      cur = ""
+    else:
+      cur += c
+    i += 1
+  out.push(cur)
+  out
+
+fn main() =
+  lines = io.lines()
+  name = lines[0]
+  rows = lines[1..].filter(!it.trim().is_empty()).map(fields(it))
+  match rows[0].index(name)
+    none: print("no column {name}")
+    k:
+      for r in rows[1..]:
+        print(r.get(k) ?? "")

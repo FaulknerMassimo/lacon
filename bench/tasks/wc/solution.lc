@@ -1,0 +1,3 @@
+fn main() =
+  s = io.read()
+  print(s.count("\n"), s.split().len, s.len)

@@ -1,0 +1,109 @@
+enum Json = Obj([(str, Json)]) | Arr([Json]) | Str(str) | Num(str) | Lit(str)
+
+type P {s str, pos int = 0}
+
+fn ws(mut p P) =
+  while p.pos < p.s.len and p.s[p.pos] in " \t\n\r": p.pos += 1
+
+fn expect(mut p P, c str)! =
+  ws(p)
+  if p.pos >= p.s.len or p.s[p.pos] != c: fail "expected {c}"
+  p.pos += 1
+
+# Returns the raw text between the quotes, escapes kept.
+fn string(mut p P) str! =
+  expect(p, "\"")?
+  start = p.pos
+  while true:
+    if p.pos >= p.s.len: fail "unterminated string"
+    c = p.s[p.pos]
+    if c == "\"": break
+    if c == "\\":
+      if p.pos + 1 >= p.s.len or p.s[p.pos + 1] not in "\"\\": fail "bad escape"
+      p.pos += 2
+    elif c.ord < 32 or c.ord > 126:
+      fail "bad char"
+    else:
+      p.pos += 1
+  p.pos += 1
+  p.s[start..p.pos - 1]
+
+fn value(mut p P) Json! =
+  ws(p)
+  if p.pos >= p.s.len: fail "unexpected end"
+  c = p.s[p.pos]
+  if c == "{":
+    p.pos += 1
+    var items = []
+    ws(p)
+    if p.pos < p.s.len and p.s[p.pos] == "}":
+      p.pos += 1
+      return Obj(items)
+    while true:
+      k = string(p)?
+      expect(p, ":")?
+      items.push((k, value(p)?))
+      ws(p)
+      if p.pos < p.s.len and p.s[p.pos] == ",":
+        p.pos += 1
+        continue
+      expect(p, "}")?
+      return Obj(items)
+  if c == "[":
+    p.pos += 1
+    var items = []
+    ws(p)
+    if p.pos < p.s.len and p.s[p.pos] == "]":
+      p.pos += 1
+      return Arr(items)
+    while true:
+      items.push(value(p)?)
+      ws(p)
+      if p.pos < p.s.len and p.s[p.pos] == ",":
+        p.pos += 1
+        continue
+      expect(p, "]")?
+      return Arr(items)
+  if c == "\"": return Str(string(p)?)
+  for word in ["true", "false", "null"]:
+    if p.s[p.pos..].starts_with(word):
+      p.pos += word.len
+      return Lit(word)
+  start = p.pos
+  if p.s[p.pos] == "-": p.pos += 1
+  if p.pos < p.s.len and p.s[p.pos] == "0":
+    p.pos += 1
+  elif p.pos < p.s.len and p.s[p.pos].is_digit():
+    while p.pos < p.s.len and p.s[p.pos].is_digit(): p.pos += 1
+  else:
+    fail "bad value"
+  if p.pos < p.s.len and p.s[p.pos].is_digit(): fail "leading zero"
+  Num(p.s[start..p.pos])
+
+fn unescape(s str) str = s.replace("\\\\", "\\").replace("\\\"", "\"")
+
+fn render(v Json, depth int) str =
+  pad = "  " * (depth + 1)
+  close = "  " * depth
+  match v
+    Obj(items):
+      if items.is_empty(): return "{{}}"
+      parts = items.sort_by(unescape(it.0)).map("{pad}\"{it.0}\": {render(it.1, depth + 1)}")
+      "{{\n{parts.join(",\n")}\n{close}}"
+    Arr(items):
+      if items.is_empty(): return "[]"
+      parts = items.map("{pad}{render(it, depth + 1)}")
+      "[\n{parts.join(",\n")}\n{close}]"
+    Str(s): "\"{s}\""
+    Num(n): n
+    Lit(w): w
+
+fn main() =
+  var p = P{io.read()}
+  r = value(p)
+  ws(p)
+  match r
+    err(_): print("invalid")
+    v:
+      if p.pos != p.s.len: print("invalid")
+      else: print(render(v, 0))

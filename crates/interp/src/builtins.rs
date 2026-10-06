@@ -30,7 +30,7 @@ pub const METHODS: &[&str] = &[
     "first", "last", "get", "index", "map", "filter", "position", "any", "all", "sum", "product", "min_by", "max_by", "sort",
     "sort_by", "unique", "enumerate", "zip", "flat_map", "flatten", "take", "skip", "take_while", "skip_while", "chunks", "windows",
     "group_by", "partition", "fold", "reduce", "each", "to_list", "to_set", "to_map", "step_by", "keys", "values", "items", "union",
-    "intersection", "difference", "is_subset",
+    "intersection", "difference", "is_subset", "peek",
     // mutators
     "push", "pop", "insert", "remove", "clear", "extend", "add", "swap", "truncate", "retain",
 ];
@@ -84,6 +84,10 @@ pub fn method_hint(n: &str) -> Option<&'static str> {
         "unwrap_or_default" => "use `x ?? 0` (or the right zero value)",
         "format" | "toFixed" | "to_fixed" => "interpolate with a spec: \"{x:.2}\"",
         "splitlines" => "use `lines`",
+        "ljust" => "use `pad_right(n)`, or a spec: \"{s:<{n}}\"",
+        "rjust" => "use `pad_left(n)`, or a spec: \"{s:>{n}}\"",
+        "zfill" => "use `pad_left(n, \"0\")`, or a spec: \"{x:0{n}}\"",
+        "center" => "use a spec: \"{s:^{n}}\"",
         "split_whitespace" => "use `split()` with no argument, or `words`",
         "isdigit" | "is_numeric" | "isnumeric" | "is_ascii_digit" => "use `is_digit`",
         "isalpha" | "is_alphabetic" | "is_ascii_alphabetic" => "use `is_alpha`",
@@ -191,6 +195,7 @@ pub fn arith(p: &Program, op: BinOp, a: Value, b: Value) -> Result<Value, (&'sta
             Map(x)
         }
         (_, None, _) | (_, _, None) => return Result::Err(("E0407", format!("`{}` on none; check for `none` first or use `x ?? default`", op.symbol()))),
+        (BinOp::Rem, Str(_), _) => return Result::Err(("E0301", "no `%` formatting; every string interpolates: \"{n} items, {x:.2}\"".into())),
         (BinOp::Add, Str(_), y) | (BinOp::Add, y, Str(_)) => {
             return Result::Err(("E0301", format!("cannot add str and {}; interpolate instead: \"{{a}}{{b}}\"", y.kind(p))))
         }
@@ -210,6 +215,7 @@ pub fn contains(it: &Interp, container: &Value, x: &Value, span: Span) -> R<bool
     Ok(match container {
         Value::List(xs) | Value::Tuple(xs) => xs.iter().any(|y| value::eq(y, x).unwrap_or(false)),
         Value::Set(s) => s.contains(x) || (matches!(x, Value::Float(_)) && s.iter().any(|y| value::eq(y, x).unwrap_or(false))),
+        Value::Heap(xs) => xs.iter().any(|y| value::eq(y, x).unwrap_or(false)),
         Value::Map(m) => m.contains_key(x),
         Value::Range(r) => match x {
             Value::Int(n) => r.contains(*n),
@@ -230,6 +236,7 @@ pub fn iter_values(v: &Value) -> Result<Vec<Value>, ()> {
     Ok(match v {
         Value::List(xs) | Value::Tuple(xs) => xs.to_vec(),
         Value::Set(s) => s.iter().cloned().collect(),
+        Value::Heap(h) => value::sorted(h),
         Value::Map(m) => m.iter().map(|(k, v)| Value::tuple(vec![k.clone(), v.clone()])).collect(),
         Value::Range(r) => (0..r.len()).map(|i| Value::Int(r.get(i))).collect(),
         Value::Str(s) => s.chars().map(|c| Value::str(c.to_string())).collect(),
@@ -435,6 +442,15 @@ pub fn call_builtin(it: &Interp, b: Builtin, args: Vec<Value>, span: Span) -> R<
             None => Value::Set(Rc::new(value::Set::default())),
             Some(v) => Value::Set(Rc::new(items(it, v, span)?.into_iter().collect())),
         },
+        Builtin::HeapNew => {
+            let mut h = Vec::new();
+            if let Some(v) = args.first() {
+                for x in items(it, v, span)? {
+                    value::heap_push(&mut h, x).map_err(|(a, b)| heap_cmp_err(span, &a, &b))?;
+                }
+            }
+            Value::Heap(Rc::new(h))
+        }
         Builtin::ListNew => match args.first() {
             None => Value::list(vec![]),
             Some(v) => Value::list(items(it, v, span)?),
@@ -518,6 +534,10 @@ pub fn call_builtin(it: &Interp, b: Builtin, args: Vec<Value>, span: Span) -> R<
         }
         Builtin::TimeNow => Value::Float(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)),
     })
+}
+
+fn heap_cmp_err(span: Span, a: &str, b: &str) -> Ctrl {
+    panic("E0301", span, format!("heap items must be comparable, got {a} and {b}"))
 }
 
 // ----- methods -----
@@ -610,6 +630,7 @@ fn flatten_into(out: &mut Vec<Value>, v: Value) {
     match v {
         Value::List(xs) | Value::Tuple(xs) => out.extend(xs.iter().cloned()),
         Value::Set(s) => out.extend(s.iter().cloned()),
+        Value::Heap(h) => out.extend(value::sorted(&h)),
         Value::Range(r) => out.extend((0..r.len()).map(|i| Value::Int(r.get(i)))),
         Value::None => {}
         other => out.push(other),
@@ -643,7 +664,7 @@ pub fn method(it: &Interp, recv: Value, name: &str, args: Vec<Value>, span: Span
         "clone" | "iter" | "into_iter" | "to_owned" | "copied" | "cloned" | "as_str" => return Ok(recv),
         "collect" => {
             return Ok(match recv {
-                Value::Range(_) | Value::Set(_) => Value::list(items(it, &recv, span)?),
+                Value::Range(_) | Value::Set(_) | Value::Heap(_) => Value::list(items(it, &recv, span)?),
                 v => v,
             })
         }
@@ -705,6 +726,13 @@ pub fn method(it: &Interp, recv: Value, name: &str, args: Vec<Value>, span: Span
                 }
                 return Ok(Value::Bool(ok));
             }
+            _ => {}
+        },
+        Value::Heap(h) => match name {
+            "len" => return Ok(Value::Int(h.len() as i64)),
+            "is_empty" => return Ok(Value::Bool(h.is_empty())),
+            "first" | "peek" | "min" if args.is_empty() => return Ok(opt(h.first().cloned())),
+            "contains" => return contains(it, &recv, arg(&args, 0, name, span)?, span).map(Value::Bool),
             _ => {}
         },
         Value::Range(r) => match name {
@@ -1342,6 +1370,31 @@ pub fn mutate(it: &Interp, slot: &mut Value, name: &str, mut args: Vec<Value>, s
                 }
                 "push" | "add" => return Err(panic("E0203", span, format!("maps have no `{name}`; set entries with `m[k] = v`"))),
                 _ => return Err(panic("E0203", span, format!("map has no method `{name}`"))),
+            })
+        }
+        Value::Heap(h) => {
+            let h = Rc::make_mut(h);
+            Ok(match name {
+                "push" | "add" => {
+                    need(1)?;
+                    for x in args {
+                        value::heap_push(h, x).map_err(|(a, b)| heap_cmp_err(span, &a, &b))?;
+                    }
+                    Value::Unit
+                }
+                "pop" => opt(value::heap_pop(h)),
+                "clear" => {
+                    h.clear();
+                    Value::Unit
+                }
+                "extend" => {
+                    need(1)?;
+                    for x in items(it, &args[0], span)? {
+                        value::heap_push(h, x).map_err(|(a, b)| heap_cmp_err(span, &a, &b))?;
+                    }
+                    Value::Unit
+                }
+                _ => return Err(panic("E0203", span, format!("heap has no method `{name}`; it has push, pop, first, len, extend, clear"))),
             })
         }
         Value::Set(s) => {

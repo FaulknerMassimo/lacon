@@ -1,0 +1,11 @@
+fn main()! =
+  nums = io.read().split().map(int(it)?)
+  n = nums[0]
+  cap = nums[1]
+  var best = [0] * (cap + 1)
+  for k in 0..n:
+    w = nums[2 + 2 * k]
+    v = nums[3 + 2 * k]
+    for c in (w..=cap).rev():
+      best[c] = max(best[c], best[c - w] + v)
+  print(best[cap])

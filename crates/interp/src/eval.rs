@@ -304,6 +304,12 @@ impl<'p> Interp<'p> {
                     run_body!();
                 }
             }
+            Value::Heap(xs) => {
+                for x in value::sorted(xs).iter() {
+                    bind(x)?;
+                    run_body!();
+                }
+            }
             Value::Map(m) => {
                 // `for k, v in m` gives pairs; `for k in m` gives keys.
                 let keys_only = matches!(pat, PatIr::Bind(_) | PatIr::Wild);
@@ -336,7 +342,7 @@ impl<'p> Interp<'p> {
             Value::Err(e) => Err(panic("E0406", span, format!("condition is an error ({}); add `?`", self.display(e)))),
             other => {
                 let hint = match other {
-                    Value::List(_) | Value::Map(_) | Value::Set(_) | Value::Str(_) => "; test emptiness with `x.is_empty()` or `x.len > 0`",
+                    Value::List(_) | Value::Map(_) | Value::Set(_) | Value::Heap(_) | Value::Str(_) => "; test emptiness with `x.is_empty()` or `x.len > 0`",
                     Value::Int(_) | Value::Float(_) => "; compare explicitly, e.g. `n != 0`",
                     _ => "; compare explicitly, e.g. `x != none`",
                 };
@@ -358,12 +364,31 @@ impl<'p> Interp<'p> {
                 for p in pieces {
                     match p {
                         StrPiece::Lit(s) => out.push_str(s),
-                        StrPiece::Expr(e, spec) => {
+                        StrPiece::Expr(e, spec, args) => {
                             let v = self.eval(e, f)?;
                             if let Value::Err(err) = &v {
                                 return Err(panic("E0406", cond_span(e), format!("interpolating an error ({}); add `?`", self.display(err))));
                             }
                             match spec {
+                                Some(spec) if !args.is_empty() => {
+                                    let mut spec = (**spec).clone();
+                                    let mut args = args.iter();
+                                    for (arg, slot) in [(spec.width_arg, 0), (spec.precision_arg, 1)] {
+                                        if arg.is_none() {
+                                            continue;
+                                        }
+                                        let a = args.next().unwrap();
+                                        let n = self.eval(a, f)?;
+                                        let n = usize::try_from(self.int_of(&n, cond_span(a))?)
+                                            .map_err(|_| panic("E0301", cond_span(a), "format width and precision must not be negative"))?;
+                                        if slot == 0 {
+                                            spec.width = n;
+                                        } else {
+                                            spec.precision = Some(n);
+                                        }
+                                    }
+                                    out.push_str(&self.format_spec(&v, &spec, cond_span(e))?)
+                                }
                                 Some(spec) => out.push_str(&self.format_spec(&v, spec, cond_span(e))?),
                                 None => out.push_str(&self.display(&v)),
                             }
@@ -1134,7 +1159,7 @@ impl<'p> Interp<'p> {
             (Ty::Float, Value::Float(_) | Value::Int(_)) => true,
             (Ty::Bool, Value::Bool(_)) | (Ty::Str, Value::Str(_)) | (Ty::Unit, Value::Unit) => true,
             (Ty::List(_), Value::List(_) | Value::Range(_)) => true,
-            (Ty::Map(..), Value::Map(_)) | (Ty::Set(_), Value::Set(_)) => true,
+            (Ty::Map(..), Value::Map(_)) | (Ty::Set(_), Value::Set(_)) | (Ty::Heap(_), Value::Heap(_)) => true,
             (Ty::Tuple(ts), Value::Tuple(xs)) => ts.len() == xs.len(),
             (Ty::Optional(_), Value::None) => true,
             (Ty::Optional(t), v) => self.ty_matches(v, t),
@@ -1334,6 +1359,7 @@ pub fn ty_name(t: &Ty, p: &Program) -> String {
         Ty::List(t) => format!("[{}]", ty_name(t, p)),
         Ty::Map(k, v) => format!("{{{}:{}}}", ty_name(k, p), ty_name(v, p)),
         Ty::Set(t) => format!("{{{}}}", ty_name(t, p)),
+        Ty::Heap(t) => format!("heap[{}]", ty_name(t, p)),
         Ty::Tuple(ts) => format!("({})", ts.iter().map(|t| ty_name(t, p)).collect::<Vec<_>>().join(", ")),
         Ty::Optional(t) => format!("{}?", ty_name(t, p)),
         Ty::Result(t) => format!("{}!", ty_name(t, p)),

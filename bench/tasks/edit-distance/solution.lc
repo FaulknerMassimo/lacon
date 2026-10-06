@@ -1,0 +1,15 @@
+fn distance(a str, b str) int =
+  var prev = (0..=b.len).to_list()
+  for i in 1..=a.len:
+    var cur = [i]
+    for j in 1..=b.len:
+      cost = if a[i - 1] == b[j - 1]: 0 else: 1
+      cur.push(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost))
+    prev = cur
+  prev[-1]
+
+fn main() =
+  for line in io.lines():
+    if line.is_empty(): continue
+    (a, b) = line.split_once(" ") ?? (line, "")
+    print(distance(a, b))

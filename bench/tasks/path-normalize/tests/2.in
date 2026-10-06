@@ -1,0 +1,7 @@
+/very/long/current/dir ../../../../../../..
+
+/a /
+/a //
+/a b//c///d
+/a/ b
+/u ~/../root/./x/

@@ -1,0 +1,11 @@
+requests: 292
+bytes: 5296145
+status 2xx: 129
+status 3xx: 70
+status 4xx: 66
+status 5xx: 27
+top paths:
+  /login 52
+  / 45
+  /index.html 44
+malformed: 7

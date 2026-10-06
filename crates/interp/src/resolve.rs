@@ -96,6 +96,7 @@ fn type_hint(name: &str) -> Option<&'static str> {
         "Vec" | "List" | "list" | "Array" | "array" | "ArrayList" | "slice" => "lists are written `[T]`",
         "HashMap" | "Map" | "dict" | "Dict" | "BTreeMap" | "map" | "Dictionary" => "maps are written `{K:V}`",
         "HashSet" | "Set" | "set" | "BTreeSet" => "sets are written `{T}`",
+        "BinaryHeap" | "PriorityQueue" | "Heap" | "priority_queue" => "the min-heap type is `heap[T]`; make one with `heap()`",
         "Option" | "Optional" => "optionals are written `T?`",
         "Result" => "results are written `T!` (or `T!E`)",
         "void" | "None" | "Unit" | "unit" | "nil" => "omit the return type when a function returns nothing",
@@ -116,6 +117,9 @@ fn name_hint(name: &str) -> Option<&'static str> {
         "input" | "readline" | "read_line" | "stdin" => "read input with `io.read_line()` (str?), `io.lines()` or `io.read()`",
         "open" => "read files with `fs.read(path)?`",
         "sorted" => "sort with `xs.sort()` (returns a new list)",
+        "heapq" | "BinaryHeap" | "PriorityQueue" | "heapify" | "heappush" | "heappop" => {
+            "use the min-heap `h = heap()` (or `heap(xs)`), `h.push(x)`, `h.pop()` (smallest, T?), `h.first`"
+        }
         "reversed" | "reverse" => "reverse with `xs.rev()`",
         "println" | "printf" | "console" | "puts" | "echo" | "fmt" => "print with `print(\"...{x}...\")`",
         "Some" => "no `Some`: an optional is the value itself, or `none`",
@@ -173,7 +177,7 @@ fn any_child(e: &Expr, f: &mut dyn FnMut(&Expr) -> bool) -> bool {
         }
     }
     match &e.kind {
-        ExprKind::Str(segs) => segs.iter().any(|s| matches!(s, StrSeg::Expr(e, _) if f(e))),
+        ExprKind::Str(segs) => segs.iter().any(|s| matches!(s, StrSeg::Expr(e, _, args) if f(e) || args.iter().any(&mut *f))),
         ExprKind::List(xs) | ExprKind::Set(xs) | ExprKind::Tuple(xs) => xs.iter().any(|x| f(x)),
         ExprKind::Map(ps) => ps.iter().any(|(k, v)| f(k) || f(v)),
         ExprKind::StructLit { fields, .. } => fields.iter().any(|fi| f(&fi.value)),
@@ -474,6 +478,10 @@ impl<'a> Resolver<'a> {
                     "f64" | "f32" => return Ty::Float,
                     "bool" => return Ty::Bool,
                     "str" | "char" => return Ty::Str,
+                    "heap" => {
+                        let inner = args.first().map_or(Ty::Any, |a| self.ty_depth(a, gens, depth));
+                        return Ty::Heap(Box::new(inner));
+                    }
                     _ => {}
                 }
                 for a in args {
@@ -605,6 +613,29 @@ impl<'a> Resolver<'a> {
 
     fn is_local(&self, name: &str) -> bool {
         self.lookup(name).is_some()
+    }
+
+    /// Is this expression certainly a function: a lambda, or the name of a
+    /// function, conversion or variant constructor?
+    fn is_fn_expr(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Lambda { .. } => true,
+            ExprKind::Name(n) => {
+                !self.is_local(n) && (self.fn_ids.contains_key(n) || conv_for(n).is_some() || self.variants.contains_key(n))
+            }
+            _ => false,
+        }
+    }
+
+    /// Does a bare name refer to anything?
+    fn is_defined(&self, n: &str) -> bool {
+        self.is_local(n)
+            || self.const_ids.contains_key(n)
+            || self.fn_ids.contains_key(n)
+            || self.variants.contains_key(n)
+            || conv_for(n).is_some()
+            || is_method(n)
+            || NAMESPACES.contains(&n)
     }
 
     fn var_ex(&self, depth: u32, slot: u32) -> Ex {
@@ -748,6 +779,10 @@ impl<'a> Resolver<'a> {
             let n = name.name.as_str();
             if is_method(n) && !is_mutator(n) && !matches!(n, "each" | "unwrap" | "expect") && !self.fn_ids.contains_key(n) {
                 if matches!(obj.kind, ExprKind::Name(ref ns) if NAMESPACES.contains(&ns.as_str()) && !self.is_local(ns)) {
+                    return;
+                }
+                // `console.log(x)`: report the unknown name, not the method.
+                if matches!(obj.kind, ExprKind::Name(ref ns) if !self.is_defined(ns)) {
                     return;
                 }
                 let recv = self.snippet(obj.span).to_string();
@@ -1111,7 +1146,7 @@ impl<'a> Resolver<'a> {
         }
         cands.extend(self.fn_ids.keys().cloned());
         cands.extend(self.const_ids.keys().cloned());
-        cands.extend(["print", "range", "min", "max", "len", "set", "list"].iter().map(|s| s.to_string()));
+        cands.extend(["print", "range", "min", "max", "len", "set", "heap", "list"].iter().map(|s| s.to_string()));
         match closest(n, cands.iter().map(|s| s.as_str())) {
             Some(c) => self.err_fix("E0201", span, format!("`{n}` is not defined"), c.to_string()),
             None => self.err("E0201", span, format!("`{n}` is not defined")),
@@ -1134,7 +1169,7 @@ impl<'a> Resolver<'a> {
                     .iter()
                     .map(|s| match s {
                         StrSeg::Lit(l) => StrPiece::Lit(l.as_str().into()),
-                        StrSeg::Expr(e, spec) => StrPiece::Expr(self.expr(e), spec.as_ref().and_then(|s| FmtSpec::parse(s))),
+                        StrSeg::Expr(e, spec, args) => StrPiece::Expr(self.expr(e), spec.as_ref().and_then(|s| FmtSpec::parse(s)).map(Box::new), args.iter().map(|a| self.expr(a)).collect()),
                     })
                     .collect();
                 Ex::Str(pieces)
@@ -1527,6 +1562,7 @@ impl<'a> Resolver<'a> {
             "min" if args.len() != 1 => Some(Builtin::Min),
             "max" if args.len() != 1 => Some(Builtin::Max),
             "set" => Some(Builtin::SetNew),
+            "heap" => Some(Builtin::HeapNew),
             "list" => Some(Builtin::ListNew),
             "panic" => Some(Builtin::Panic),
             _ => None,
@@ -1537,7 +1573,7 @@ impl<'a> Resolver<'a> {
             }
             let arity_ok = match f {
                 Builtin::Range => (1..=3).contains(&args.len()),
-                Builtin::SetNew | Builtin::ListNew => args.len() <= 1,
+                Builtin::SetNew | Builtin::HeapNew | Builtin::ListNew => args.len() <= 1,
                 Builtin::Panic => args.len() == 1,
                 Builtin::Min | Builtin::Max => !args.is_empty(),
                 _ => true,
@@ -1550,6 +1586,10 @@ impl<'a> Resolver<'a> {
         // Any method can be called as a function: `len(xs)` is `xs.len()`.
         if is_method(n) && !args.is_empty() {
             let name = Ident { name: n.clone(), span: callee.span };
+            // Python's `map(str, xs)` and `filter(f, xs)` are `xs.map(str)`.
+            if args.len() == 2 && crate::builtins::hof_arg(n, 0) && self.is_fn_expr(&args[0]) {
+                return self.method(&args[1], &name, &args[..1], span);
+            }
             return self.method(&args[0], &name, &args[1..], span);
         }
         self.undefined(n, callee.span);

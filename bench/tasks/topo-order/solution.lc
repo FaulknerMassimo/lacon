@@ -1,0 +1,25 @@
+fn main()! =
+  var deps = {}
+  for line in io.lines():
+    if line.trim().is_empty(): continue
+    (item, rest) = line.split_once(":")?
+    item = item.trim()
+    if item not in deps: deps[item] = set()
+    for d in rest.split():
+      deps[item].add(d)
+      if d not in deps: deps[d] = set()
+  var users = {}
+  var left = {}
+  for k, ds in deps:
+    left[k] = ds.len
+    for d in ds:
+      users[d].push(k)
+  var ready = heap(left.filter(it.1 == 0).map(it.0))
+  var order = []
+  while !ready.is_empty():
+    k = ready.pop()?
+    order.push(k)
+    for u in users.get(k) ?? []:
+      left[u] -= 1
+      if left[u] == 0: ready.push(u)
+  print(if order.len == deps.len: order.join(" ") else: "cycle")

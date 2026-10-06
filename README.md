@@ -11,9 +11,11 @@ The name comes from *laconic*: saying a lot in few words.
 
 Phase 0: testing whether agents actually spend fewer tokens in Lacon before
 any compiler work starts. There is a [primer](docs/primer.md) (the whole
-language in about 2,300 tokens) and a throwaway tree-walking interpreter that
-runs Lacon programs and their tests. There is no compiler or type checker yet.
-The design and build plan is in [PLAN.md](PLAN.md).
+language in about 2,400 tokens), a throwaway tree-walking interpreter that
+runs Lacon programs and their tests, 30 benchmark tasks with hidden tests, and
+a harness that has Claude solve them in Lacon, Python, Rust and Go. There is no
+compiler or type checker yet. The design and build plan is in
+[PLAN.md](PLAN.md).
 
 ```
 cargo build --release
@@ -24,7 +26,12 @@ cargo build --release
 ./target/release/lacon explain E0202                 # long form of a diagnostic
 cargo test                                           # golden tests in tests/
 uv run bench/tasks/check.py                          # task solutions vs hidden tests
+uv run bench/harness/run.py --langs lacon,python     # Claude solves the tasks (needs an API key)
+uv run bench/harness/report.py bench/results/<run>   # tokens-to-green per language
 ```
+
+The harness runs model-written programs under `bwrap` when it's installed
+(read-only filesystem, no network).
 
 ## What it looks like
 

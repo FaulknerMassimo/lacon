@@ -1,0 +1,16 @@
+fn is_num(s str) bool =
+  t = s.strip_prefix("-") ?? s
+  match t.split_once(".")
+    none: t.len > 0 and t.is_digit()
+    (a, b): a.len > 0 and a.is_digit() and b.len > 0 and b.is_digit()
+
+fn main() =
+  var rows = io.lines().filter(!it.trim().is_empty()).map(it.split())
+  if rows.is_empty(): return
+  ncol = rows.map(it.len).max()
+  rows = rows.map(|r| r + [""] * (ncol - r.len))
+  widths = (0..ncol).map(|c| rows.map(it[c].len).max())
+  numeric = (0..ncol).map(|c| rows[1..].all(it[c] == "" or is_num(it[c])))
+  for r in rows:
+    cells = (0..ncol).map(|c| if numeric[c]: "{r[c]:>{widths[c]}}" else: "{r[c]:<{widths[c]}}")
+    print(cells.join("  ").trim_end())

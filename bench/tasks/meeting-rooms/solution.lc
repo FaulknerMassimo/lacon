@@ -1,0 +1,22 @@
+fn mins(t str) int! =
+  (h, m) = t.split_once(":")?
+  int(h)? * 60 + int(m)?
+
+fn main()! =
+  lines = io.lines()
+  n = int(lines[0])?
+  var events = []
+  for line in lines[1..n + 1]:
+    p = line.split()
+    events.push((mins(p[0])?, 1))
+    events.push((mins(p[1])?, -1))
+  var cur = 0
+  var best = 0
+  var peak = 0
+  for (t, d) in events.sort():
+    cur += d
+    if cur > best:
+      best = cur
+      peak = t
+  print("rooms: {best}")
+  if n > 0: print("peak: {peak / 60:02}:{peak % 60:02}")

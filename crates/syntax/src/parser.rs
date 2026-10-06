@@ -18,12 +18,16 @@ pub struct Parser<'a> {
     toks: Vec<Token>,
     pos: usize,
     indent: i32,
+    /// Inside brackets there are no layout tokens, so a `match` there finds
+    /// its arms by column; an expression stops at a line starting at or left
+    /// of this column (the next arm).
+    col_stop: Option<usize>,
     pub diags: Vec<Diag>,
 }
 
 pub fn parse(src: &str) -> (Module, Vec<Diag>) {
     let (toks, mut diags) = Lexer::new(src).tokenize();
-    let mut p = Parser { src, toks, pos: 0, indent: 0, diags: Vec::new() };
+    let mut p = Parser { src, toks, pos: 0, indent: 0, col_stop: None, diags: Vec::new() };
     let m = p.module();
     diags.extend(p.diags);
     (m, diags)
@@ -314,7 +318,11 @@ impl<'a> Parser<'a> {
                         Ok(Item::Test(TestDecl { name, body, span: start }))
                     }
                     ("def" | "func" | "fun" | "function", Tok::Ident(_)) => {
-                        let fix = self.line_of(start).replacen(&name, "fn", 1);
+                        let line = self.line_of(start).replacen(&name, "fn", 1);
+                        let fix = match line.strip_suffix(':').or_else(|| line.strip_suffix('{')) {
+                            Some(head) => format!("{} =", head.trim_end()),
+                            None => line,
+                        };
                         self.hint("E0121", start, "functions are declared with `fn name(param Type) Ret =`", Some(fix));
                         Err(())
                     }
@@ -799,6 +807,10 @@ impl<'a> Parser<'a> {
                 let value = self.rhs()?;
                 Ok(Stmt::Var { name, ty, value })
             }
+            Tok::Fn if matches!(self.peek_at(1), Tok::Ident(_)) => {
+                self.hint("E0121", start, "no nested functions; move it to the top level, or bind a lambda: `add = |a, b| a + b`", None);
+                Err(())
+            }
             Tok::For => self.for_stmt(),
             Tok::While => {
                 self.bump();
@@ -1018,7 +1030,14 @@ impl<'a> Parser<'a> {
     }
 
     fn stop(&self) -> bool {
-        self.prev_is_dedent()
+        self.prev_is_dedent() || self.col_stop.is_some_and(|c| self.tok().nl_before && self.col(self.tok().span) <= c)
+    }
+
+    /// 0-based column of a span's start.
+    fn col(&self, span: Span) -> usize {
+        let start = span.start as usize;
+        let line_start = self.src[..start].rfind('\n').map_or(0, |i| i + 1);
+        self.src[line_start..start].chars().count()
     }
 
     fn or_expr(&mut self) -> P<Expr> {
@@ -1214,8 +1233,16 @@ impl<'a> Parser<'a> {
     fn args(&mut self, close: Tok) -> P<Vec<Expr>> {
         let mut args = Vec::new();
         while !self.at(&close) {
-            if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Assign) {
-                self.hint("E0138", self.span(), "no named arguments; pass arguments by position", None);
+            if let (Tok::Ident(name), Tok::Assign) = (self.peek(), self.peek_at(1)) {
+                let msg = match name.as_str() {
+                    "end" | "flush" => "no named arguments; to print without a newline use `io.write(s)`",
+                    "sep" => "no named arguments; `print(a, b)` separates with a space, or interpolate: `print(\"{a},{b}\")`",
+                    "reverse" => "no named arguments; sort descending with `xs.sort_by(-it)` or `xs.sort().rev()`",
+                    "key" => "no named arguments; sort by a key with `xs.sort_by(it.age)`, `min_by(...)`, `max_by(...)`",
+                    "file" => "no named arguments; print to stderr with `eprint(...)`",
+                    _ => "no named arguments; pass arguments by position",
+                };
+                self.hint("E0138", self.span(), msg, None);
                 return Err(());
             }
             args.push(self.expr()?);
@@ -1462,6 +1489,10 @@ impl<'a> Parser<'a> {
                     return Err(());
                 }
                 let body = self.expr()?;
+                if matches!(self.peek(), Tok::Assign | Tok::PlusEq | Tok::MinusEq | Tok::StarEq | Tok::SlashEq | Tok::PercentEq) {
+                    self.hint("E0129", self.span(), "a lambda body is one expression and cannot assign; update variables in a `for` loop", None);
+                    return Err(());
+                }
                 let span = span.to(body.span);
                 return Ok(Expr { kind: ExprKind::Lambda { params, body: Box::new(body) }, span });
             }
@@ -1513,27 +1544,41 @@ impl<'a> Parser<'a> {
             match p {
                 StrPart::Lit(s) => segs.push(StrSeg::Lit(s)),
                 StrPart::Expr { span, spec } => {
-                    let (toks, diags) = Lexer::expression(self.src, span.start as usize, span.end as usize).tokenize();
-                    let failed = !diags.is_empty();
-                    self.diags.extend(diags);
-                    if failed {
-                        return Err(());
+                    let e = self.sub_expr(span.start as usize, span.end as usize)?;
+                    // The spec follows the expression and its `:`.
+                    let spec_start = span.end as usize + 1;
+                    let mut args = Vec::new();
+                    if let Some(fs) = spec.as_deref().and_then(crate::fmtspec::FmtSpec::parse) {
+                        for (a, b) in [fs.width_arg, fs.precision_arg].into_iter().flatten() {
+                            args.push(self.sub_expr(spec_start + a, spec_start + b)?);
+                        }
                     }
-                    let mut sub = Parser { src: self.src, toks, pos: 0, indent: 0, diags: Vec::new() };
-                    let e = sub.expr();
-                    if e.is_ok() && !sub.at(&Tok::Eof) {
-                        sub.expected("`}` to close the interpolation");
-                    }
-                    let failed = !sub.diags.is_empty();
-                    self.diags.extend(sub.diags);
-                    match e {
-                        Ok(e) if !failed => segs.push(StrSeg::Expr(Box::new(e), spec)),
-                        _ => return Err(()),
-                    }
+                    segs.push(StrSeg::Expr(Box::new(e), spec, args));
                 }
             }
         }
         Ok(segs)
+    }
+
+    /// Parses the source text `start..end` (inside a string) as one expression.
+    fn sub_expr(&mut self, start: usize, end: usize) -> P<Expr> {
+        let (toks, diags) = Lexer::expression(self.src, start, end).tokenize();
+        let failed = !diags.is_empty();
+        self.diags.extend(diags);
+        if failed {
+            return Err(());
+        }
+        let mut sub = Parser { src: self.src, toks, pos: 0, indent: 0, col_stop: None, diags: Vec::new() };
+        let e = sub.expr();
+        if e.is_ok() && !sub.at(&Tok::Eof) {
+            sub.expected("`}` to close the interpolation");
+        }
+        let failed = !sub.diags.is_empty();
+        self.diags.extend(sub.diags);
+        match e {
+            Ok(e) if !failed => Ok(e),
+            _ => Err(()),
+        }
     }
 
     fn if_expr(&mut self) -> P<Expr> {
@@ -1574,20 +1619,19 @@ impl<'a> Parser<'a> {
 
     fn match_expr(&mut self) -> P<Expr> {
         let start = self.bump().span;
-        let scrutinee = self.expr()?;
+        // The scrutinee ends with its line, even inside brackets, where the
+        // arms on the next lines would otherwise continue it (`x` + `-1: ...`).
+        let outer = self.col_stop.replace(usize::MAX);
+        let scrutinee = self.expr();
+        self.col_stop = outer;
+        let scrutinee = scrutinee?;
         if self.at(&Tok::LBrace) {
             self.hint("E0123", self.span(), "match arms go on indented lines after `match x`, not in braces", None);
             return Err(());
         }
         self.eat(&Tok::Colon);
         if !self.at(&Tok::Newline) && self.tok().nl_before {
-            self.hint(
-                "E0146",
-                start,
-                "a `match` with arms on their own lines cannot sit inside brackets; bind it first (`v = match x` + arms), then use `v`",
-                None,
-            );
-            return Err(());
+            return self.match_in_brackets(start, scrutinee);
         }
         self.expect(&Tok::Newline, "a newline and indented arms after `match x`")?;
         self.expect(&Tok::Indent, "indented match arms")?;
@@ -1622,7 +1666,78 @@ impl<'a> Parser<'a> {
         Ok(Expr { kind: ExprKind::Match { scrutinee: Box::new(scrutinee), arms }, span })
     }
 
+    /// A `match` inside brackets, where lines don't make layout tokens: each
+    /// arm starts a line at the first arm's column, and its body is one
+    /// expression.
+    fn match_in_brackets(&mut self, start: Span, scrutinee: Expr) -> P<Expr> {
+        let col = self.col(self.tok().span);
+        let outer = self.col_stop.replace(col);
+        let mut arms = Vec::new();
+        let mut result = Ok(());
+        while self.tok().nl_before && self.col(self.tok().span) == col && !matches!(self.peek(), Tok::RParen | Tok::RBracket | Tok::RBrace | Tok::Eof) {
+            let arm = self.arm_head().and_then(|(pat, guard)| {
+                if matches!(self.peek(), Tok::Return | Tok::Break | Tok::Continue | Tok::Fail) {
+                    self.hint(
+                        "E0146",
+                        start,
+                        "inside brackets, each `match` arm is one expression; bind the match first (`v = match x` + arms), then use `v`",
+                        None,
+                    );
+                    return Err(());
+                }
+                let e = self.expr()?;
+                // Anything but the next arm or the end of the brackets means the
+                // arm was a block of statements.
+                if !self.tok().nl_before && !matches!(self.peek(), Tok::RParen | Tok::RBracket | Tok::RBrace | Tok::Comma | Tok::Eof) {
+                    self.hint(
+                        "E0146",
+                        start,
+                        "inside brackets, each `match` arm is one expression; bind the match first (`v = match x` + arms), then use `v`",
+                        None,
+                    );
+                    return Err(());
+                }
+                let span = e.span;
+                Ok(MatchArm { pat, guard, body: Block { stmts: vec![Stmt::Expr(e)], span } })
+            });
+            match arm {
+                Ok(arm) => {
+                    arms.push(arm);
+                    // A comma ends an arm only when the next arm or a closing
+                    // bracket follows; otherwise it belongs to the enclosing
+                    // call or literal: `f(match x ..., 5)`.
+                    if self.at(&Tok::Comma) {
+                        let next = &self.toks[(self.pos + 1).min(self.toks.len() - 1)];
+                        let closing = matches!(next.tok, Tok::RParen | Tok::RBracket | Tok::RBrace);
+                        if closing || (next.nl_before && self.col(next.span) == col) {
+                            self.bump();
+                        }
+                    }
+                }
+                Err(()) => {
+                    result = Err(());
+                    break;
+                }
+            }
+        }
+        self.col_stop = outer;
+        result?;
+        if arms.is_empty() {
+            self.expected("match arms");
+            return Err(());
+        }
+        let span = start.to(self.prev_span());
+        Ok(Expr { kind: ExprKind::Match { scrutinee: Box::new(scrutinee), arms }, span })
+    }
+
     fn arm(&mut self) -> P<MatchArm> {
+        let (pat, guard) = self.arm_head()?;
+        let body = self.block()?;
+        Ok(MatchArm { pat, guard, body })
+    }
+
+    /// An arm's pattern, guard and `:`.
+    fn arm_head(&mut self) -> P<(Pat, Option<Expr>)> {
         if self.at_ident("case") && !matches!(self.peek_at(1), Tok::Colon | Tok::FatArrow | Tok::LParen) {
             self.bump();
         }
@@ -1632,8 +1747,7 @@ impl<'a> Parser<'a> {
             self.expected("`:` after the pattern");
             return Err(());
         }
-        let body = self.block()?;
-        Ok(MatchArm { pat, guard, body })
+        Ok((pat, guard))
     }
 
     // ----- patterns -----

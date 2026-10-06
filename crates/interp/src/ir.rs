@@ -92,6 +92,7 @@ pub enum Ty {
     List(Box<Ty>),
     Map(Box<Ty>, Box<Ty>),
     Set(Box<Ty>),
+    Heap(Box<Ty>),
     Tuple(Vec<Ty>),
     Optional(Box<Ty>),
     Result(Box<Ty>),
@@ -109,7 +110,9 @@ pub struct LambdaDef {
 
 pub enum StrPiece {
     Lit(Rc<str>),
-    Expr(Ex, Option<FmtSpec>),
+    /// An interpolation, its spec, and the spec's computed width and
+    /// precision, in that order.
+    Expr(Ex, Option<Box<FmtSpec>>, Vec<Ex>),
 }
 
 pub enum Root {
@@ -145,6 +148,7 @@ pub enum Builtin {
     Min,
     Max,
     SetNew,
+    HeapNew,
     ListNew,
     Conv(ConvTo),
     Panic,

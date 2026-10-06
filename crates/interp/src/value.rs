@@ -28,6 +28,8 @@ pub enum Value {
     Tuple(Rc<Vec<Value>>),
     Map(Rc<Map>),
     Set(Rc<Set>),
+    /// A binary min-heap, ordered by `cmp`.
+    Heap(Rc<Vec<Value>>),
     Struct(Rc<Obj>),
     Variant(Rc<Obj>),
     Range(Rc<RangeV>),
@@ -120,6 +122,7 @@ impl Value {
             Value::Tuple(t) => format!("{}-tuple", t.len()),
             Value::Map(_) => "map".into(),
             Value::Set(_) => "set".into(),
+            Value::Heap(_) => "heap".into(),
             Value::Struct(o) => p.structs[o.ty as usize].name.clone(),
             Value::Variant(o) => p.enums[o.ty as usize].name.clone(),
             Value::Range(_) => "range".into(),
@@ -176,6 +179,12 @@ pub fn eq(a: &Value, b: &Value) -> Result<bool, ()> {
             true
         }
         (Set(x), Set(y)) => x.len() == y.len() && x.iter().all(|k| y.contains(k)),
+        (Heap(x), Heap(y)) => {
+            let (mut x, mut y) = (x.to_vec(), y.to_vec());
+            x.sort_by(|a, b| cmp(a, b).unwrap_or(Ordering::Equal));
+            y.sort_by(|a, b| cmp(a, b).unwrap_or(Ordering::Equal));
+            return eq(&Value::list(x), &Value::list(y));
+        }
         (Struct(x), Struct(y)) | (Variant(x), Variant(y)) => {
             if x.ty != y.ty || x.tag != y.tag {
                 return Ok(false);
@@ -249,6 +258,7 @@ impl PartialEq for Value {
             (Map(x), Map(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k) == Some(v)),
             (Set(x), Set(y)) => x.len() == y.len() && x.iter().all(|k| y.contains(k)),
             (List(x), List(y)) | (Tuple(x), Tuple(y)) => x == y,
+            (Heap(x), Heap(y)) => sorted(x) == sorted(y),
             (Struct(x), Struct(y)) | (Variant(x), Variant(y)) => x.ty == y.ty && x.tag == y.tag && x.fields == y.fields,
             (Err(x), Err(y)) => x == y,
             (Range(x), Range(y)) => x == y,
@@ -289,6 +299,7 @@ impl Hash for Value {
             }
             Map(m) => m.len().hash(h),
             Set(s) => s.len().hash(h),
+            Heap(v) => v.len().hash(h),
             Struct(o) | Variant(o) => {
                 o.ty.hash(h);
                 o.tag.hash(h);
@@ -300,6 +311,69 @@ impl Hash for Value {
             Err(e) => e.hash(h),
             Func(f) => (Rc::as_ptr(f) as *const u8 as usize).hash(h),
         }
+    }
+}
+
+/// A heap's items in ascending order.
+pub fn sorted(heap: &[Value]) -> Vec<Value> {
+    let mut v = heap.to_vec();
+    v.sort_by(|a, b| cmp(a, b).unwrap_or(Ordering::Equal));
+    v
+}
+
+/// Adds `x` to a binary min-heap. Fails if `x` can't be compared with the
+/// items it meets.
+pub fn heap_push(h: &mut Vec<Value>, x: Value) -> Result<(), (String, String)> {
+    h.push(x);
+    let mut i = h.len() - 1;
+    while i > 0 {
+        let parent = (i - 1) / 2;
+        match cmp(&h[i], &h[parent]) {
+            Ok(Ordering::Less) => h.swap(i, parent),
+            Ok(_) => break,
+            Result::Err(()) => {
+                let x = h.remove(i);
+                return Result::Err((kind_name(&x), kind_name(&h[parent])));
+            }
+        }
+        i = parent;
+    }
+    Ok(())
+}
+
+/// Removes the smallest item of a binary min-heap.
+pub fn heap_pop(h: &mut Vec<Value>) -> Option<Value> {
+    if h.is_empty() {
+        return Option::None;
+    }
+    let top = h.swap_remove(0);
+    let mut i = 0;
+    loop {
+        let (l, r) = (2 * i + 1, 2 * i + 2);
+        let mut m = i;
+        if l < h.len() && cmp(&h[l], &h[m]) == Ok(Ordering::Less) {
+            m = l;
+        }
+        if r < h.len() && cmp(&h[r], &h[m]) == Ok(Ordering::Less) {
+            m = r;
+        }
+        if m == i {
+            break;
+        }
+        h.swap(i, m);
+        i = m;
+    }
+    Some(top)
+}
+
+fn kind_name(v: &Value) -> String {
+    match v {
+        Value::Int(_) => "int".into(),
+        Value::Float(_) => "f64".into(),
+        Value::Str(_) => "str".into(),
+        Value::Tuple(t) => format!("{}-tuple", t.len()),
+        Value::None => "none".into(),
+        _ => "value".into(),
     }
 }
 
@@ -367,6 +441,11 @@ fn repr_into(v: &Value, p: &Program, out: &mut String) {
             out.push(')');
         }
         Value::Set(xs) => seq(out, "{", "}", xs.iter(), p),
+        Value::Heap(xs) => {
+            out.push_str("heap(");
+            seq(out, "[", "]", sorted(xs).iter(), p);
+            out.push(')');
+        }
         Value::Map(m) => {
             out.push('{');
             for (i, (k, v)) in m.iter().enumerate() {

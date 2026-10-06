@@ -1,0 +1,5 @@
+fn main() =
+  words = io.read().lower().split().unique()
+  groups = words.group_by(it.chars.sort().join()).values().filter(it.len >= 2).map(it.sort())
+  for g in groups.sort_by((-it.len, it[0])):
+    print(g.join(" "))

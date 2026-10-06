@@ -1,0 +1,10 @@
+268 GET /
+ 54 POST /login
+ 48 GET /about
+ 27 error: timeout
+ 26 Apple
+ 25 apple
+ 20 error: refused
+ 19 Zebra
+  7 trailing 
+  6  indented

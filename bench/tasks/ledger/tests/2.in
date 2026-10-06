@@ -1,0 +1,16 @@
+open zed 0
+deposit zed 0.01
+deposit zed 0.01
+deposit zed 0.01
+withdraw zed 0.03
+withdraw zed 0.01
+open amy 1000000.99
+transfer amy zed 999999.99
+transfer zed amy 0
+transfer zed
+open
+deposit amy .5
+deposit amy 5.
+deposit amy 07.5
+withdraw amy 1.00
+transfer zed zed 1000000

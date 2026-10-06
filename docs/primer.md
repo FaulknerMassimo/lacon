@@ -94,8 +94,8 @@ A match must cover every variant or end with `_:`. Patterns: literals, `1 | 2`,
 `if`/`elif`/`else`, `while c:`, `break`, `continue`, `return x`. `for x in xs:`,
 `for i in 0..n:` (`0..=n` includes n), `for i, x in xs.enumerate():`,
 `for k, v in m:` (`for k in m:` gives keys). `if` and `match` are expressions;
-`a if c else b` works too. Inside brackets lines do not matter, so a `match`
-whose arms need their own lines cannot go there: bind it to a name first.
+`a if c else b` works too. Inside brackets lines do not matter, except that a
+`match` there takes arms on their own lines, one expression each.
 
 Operators: `+ - * / % **`, `and or not`, `== != < <= > >=` (chains allowed),
 `in`, `not in`, `??`, `& | ^ << >>`. Conditions must be `bool`; there is no
@@ -114,7 +114,7 @@ truthiness, so write `!xs.is_empty()` or `n != 0`.
 ## Strings
 
 Every string interpolates: `"{name} is {age}"`. Specs: `{x:.2}`, `{n:>5}`,
-`{n:05}`, `{n:x}`. `{{` is a literal brace (a `{` with no closing `}` is literal
+`{n:05}`, `{n:x}`, `{s:<{w}}` (computed width). `{{` is a literal brace (a `{` with no closing `}` is literal
 too). `'single'` works; `"""` strings span lines and drop their common
 indentation.
 
@@ -146,7 +146,9 @@ Maps: `m[k]` (a missing key is an error), `m.get(k)`, `m.get(k, d)`,
 `(k, v)` pairs: `m.sort_by(-it.1)`, `m.filter(it.1 > 2).to_map()`.
 
 Sets: `s.add(x)`, `s.remove(x)`, `x in s`, `a | b`, `a & b`, `a - b`. Ranges:
-`(0..n).rev()`, `.step_by(2)`, `.to_list()`.
+`(0..n).rev()`, `.step_by(2)`, `.to_list()`. Heaps: `heap()` or `heap(xs)` is a
+min-heap (type `heap[T]`): `h.push(x)`, `h.pop()` (smallest, T?), `h.first`,
+`len`; push `(-priority, x)` for a max-heap.
 
 ## Standard library
 

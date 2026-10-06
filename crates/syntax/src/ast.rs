@@ -285,7 +285,9 @@ pub struct Expr {
 #[derive(Debug)]
 pub enum StrSeg {
     Lit(String),
-    Expr(Box<Expr>, Option<String>),
+    /// `{e:spec}`, with the computed width and precision of the spec, in
+    /// that order, when it has them (`{e:>{w}}`).
+    Expr(Box<Expr>, Option<String>, Vec<Expr>),
 }
 
 #[derive(Debug)]

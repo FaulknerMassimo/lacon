@@ -1,0 +1,22 @@
+fn step(grid [[str]]) [[str]] =
+  h = grid.len
+  w = grid[0].len
+  var next = grid
+  for r in 0..h:
+    for c in 0..w:
+      var n = 0
+      for dr in -1..=1:
+        for dc in -1..=1:
+          if (dr != 0 or dc != 0) and 0 <= r + dr < h and 0 <= c + dc < w and grid[r + dr][c + dc] == "#":
+            n += 1
+      next[r][c] = if n == 3 or (n == 2 and grid[r][c] == "#"): "#" else: "."
+  next
+
+fn main()! =
+  lines = io.lines()
+  g = int(lines[0])?
+  var grid = lines[1..].filter(!it.is_empty()).map(it.chars)
+  for _ in 0..g:
+    grid = step(grid)
+  for row in grid:
+    print(row.join())

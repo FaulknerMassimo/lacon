@@ -1,0 +1,11 @@
+/home/ann docs/../music/./song.mp3
+/home/ann /etc//nginx/
+/ ..
+/a/b/c ../../x
+/tmp ~
+/tmp ~/notes.txt
+/srv ~ann/file
+/srv ./a/./b/.
+/x/y ../../../../z
+/ .
+/home/ann a...b/..c/.d

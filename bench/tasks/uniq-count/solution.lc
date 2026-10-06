@@ -1,0 +1,8 @@
+fn main() =
+  var counts = {}
+  for line in io.lines():
+    if !line.is_empty(): counts[line] += 1
+  if counts.is_empty(): return
+  w = str(counts.values().max()).len
+  for line, n in counts.sort_by((-it.1, it.0)):
+    print("{n:>{w}} {line}")

@@ -1,0 +1,71 @@
+fn tokenize(s str) [str]! =
+  var out = []
+  var i = 0
+  while i < s.len:
+    c = s[i]
+    if c == " ":
+      i += 1
+    elif c.is_digit():
+      var j = i
+      while j < s.len and s[j].is_digit(): j += 1
+      out.push(s[i..j])
+      i = j
+    elif c in "+-*/()":
+      out.push(c)
+      i += 1
+    else:
+      fail "bad char {c}"
+  out
+
+type Parser {toks [str], pos int = 0}
+
+fn peek(p Parser) str = p.toks.get(p.pos) ?? ""
+
+fn take(mut p Parser) str! =
+  if p.pos >= p.toks.len: fail "unexpected end"
+  p.pos += 1
+  p.toks[p.pos - 1]
+
+fn expr(mut p Parser) int! =
+  var v = term(p)?
+  while p.peek() in ["+", "-"]:
+    op = take(p)?
+    r = term(p)?
+    v = if op == "+": v + r else: v - r
+  v
+
+fn term(mut p Parser) int! =
+  var v = unary(p)?
+  while p.peek() in ["*", "/"]:
+    op = take(p)?
+    r = unary(p)?
+    if op == "*":
+      v *= r
+    else:
+      if r == 0: fail "division by zero"
+      v /= r
+  v
+
+fn unary(mut p Parser) int! =
+  if p.peek() == "-":
+    take(p)?
+    return -unary(p)?
+  primary(p)
+
+fn primary(mut p Parser) int! =
+  t = take(p)?
+  if t == "(":
+    v = expr(p)?
+    if take(p)? != ")": fail "expected )"
+    return v
+  int(t)
+
+fn eval(line str) int! =
+  var p = Parser{tokenize(line)?}
+  v = expr(p)?
+  if p.pos != p.toks.len: fail "trailing input"
+  v
+
+fn main() =
+  for line in io.lines():
+    print(eval(line) ?? "error")

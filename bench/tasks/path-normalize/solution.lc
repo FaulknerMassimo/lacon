@@ -1,0 +1,16 @@
+fn normalize(cwd str, path str) str =
+  var p = path
+  if p == "~" or p.starts_with("~/"): p = "/home/user" + p[1..]
+  if !p.starts_with("/"): p = cwd + "/" + p
+  var out = []
+  for part in p.split("/"):
+    if part == "" or part == ".": continue
+    if part == "..": out.pop()
+    else: out.push(part)
+  "/" + out.join("/")
+
+fn main() =
+  for line in io.lines():
+    if line.trim().is_empty(): continue
+    (cwd, path) = line.split_once(" ") ?? (line, "")
+    print(normalize(cwd, path))

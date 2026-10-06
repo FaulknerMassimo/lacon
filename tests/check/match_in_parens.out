@@ -1,2 +1,3 @@
-E0146 match_in_parens.lc:4:14 a `match` with arms on their own lines cannot sit inside brackets; bind it first (`v = match x` + arms), then use `v`
+E0146 match_in_parens.lc:4:14 inside brackets, each `match` arm is one expression; bind the match first (`v = match x` + arms), then use `v`
+E0146 match_in_parens.lc:9:9 inside brackets, each `match` arm is one expression; bind the match first (`v = match x` + arms), then use `v`
 [exit 1]

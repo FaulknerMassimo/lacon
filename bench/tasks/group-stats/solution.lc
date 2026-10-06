@@ -1,0 +1,8 @@
+fn main()! =
+  var groups = {}
+  for line in io.lines():
+    if line.trim().is_empty(): continue
+    p = line.split()
+    groups[p[0]].push(f64(p[1])?)
+  for cat, xs in groups.sort():
+    print("{cat} {xs.len} {xs.min():.2} {xs.max():.2} {xs.sum() / xs.len:.2}")

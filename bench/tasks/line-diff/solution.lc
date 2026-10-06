@@ -1,0 +1,26 @@
+fn main() =
+  lines = io.lines()
+  sep = lines.index("---") ?? lines.len
+  a = lines[..sep]
+  b = lines[sep + 1..]
+  n = a.len
+  m = b.len
+  var L = [[0] * (m + 1)] * (n + 1)
+  for i in (0..n).rev():
+    for j in (0..m).rev():
+      L[i][j] = if a[i] == b[j]: L[i + 1][j + 1] + 1 else: max(L[i + 1][j], L[i][j + 1])
+  var i = 0
+  var j = 0
+  while i < n and j < m:
+    if a[i] == b[j]:
+      print("  {a[i]}")
+      i += 1
+      j += 1
+    elif L[i + 1][j] >= L[i][j + 1]:
+      print("- {a[i]}")
+      i += 1
+    else:
+      print("+ {b[j]}")
+      j += 1
+  for x in a[i..]: print("- {x}")
+  for x in b[j..]: print("+ {x}")

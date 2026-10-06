@@ -1,0 +1,5 @@
+app: lib utils
+lib: core
+utils: core
+tests: app
+core:

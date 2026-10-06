@@ -1,0 +1,6 @@
+region,product,amount
+north,apples,10
+south,pears,4
+north,pears,3
+north,apples,5
+east,kiwis,-2

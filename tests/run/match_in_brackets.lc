@@ -1,0 +1,31 @@
+# A `match` inside brackets takes its arms by column, one expression each.
+enum Op = Add | Neg(int) | Pair(int, int)
+
+fn f(a str, b int) str = "{a}/{b}"
+
+fn main() =
+  for x in [-1, 0, 1, 5]:
+    print(match x
+      -1: "minus one"
+      0: "zero"
+      n if n > 2: "big {n}"
+      _: "other")
+  for p in [(1, 2), (3, 3)]:
+    print(f(match p
+      (a, b) if a == b: "same"
+      (a, _): "first {a}", 7))
+  xs = [Add, Neg(4), Pair(1, 2)].map(match it
+    Add: 0
+    Neg(n): -n
+    Pair(a, b): a + b)
+  print(xs)
+  ys = [1, 2].map(|v| match v
+    1: match v * 10
+      10: "ten"
+      _: "?"
+    _: "two")
+  print(ys)
+  print([match 3
+    3: "three",
+    _: "no",
+  ])

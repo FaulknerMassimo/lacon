@@ -1,0 +1,41 @@
+fn cents(s str) int? =
+  (whole, frac) = s.split_once(".") ?? (s, "00")
+  if whole.is_empty() or !whole.is_digit(): return none
+  if frac.is_empty() or frac.len > 2 or !frac.is_digit(): return none
+  int(whole)? * 100 + int(frac.pad_right(2, "0"))?
+
+fn apply(mut acct {str: int}, p [str]) str? =
+  arity = {"open": 3, "deposit": 3, "withdraw": 3, "transfer": 4}
+  if p[0] not in arity or p.len != arity[p[0]]: return "bad command"
+  amt = cents(p[-1]) ?? -1
+  if amt < 0 or (amt == 0 and p[0] != "open"): return "bad amount"
+  names = p[1..-1]
+  if p[0] == "open":
+    if names[0] in acct: return "account exists"
+    acct[names[0]] = amt
+    return none
+  for n in names:
+    if n not in acct: return "no account {n}"
+  match p[0]
+    "deposit": acct[names[0]] += amt
+    "withdraw":
+      if acct[names[0]] < amt: return "insufficient funds"
+      acct[names[0]] -= amt
+    _:
+      (a, b) = (names[0], names[1])
+      if acct[a] < amt: return "insufficient funds"
+      if a == b: return "same account"
+      acct[a] -= amt
+      acct[b] += amt
+  none
+
+fn main() =
+  var acct = {}
+  for i, line in io.lines().enumerate():
+    p = line.split()
+    if p.is_empty(): continue
+    match apply(acct, p)
+      none: continue
+      reason: print("line {i + 1}: {reason}")
+  for name, c in acct.sort():
+    print("{name} {c / 100}.{c % 100:02}")

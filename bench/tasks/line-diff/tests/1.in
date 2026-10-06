@@ -1,0 +1,10 @@
+fn main() =
+  x = 1
+  print(x)
+  print("done")
+---
+fn main() =
+  x = 2
+  print(x)
+  y = x * 2
+  print("done")

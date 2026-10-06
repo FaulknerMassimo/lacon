@@ -1,0 +1,17 @@
+fn main()! =
+  var cells = {}
+  var regions = set()
+  var products = set()
+  for line in io.lines().skip(1):
+    if line.trim().is_empty(): continue
+    p = line.split(",")
+    regions.add(p[0])
+    products.add(p[1])
+    cells[(p[0], p[1])] += int(p[2])?
+  ps = products.sort()
+  print((["region"] + ps + ["total"]).join(","))
+  for r in regions.sort():
+    row = ps.map(cells.get((r, it)) ?? 0)
+    print(([r] + row + [row.sum()]).join(","))
+  cols = ps.map(|p| regions.map(|r| cells.get((r, p)) ?? 0).sum())
+  print((["total"] + cols + [cols.sum()]).join(","))

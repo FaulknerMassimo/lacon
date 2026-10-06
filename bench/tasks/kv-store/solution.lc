@@ -1,0 +1,29 @@
+fn main() =
+  var data = {}
+  # One undo log per open transaction: (key, old value or none).
+  var stack = []
+  for line in io.lines():
+    p = line.split()
+    if p.is_empty(): continue
+    match p[0]
+      "SET":
+        if !stack.is_empty(): stack[-1].push((p[1], data.get(p[1])))
+        data[p[1]] = p[2]
+      "GET": print(data.get(p[1]) ?? "NULL")
+      "DELETE":
+        if p[1] in data:
+          if !stack.is_empty(): stack[-1].push((p[1], data.get(p[1])))
+          data.remove(p[1])
+      "COUNT": print(data.values().count(p[1]))
+      "BEGIN": stack.push([])
+      "ROLLBACK":
+        match stack.pop()
+          none: print("NO TRANSACTION")
+          log:
+            for (k, old) in log.rev():
+              if old == none: data.remove(k)
+              else: data[k] = old
+      "COMMIT":
+        if stack.is_empty(): print("NO TRANSACTION")
+        stack.clear()
+      _: continue

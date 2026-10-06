@@ -1,0 +1,5 @@
+region,apples,kiwis,pears,total
+east,0,-2,0,-2
+north,15,0,3,18
+south,0,0,4,4
+total,15,-2,7,20

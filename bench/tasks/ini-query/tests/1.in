@@ -1,0 +1,18 @@
+name = demo
+; settings for the server
+[server]
+host = example.com
+port = 8080
+
+[database]
+url = postgres://u:p@db/x?ssl=true
+# no password yet
+password =
+---
+name
+server.host
+server.port
+database.url
+database.password
+database.user
+host

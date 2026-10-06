@@ -1,0 +1,10 @@
+requests: 4
+bytes: 2838
+status 2xx: 2
+status 3xx: 1
+status 4xx: 1
+top paths:
+  /a/b.gif 2
+  / 1
+  /login 1
+malformed: 1
