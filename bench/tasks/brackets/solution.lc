@@ -1,0 +1,13 @@
+fn check(line str) str =
+  pairs = {")": "(", "]": "[", "}": "{"}
+  var stack = []
+  for i, c in line.chars.enumerate():
+    if c in "([{":
+      stack.push(c)
+    elif c in pairs:
+      if stack.pop() != pairs[c]: return "error at {i + 1}"
+  if stack.is_empty(): "ok" else: "error at end"
+
+fn main() =
+  for line in io.lines():
+    print(check(line))

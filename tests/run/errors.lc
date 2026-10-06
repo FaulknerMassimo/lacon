@@ -1,0 +1,33 @@
+type User {name str, age u32}
+
+fn parse_user(line str) User! =
+  p = line.split(",").map(it.trim())
+  if p.len != 2: fail "bad line: {line}"
+  User{p[0], p[1].parse()?}
+
+fn parse_all(lines [str]) [User]! = lines.map(parse_user(it)?)
+
+fn find_age(users [User], name str) u32? =
+  u = users.find(it.name == name)?
+  u.age
+
+fn safe_div(a int, b int) int! =
+  if b == 0: fail "divide by zero"
+  a / b
+
+fn main()! =
+  u = parse_user("ann, 30")?
+  print(u, u.name, u.age)
+  print(parse_user("bad") ?? User{"default", 0})
+  r = parse_user("bob, x")
+  match r
+    err(e): print("failed: {e}")
+    v: print("ok {v}")
+  users = parse_all(["a, 1", "b, 2"])?
+  print(users.len, find_age(users, "b"), find_age(users, "zed"))
+  print(parse_all(["a, 1", "oops"]).is_err())
+  print(safe_div(10, 2)?, safe_div(1, 0) ?? -1)
+  bad = safe_div(1, 0)
+  print(bad.is_err(), int("nope") ?? 7)
+  safe_div(5, 0)?
+  print("unreachable")

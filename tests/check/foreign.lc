@@ -1,0 +1,17 @@
+fn main() =
+  let x = 5
+  let mut y = 0
+  z := 3
+  y++
+  for (i = 0; i < 3; i++):
+    print(i)
+  w = [x * 2 for x in xs]
+  s: int = 4
+  print(x)  // comment
+  r = String::new()
+  if x > 3 {
+    print(x)
+  }
+  f = lambda x: x + 1
+  g = xs.map(x => x + 1)
+  println!("hi")

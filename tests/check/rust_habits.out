@@ -1,0 +1,8 @@
+E0130 rust_habits.lc:2:10 no macros; lists are literals: `[1, 2, 3]`
+E0147 rust_habits.lc:3:3 no `if let`; an optional is the value or `none`: `x = m.get(k)` then `if x != none:`, or use `match` with a `none:` arm
+E0147 rust_habits.lc:5:3 no `while let`; write `while !stack.is_empty():` and then `x = stack.pop().unwrap()`
+E0125 rust_habits.lc:7:39 no turbofish: methods return lists, so `.collect()` and type arguments aren't needed
+E0130 rust_habits.lc:8:12 no macros; write `assert a == b` (or `assert cond, "msg"`)
+E0101 rust_habits.lc:9:10 empty `{}` in string: put the value inside, "{x}" (no format placeholders); `{{}}` is a literal `{}`
+E0110 rust_habits.lc:10:9 no `is`; compare with `==` / `!=`, e.g. `x == none`
+[exit 1]

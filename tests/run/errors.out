@@ -1,0 +1,9 @@
+User{name: "ann", age: 30} ann 30
+User{name: "default", age: 0}
+failed: cannot parse "x" as a number
+2 2 none
+true
+5 -1
+true 7
+error: divide by zero
+[exit 1]

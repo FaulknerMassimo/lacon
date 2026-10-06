@@ -1,0 +1,56 @@
+type Point {x int, y int}
+
+fn main() =
+  xs = [5, 3, 8, 1, 9, 2]
+  print(xs.sort(), xs.sort_by(-it), xs.rev(), xs.len, xs.sum(), xs.max(), xs.min())
+  print(xs.filter(it > 3).map(it * 10), xs.any(it > 8), xs.all(it > 0), xs.count(it % 2 == 0))
+  print(xs.find(it > 5), xs.find(it > 100), xs.position(it == 8), xs.index(9), xs.first, xs.last)
+  print(xs.take(2), xs.skip(4), xs[1..3], xs[-2:], xs.chunks(4), xs.windows(5).len)
+  print(xs.enumerate().take(2), xs.zip(["a", "b"]), [[1, 2], [3]].flatten(), [1, 2, 2, 3, 1].unique())
+  print(xs.fold(0, |acc, x| acc + x), xs.reduce(|a, b| a.max(b)), xs.group_by(it % 3))
+  print(xs.partition(it > 4), xs.contains(8), 8 in xs, 4 not in xs, xs.join("-"))
+  var ys = []
+  ys.push(1)
+  ys.push(2)
+  ys.extend([3, 4])
+  ys.insert(0, 0)
+  last = ys.pop()
+  removed = ys.remove(1)
+  print(ys, last, removed)
+  ys[0] = 100
+  ys[-1] += 5
+  print(ys)
+  var m = {}
+  for w in "the cat and the hat and the bat".split():
+    m[w] += 1
+  print(m)
+  print(m["the"], m.get("dog"), m.get("dog") ?? 0, m.get("dog", -1), "cat" in m, m.keys(), m.values().sum())
+  for k, v in m.sort_by(-it.1).take(2):
+    print("{k}={v}")
+  for k in {"a": 1, "b": 2}:
+    print(k)
+  var groups = {}
+  for w in ["apple", "avocado", "banana", "blueberry", "cherry"]:
+    groups[w[0]].push(w)
+  print(groups)
+  m.remove("the")
+  print(m.len, m.items().first)
+  var seen = {1, 2}
+  seen.add(3)
+  seen.add(2)
+  print(seen, seen.len, 2 in seen, {1, 2, 3} & {2, 3, 4}, {1, 2} | {5}, {1, 2, 3} - {1})
+  var pts = [Point{1, 2}, Point{x: 5, y: -1}, Point{y: 0, x: 3}]
+  pts[0].x = 50
+  print(pts.sort_by(it.x).map(it.x), pts.max_by(it.y), pts.min_by(it.x))
+  visited = {Point{1, 1}, Point{1, 1}, Point{2, 1}}
+  print(visited.len, (1, 2) == (1, 2), [(1, "b"), (1, "a"), (0, "z")].sort())
+  r = (0..10).step_by(3)
+  print(r.to_list(), (1..=5).sum(), (0..5).rev().to_list(), (0..1000000).len, range(5, 0, -2).to_list())
+  matrix = [[1, 2, 3], [4, 5, 6]]
+  print(matrix[1][2], matrix.map(it.sum()), matrix.flat_map(it.map(it * it)))
+  t = ("a", 1, true)
+  print(t.0, t.2, t)
+  nested = {"k": [1, 2]}
+  print(nested["k"][1], len(xs), sum(xs), max(3, 9, 4), min(xs), abs(-5), sorted_ok(xs))
+
+fn sorted_ok(xs [int]) bool = xs.sort() == xs.sort_by(it)

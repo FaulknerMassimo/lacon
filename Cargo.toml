@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/syntax", "crates/interp", "crates/cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+debug = 1

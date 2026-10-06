@@ -1,0 +1,53 @@
+# Bindings, arithmetic, strings, control flow.
+MAX = 10
+
+fn fib(n int) int =
+  if n < 2: return n
+  fib(n - 1) + fib(n - 2)
+
+fn classify(n int) str =
+  if n < 0: "neg"
+  elif n == 0: "zero"
+  else: "pos"
+
+fn main() =
+  x = 7
+  var total = 0
+  for i in 0..x:
+    total += i
+  print("total {total}")
+  print("fib {fib(15)}")
+  print(classify(-3), classify(0), classify(MAX))
+  y = if x > 5: "big" else: "small"
+  print(y)
+  z = "yes" if x % 2 == 1 else "no"
+  print(z)
+  var i = 0
+  while true:
+    i += 1
+    if i == 3: continue
+    if i > 5: break
+    print("i={i}")
+  print("{1 + 2 * 3} {7 / 2} {7 % 3} {2 ** 10} {7.0 / 2} {-7 / 2}")
+  print("{3.14159:.2} [{42:>5}] [{"ab":<4}] [{5:03}] {255:x} {0.1 + 0.2}")
+  s = "Hello, World"
+  print(s.len, s.upper(), s.lower(), s[0], s[-1], s[0..5], s[7:])
+  print(s.split(", "), s.contains("World"), s.find("o"), s.replace("l", "L"))
+  print("  pad  ".trim() + "|", "a-b-c".split("-").join("+"))
+  print("{{literal}} braces and {x}")
+  name = "ann"
+  print("nested {name.upper()} {[1, 2, 3].map(it * 2)}")
+  multi = """
+    line one
+      indented {x}
+    line three
+    """
+  print(multi)
+  a, b = 1, 2
+  var p = 10
+  var q = 20
+  p, q = q, p
+  print(a, b, p, q)
+  print(1 < 2 < 3, 3 < 2 < 4, not true, true and false or true)
+  print(int("42") + 1, f64(3), str(5) + "!", 3.9 as int, "12".parse() ?? 0)
+  print(int.max, 10.min(3), (-4).abs(), 2.0.sqrt(), 9.pow(2), math.pi > 3.0)

@@ -1,0 +1,7 @@
+fn get(xs [int], i int) int = xs[i]
+
+fn outer(xs [int]) int = get(xs, 5) + 1
+
+fn main() =
+  print("before")
+  print(outer([1, 2, 3]))

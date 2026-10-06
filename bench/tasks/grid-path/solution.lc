@@ -1,0 +1,26 @@
+fn main()! =
+  lines = io.lines()
+  dims = lines[0].split().map(int(it)?)
+  rows = dims[0]
+  cols = dims[1]
+  grid = lines[1..rows + 1]
+  var start = (0, 0)
+  for r in 0..rows:
+    for c in 0..cols:
+      if grid[r][c] == "S": start = (r, c)
+  var dist = {start: 0}
+  var queue = [start]
+  var head = 0
+  while head < queue.len:
+    (r, c) = queue[head]
+    head += 1
+    if grid[r][c] == "E":
+      print(dist[(r, c)])
+      return
+    for (dr, dc) in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+      nr = r + dr
+      nc = c + dc
+      if nr >= 0 and nr < rows and nc >= 0 and nc < cols and grid[nr][nc] != "#" and (nr, nc) not in dist:
+        dist[(nr, nc)] = dist[(r, c)] + 1
+        queue.push((nr, nc))
+  print(-1)

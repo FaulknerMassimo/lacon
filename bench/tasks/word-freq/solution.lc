@@ -1,0 +1,20 @@
+fn words(text str) [str] =
+  var out = []
+  var cur = ""
+  for c in text.lower():
+    if c >= "a" and c <= "z":
+      cur += c
+    elif !cur.is_empty():
+      out.push(cur)
+      cur = ""
+  if !cur.is_empty(): out.push(cur)
+  out
+
+fn main()! =
+  lines = io.lines()
+  n = int(lines[0])?
+  var counts = {}
+  for w in words(lines.skip(1).join("\n")):
+    counts[w] += 1
+  for w, c in counts.sort_by((-it.1, it.0)).take(n):
+    print("{w} {c}")

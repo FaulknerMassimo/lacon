@@ -1,0 +1,13 @@
+E0202 names.lc:8:5 `total` is immutable; declare it with `var total = ...` (or take a parameter as `mut total T`)
+E0201 names.lc:11:9 `inner` was bound inside a block that has ended; declare `var inner = ...` before the block, or bind the block's value: `inner = if c: a else: b`
+E0201 names.lc:12:9 `totl` is not defined | fix: total
+E0202 names.lc:14:3 `xs` is immutable; declare it with `var xs = ...` (or take a parameter as `mut xs T`)
+E0203 names.lc:15:6 no method `append`: lists use `push`
+E0202 names.lc:17:3 `u` is immutable; declare it with `var u = ...` (or take a parameter as `mut u T`)
+E0203 names.lc:18:11 no field or method `nme` | fix: name
+E0207 names.lc:19:7 missing field(s) age in `User`
+E0409 names.lc:20:3 result of `sort` is unused: it returns a new value and does not change `xs` | fix: xs = xs.sort()
+E0409 names.lc:22:3 result of `trim` is unused: it returns a new value and does not change `s` | fix: s = s.trim()
+E0201 names.lc:23:9 `None` is not defined: write `none`
+E0206 names.lc:24:20 too many fields for `User` (2 fields: name, age)
+[exit 1]

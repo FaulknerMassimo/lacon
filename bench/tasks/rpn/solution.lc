@@ -1,0 +1,23 @@
+fn eval_rpn(line str) int! =
+  var stack = []
+  for tok in line.split():
+    if tok in ["+", "-", "*", "/"]:
+      if stack.len < 2: fail "underflow"
+      b = stack.pop()?
+      a = stack.pop()?
+      v = match tok
+        "+": a + b
+        "-": a - b
+        "*": a * b
+        _:
+          if b == 0: fail "division by zero"
+          a / b
+      stack.push(v)
+    else:
+      stack.push(int(tok)?)
+  if stack.len != 1: fail "leftover"
+  stack[0]
+
+fn main() =
+  for line in io.lines():
+    print(eval_rpn(line) ?? "error")

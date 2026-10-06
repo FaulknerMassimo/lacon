@@ -1,0 +1,10 @@
+fn main() =
+  v = vec![1, 2, 3]
+  if let Some(x) = v.get(0):
+    print(x)
+  while let Some(top) = v.pop():
+    print(top)
+  ys = v.iter().map(|x| x * 2).collect::<Vec<_>>()
+  assert_eq!(ys.len, 3)
+  print("{}", ys)
+  if ys is none: print("none")

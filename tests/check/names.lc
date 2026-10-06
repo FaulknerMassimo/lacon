@@ -1,0 +1,24 @@
+type User {name str, age int}
+
+fn greet(u User) str = "hi {u.name}"
+
+fn main() =
+  total = 0
+  for x in [1, 2]:
+    total = total + x
+  if true:
+    inner = 1
+  print(inner)
+  print(totl)
+  xs = [1, 2]
+  xs.push(3)
+  xs.append(4)
+  u = User{"ann", 30}
+  u.age = 31
+  print(u.nme, u.greet(), greet(u, 1))
+  v = User{name: "x"}
+  xs.sort()
+  s = "abc"
+  s.trim()
+  print(None, True, self)
+  w = User{"a", 1, 2}

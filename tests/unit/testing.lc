@@ -1,0 +1,20 @@
+type User {name str, age u32, city str}
+
+fn parse_line(line str) User! =
+  p = line.split(',').map(it.trim())
+  if p.len != 3: fail "bad line: {line}"
+  User{p[0], p[1].parse()?, p[2]}
+
+test "parses a line": parse_line("ann, 30, Oslo")? == User{"ann", 30, "Oslo"}
+test "rejects short lines": parse_line("ann").is_err()
+test "wrong expectation": parse_line("ann, 30, Oslo")? == User{"ann", 31, "Oslo"}
+test "multi step":
+  u = parse_line("bob, 4, Rome")?
+  assert u.age == 4
+  assert u.city.len == 4, "city length"
+  u.name == "bob"
+test "propagates error": parse_line("x, y, z")?.age == 1
+test "list diff": [1, 2, 3].map(it * 2) == [2, 4, 7]
+test "prints then fails":
+  print("debug line")
+  assert 1 > 2

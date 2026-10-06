@@ -1,0 +1,15 @@
+fn main()! =
+  lines = io.lines()
+  n = int(lines[0])?
+  var ivs = []
+  for line in lines[1..n + 1]:
+    p = line.split()
+    ivs.push((int(p[0])?, int(p[1])?))
+  var merged = []
+  for (a, b) in ivs.sort():
+    if !merged.is_empty() and a <= merged[-1].1:
+      merged[-1] = (merged[-1].0, merged[-1].1.max(b))
+    else:
+      merged.push((a, b))
+  for (a, b) in merged:
+    print("{a} {b}")

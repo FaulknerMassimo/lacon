@@ -264,6 +264,12 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
 first attempts parse. If not, change the syntax and rerun. This phase is the
 cheapest place to find out the idea doesn't work.
 
+**Status.** Built: the primer (2,343 tokens), the parser, the resolver and
+interpreter (`crates/`), the `lacon` CLI with `run`, `test`, `check`, `sig` and
+`explain`, golden tests over `tests/`, and 6 of the 30 tasks with a checker
+(`bench/tasks/`). Not built yet: the other 24 tasks and the harness that has
+Claude solve them. See §12 for the semantics the interpreter settled on.
+
 ### Phase 1 — MVP
 
 Type checker, C backend, core standard library (`str`, collections, `fs`, formatting),
@@ -313,21 +319,36 @@ the standard traits, a REPL, self-hosting, and a second way to do anything.
 
 ## 10. Open questions
 
-To settle with Phase 0 data rather than by taste:
+To settle with Phase 0 data rather than by taste. The interpreter needed an
+answer for each, so each has a provisional one (in italics) that the benchmark
+can overturn.
 
-- **Indentation or braces.** Measure both on the task suite.
+- **Indentation or braces.** Measure both on the task suite. *Indentation;
+  braces get a hint.*
 - **Parentheses on zero-argument methods.** The sample uses `p.len` and
   `.lines` but `it.trim()` and `.parse()`. That's inconsistent; pick one rule
-  (likely: parentheses optional, the formatter removes them).
+  (likely: parentheses optional, the formatter removes them). *Optional.*
 - **Positional struct literals.** They save tokens but allow swapped fields of
   the same type. Possibly allow them only when every field type is distinct.
+  *Allowed; a bare name that matches a field is shorthand for `field: field`,
+  so `User{city, name, age}` can't swap.*
 - **Missing map keys.** `counts[k] += 1` relies on Go-style zero values. Decide
-  whether a plain read of a missing key returns the zero value or `V?`.
+  whether a plain read of a missing key returns the zero value or `V?`. *A
+  plain read is an error, `m.get(k)` is `V?`, and compound assignment or a
+  mutating method (`m[k].push(x)`) creates the zero value first.*
 - **`?` inside `it` lambdas.** Does it return from the lambda or from the
-  enclosing function?
+  enclosing function? *The enclosing function, so `lines.map(parse(it)?)`
+  works.*
 - **Integer overflow.** Trap always, or trap in debug and wrap in release like
-  Rust.
-- **Effects.** Inferred only, or declarable per package as in §3.6.
+  Rust. *Trap always.*
+- **Effects.** Inferred only, or declarable per package as in §3.6. *Inferred
+  only; `lacon sig` shows `io` or `pure`.*
+- **Braces in strings.** With interpolation everywhere, `"{"` was an error, and
+  bracket and JSON code hit it at once. *A `{` that can't start an
+  interpolation is literal.*
+- **Blocks inside brackets.** Layout is off inside `( )`, so
+  `push(match x ...)` with indented arms can't parse. *A hint says to bind it
+  first.* An agent writing Rust-style code will hit this; measure how often.
 
 ---
 
@@ -337,13 +358,51 @@ Now:
 
 ```
 PLAN.md          this document
+docs/primer.md   the language primer an agent gets (≤ 3,000 tokens)
+crates/syntax    lexer, parser, AST, diagnostics
+crates/interp    Phase 0 resolver and tree-walking interpreter
+crates/cli       the `lacon` binary
+tests/           golden tests: run/ (stdout), check/ (diagnostics), unit/ (`lacon test`)
 bench/tokens/    the same program in Rust, Go, Python and Lacon, plus a token counter
+bench/tasks/     Phase 0 tasks (prompt, hidden tests, reference) and a checker
 ```
 
-Planned:
+Planned: the model harness in `bench/tasks/`, and `check`, `ir` and `cgen`
+crates for the Phase 1 compiler.
 
-```
-docs/primer.md   the ≤ 3,000-token language primer
-bench/tasks/     the Phase 0 task suite and harness
-crates/          Rust workspace: syntax, check, ir, cgen, cli
-```
+---
+
+## 12. Phase 0 semantics
+
+Decisions the interpreter made beyond §3, for the benchmark to confirm or
+overturn.
+
+- **Methods are functions.** No `impl` blocks or `self`: `fn area(s Shape)` is
+  called `s.area()` or `area(s)`, overloaded on the first parameter's type.
+  Builtin methods work as functions too (`len(xs)`). Traits aren't
+  implemented; generics are checked at run time.
+- **Methods don't mutate**, except `push`, `pop`, `insert`, `remove`,
+  `extend`, `clear`, `add`, `swap`, `truncate` and `retain`. `xs.sort()`
+  returns the sorted list, and calling it as a statement is a static error
+  with the fix `xs = xs.sort()`.
+- **`mut` parameters** copy in and copy out, which matches in-place
+  modification under value semantics. Arguments need no marker at the call
+  site.
+- **Accept foreign spellings with the same meaning; hint the rest.** The
+  parser accepts `->`, `&&`, `||`, `!`, `else if`, `name: Type`, `f"..."`,
+  `case` and `=>` in match arms, `loop:`, `User(a, b)`, and Rust no-ops like
+  `.iter()`, `.collect()` and `.clone()`. It rejects `let`, `//`, braces,
+  `::`, `:=`, `++`, `if let`, comprehensions and macros, each with a one-line
+  hint. This breaks §8's "no second way to do anything" on purpose: accepting
+  costs no retry, and a formatter can rewrite aliases to the canonical form.
+  Whether the aliases cost accuracy later is a Phase 0 question.
+- **No truthiness.** Conditions must be `bool`.
+- **Numbers.** Ints and floats mix and give `f64`; int `/` and `%` truncate
+  like Rust; integers are 64-bit at run time, with declared sized types
+  (`u8`, `u32`) range-checked at function, struct and return boundaries.
+- **Determinism.** Maps and sets keep insertion order, so output never
+  depends on hashing.
+- **Strings** index and slice by character. One-character strings stand in
+  for `char`.
+- **Iteration.** `for k, v in m` gives pairs and `for k in m` gives keys.
+  Other methods on a map see `(k, v)` tuples and return lists.

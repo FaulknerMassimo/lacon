@@ -1,0 +1,2 @@
+E0146 match_in_parens.lc:4:14 a `match` with arms on their own lines cannot sit inside brackets; bind it first (`v = match x` + arms), then use `v`
+[exit 1]

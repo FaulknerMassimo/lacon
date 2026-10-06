@@ -1,0 +1,4 @@
+E0213 types.lc:3:24 match on `Shape` is missing Rect; add the arm(s) or `_:`
+E0204 types.lc:6:8 unknown type `String`: the string type is `str`
+E0204 types.lc:8:9 unknown type `list`: lists are written `[T]`
+[exit 1]

@@ -1,0 +1,8 @@
+[3.0, 7.0, 0.0, 1.0] 11.0
+Rect(2.0, 3.5) [Circle(1.0), Rect(2.0, 3.5), Unit, Rect(1.0, 1.0)]
+-10 Add(Num(2), Mul(Num(3), Neg(Num(4))))
+["zero", "small", "negative", "digit", "big"]
+x3
+first 1 rest [2, 3]
+nothing
+[exit 0]

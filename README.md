@@ -9,9 +9,22 @@ The name comes from *laconic*: saying a lot in few words.
 
 ## Status
 
-Design phase. There is no compiler yet. The design and build plan is in
-[PLAN.md](PLAN.md); the next step is Phase 0, which tests whether agents
-actually spend fewer tokens in Lacon before any compiler work starts.
+Phase 0: testing whether agents actually spend fewer tokens in Lacon before
+any compiler work starts. There is a [primer](docs/primer.md) (the whole
+language in about 2,300 tokens) and a throwaway tree-walking interpreter that
+runs Lacon programs and their tests. There is no compiler or type checker yet.
+The design and build plan is in [PLAN.md](PLAN.md).
+
+```
+cargo build --release
+./target/release/lacon run bench/tasks/rpn/solution.lc < bench/tasks/rpn/tests/1.in
+./target/release/lacon test tests/unit/primer.lc     # run inline tests
+./target/release/lacon check file.lc                 # errors only, one per line
+./target/release/lacon sig bench/tokens/users.lc     # signatures and effects
+./target/release/lacon explain E0202                 # long form of a diagnostic
+cargo test                                           # golden tests in tests/
+uv run bench/tasks/check.py                          # task solutions vs hidden tests
+```
 
 ## What it looks like
 

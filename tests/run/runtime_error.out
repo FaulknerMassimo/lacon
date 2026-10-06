@@ -1,0 +1,5 @@
+before
+E0402 runtime_error.lc:1:31 index 5 out of range for length 3
+  in `get`, called at runtime_error.lc:3:26
+  in `outer`, called at runtime_error.lc:7:9
+[exit 1]

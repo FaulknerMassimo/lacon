@@ -1,0 +1,17 @@
+FAIL "wrong expectation" testing.lc:10:1
+  E0420 testing.lc:10:27 left != right
+    left:  User{name: "ann", age: 30, city: "Oslo"}
+    right: User{name: "ann", age: 31, city: "Oslo"}
+    first difference at .age: 30 vs 31
+FAIL "propagates error" testing.lc:16:1 error: cannot parse "y" as a number
+FAIL "list diff" testing.lc:17:1
+  E0420 testing.lc:17:19 left != right
+    left:  [2, 4, 6]
+    right: [2, 4, 7]
+    first difference at [2]: 6 vs 7
+FAIL "prints then fails" testing.lc:18:1
+  E0421 testing.lc:20:3 assertion failed
+  output (1 lines, last 5):
+    debug line
+4 failed, 3 passed
+[exit 1]

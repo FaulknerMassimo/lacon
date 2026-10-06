@@ -1,0 +1,13 @@
+[package]
+name = "lacon-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lacon"
+path = "src/main.rs"
+
+[dependencies]
+lacon-syntax = { path = "../syntax" }
+lacon-interp = { path = "../interp" }

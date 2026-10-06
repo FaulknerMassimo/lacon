@@ -1,0 +1,63 @@
+# Value semantics: assignment copies (on write), `mut` parameters update the caller.
+type Stack {items [int]}
+
+fn push2(mut s Stack, x int) =
+  s.items.push(x)
+  s.items.push(x)
+
+fn bump(mut n int) = n += 1
+
+fn total(s Stack) int = s.items.sum()
+
+fn top(s Stack) int? = s.items.last
+
+fn sorted_copy(xs [int]) [int] =
+  var ys = xs
+  ys.push(0)
+  ys.sort()
+
+fn make_adder(n int) fn(int) int = |x| x + n
+
+fn apply_twice(f fn(int) int, x int) int = f(f(x))
+
+fn main() =
+  var a = [1, 2, 3]
+  var b = a
+  b.push(4)
+  print(a, b)
+  var s = Stack{[]}
+  push2(s, 7)
+  s.push2(9)
+  print(s, s.total(), s.total, s.top())
+  var n = 1
+  bump(n)
+  bump(n)
+  print(n)
+  xs = [3, 1, 2]
+  print(sorted_copy(xs), xs)
+  add5 = make_adder(5)
+  print(add5(1), apply_twice(add5, 0), apply_twice(it * 3, 2), [1, 2].map(add5))
+  var counter = 0
+  for x in [1, 2, 3]:
+    counter += x
+  print(counter)
+  var grid = [[0, 0], [0, 0]]
+  grid[1][0] = 5
+  row = grid[1]
+  grid[1][1] = 9
+  print(grid, row)
+  var m = {"a": {"x": 1}}
+  m["a"]["y"] = 2
+  m["b"]["z"] = 3
+  print(m)
+  words = ["bb", "a", "ccc"]
+  print(words.map(len), words.sort_by(it.len), words.map(it.upper()))
+  big = (0..100000).to_list()
+  var acc = []
+  for x in big:
+    acc.push(x * 2)
+  print(acc.len, acc[-1])
+  var text = ""
+  for i in 0..5:
+    text += "{i},"
+  print(text)

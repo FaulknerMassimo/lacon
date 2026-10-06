@@ -1,0 +1,10 @@
+enum Shape = Circle(f64) | Rect(f64, f64)
+
+fn area(s Shape) f64 = match s
+  Circle(r): r * r
+
+fn f(x String, y Vec[int], z usize) Option[int] = none
+
+fn g(xs list[int]) dict = {}
+
+fn main() = print(area(Circle(1.0)))

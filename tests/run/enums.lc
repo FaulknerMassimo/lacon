@@ -1,0 +1,48 @@
+enum Shape = Circle(f64) | Rect(f64, f64) | Unit
+
+enum Expr =
+  | Num(int)
+  | Add(Expr, Expr)
+  | Mul(Expr, Expr)
+  | Neg(Expr)
+
+fn area(s Shape) f64 = match s
+  Circle(r): 3.0 * r * r
+  Rect(w, h): w * h
+  Unit: 0.0
+
+fn eval(e Expr) int = match e
+  Num(n): n
+  Add(a, b): eval(a) + eval(b)
+  Mul(a, b): a.eval() * b.eval()
+  Neg(x): -eval(x)
+
+fn describe(n int) str = match n
+  0: "zero"
+  1 | 2 | 3: "small"
+  x if x < 0: "negative"
+  4..=9: "digit"
+  _: "big"
+
+fn main() =
+  shapes = [Circle(1.0), Rect(2.0, 3.5), Unit, Shape.Rect(1.0, 1.0)]
+  print(shapes.map(area), shapes.map(it.area()).sum())
+  print(shapes[1], shapes)
+  e = Add(Num(2), Mul(Num(3), Neg(Num(4))))
+  print(eval(e), e)
+  print([0, 2, -5, 7, 100].map(describe))
+  pair = (3, "x")
+  msg = match pair
+    (0, _): "zero"
+    (n, s) if n > 2: "{s}{n}"
+    _: "other"
+  print(msg)
+  head = match [1, 2, 3]
+    [first, ..rest]: "first {first} rest {rest}"
+    []: "empty"
+  print(head)
+  opt = [1, 2].get(5)
+  got = match opt
+    none: "nothing"
+    v: "got {v}"
+  print(got)
