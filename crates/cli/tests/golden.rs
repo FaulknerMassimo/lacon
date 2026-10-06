@@ -2,6 +2,8 @@
 //! - `tests/run/X.lc`: `lacon run` stdout+stderr must equal `X.out`
 //! - `tests/check/X.lc`: `lacon check` output must equal `X.out`
 //! - `tests/unit/X.lc`: `lacon test` output must equal `X.out`
+//! - `tests/run/X.lc` again, built with `lacon build`: the native program's
+//!   output must equal the same `X.out` (skipped without a C compiler)
 //!
 //! Regenerate expectations with `BLESS=1 cargo test`.
 
@@ -60,4 +62,38 @@ fn check_diagnostics() {
 #[test]
 fn inline_tests() {
     check_dir("unit", "test");
+}
+
+#[test]
+fn native_programs() {
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    if Command::new(&cc).arg("--version").output().is_err() {
+        eprintln!("no C compiler; skipping native builds");
+        return;
+    }
+    let dir = root().join("run");
+    let out_dir = std::env::temp_dir().join(format!("lacon-native-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "lc")).collect();
+    files.sort();
+    let mut failures = Vec::new();
+    for f in files {
+        let name = f.file_name().unwrap().to_str().unwrap().to_string();
+        let exe = out_dir.join(f.file_stem().unwrap());
+        let b = Command::new(env!("CARGO_BIN_EXE_lacon")).args(["build", &name, "-o"]).arg(&exe).current_dir(&dir).output().expect("run lacon");
+        if !b.status.success() {
+            failures.push(format!("--- {name}: build failed\n{}", String::from_utf8_lossy(&b.stderr)));
+            continue;
+        }
+        let out = Command::new(&exe).current_dir(&dir).output().expect("run native program");
+        let mut got = String::from_utf8_lossy(&out.stdout).into_owned();
+        got.push_str(&String::from_utf8_lossy(&out.stderr));
+        got.push_str(&format!("[exit {}]\n", out.status.code().unwrap_or(-1)));
+        let want = std::fs::read_to_string(f.with_extension("out")).unwrap_or_default();
+        if got != want {
+            failures.push(format!("--- {name}: want\n{want}--- got\n{got}"));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&out_dir);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

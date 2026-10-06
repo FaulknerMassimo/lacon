@@ -1,15 +1,9 @@
 [package]
-name = "lacon-cli"
+name = "lacon-cgen"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "lacon"
-path = "src/main.rs"
-
 [dependencies]
 lacon-syntax = { path = "../syntax" }
 lacon-interp = { path = "../interp" }
-lacon-check = { path = "../check" }
-lacon-cgen = { path = "../cgen" }

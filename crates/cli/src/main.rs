@@ -2,6 +2,7 @@
 //! line-oriented because its main reader is an agent.
 
 mod explain;
+mod native;
 
 use std::process::ExitCode;
 
@@ -14,6 +15,7 @@ usage: lacon <command> [args]
   run <file.lc> [args...]   run main
   test <file.lc>... [-k s]  run inline tests; prints only failures
   check <file.lc>...        report errors without running
+  build <file.lc> [-o exe]  compile to a native executable
   sig <file.lc>             signatures, docs and effects, no bodies
   explain <code>            long form of a diagnostic code, e.g. E0202";
 
@@ -51,6 +53,7 @@ fn real_main() -> ExitCode {
                 ExitCode::from(1)
             }
         }
+        "build" => build(rest),
         "sig" => match rest.first() {
             Some(f) => sig(f),
             None => usage_err("sig needs a file"),
@@ -228,6 +231,45 @@ fn test(args: &[String]) -> ExitCode {
     } else {
         println!("{failed} failed, {passed} passed");
         ExitCode::from(1)
+    }
+}
+
+/// Compiles a program to a native executable through C.
+fn build(args: &[String]) -> ExitCode {
+    let mut file = None;
+    let mut out = None;
+    let mut keep_c = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" => {
+                out = args.get(i + 1).cloned();
+                i += 2;
+                continue;
+            }
+            "--emit-c" => keep_c = true,
+            a => file = Some(a.to_string()),
+        }
+        i += 1;
+    }
+    let Some(file) = file else {
+        return usage_err("build needs a file");
+    };
+    let Some((src, prog)) = load(&file) else {
+        return ExitCode::from(1);
+    };
+    if prog.main.is_none() {
+        eprintln!("E0215 {file}:1:1 no `fn main()` to build");
+        return ExitCode::from(1);
+    }
+    let out = out.unwrap_or_else(|| std::path::Path::new(&file).file_stem().map_or("a.out".into(), |s| s.to_string_lossy().into_owned()));
+    let c = lacon_cgen::generate(&prog, &src);
+    match native::compile(&c, &out, keep_c) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("build failed: {e}");
+            ExitCode::from(1)
+        }
     }
 }
 

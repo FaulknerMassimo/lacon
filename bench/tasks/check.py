@@ -3,6 +3,7 @@
     uv run bench/tasks/check.py                 # every task, every solution file
     uv run bench/tasks/check.py rpn grid-path   # selected tasks
     uv run bench/tasks/check.py --bless rpn     # rewrite tests/N.out from ref.py
+    uv run bench/tasks/check.py --native        # Lacon solutions compiled with `lacon build`
 
 A task is a directory with `prompt.md`, `tests/N.in` + `tests/N.out`, and any
 number of solutions: `solution.lc`, `solution.py`, `solution.rs`,
@@ -22,6 +23,7 @@ TIMEOUT = 10
 
 
 _lacon: str | None = None
+NATIVE = False
 
 
 def lacon() -> str:
@@ -42,6 +44,10 @@ def command(sol: Path, build_dir: Path) -> list[str] | None:
     """The command that runs a solution, compiling it first if needed."""
     ext = sol.suffix
     if ext == ".lc":
+        if NATIVE:
+            exe = build_dir / "lc"
+            subprocess.run([lacon(), "build", str(sol), "-o", str(exe)], check=True, capture_output=True)
+            return [str(exe)]
         return [lacon(), "run", str(sol)]
     if ext == ".py":
         return [sys.executable, str(sol)]
@@ -75,7 +81,7 @@ def bless(task: Path) -> None:
 def run_task(task: Path) -> bool:
     tests = tests_of(task)
     ok = True
-    for sol in sorted(p for p in task.iterdir() if p.stem in ("solution", "ref")):
+    for sol in sorted(p for p in task.iterdir() if p.stem in ("solution", "ref") and (not NATIVE or p.suffix == ".lc")):
         with tempfile.TemporaryDirectory() as tmp:
             try:
                 cmd = command(sol, Path(tmp))
@@ -105,7 +111,9 @@ def run_task(task: Path) -> bool:
 
 
 def main() -> int:
-    names = [a for a in sys.argv[1:] if a != "--bless"]
+    global NATIVE
+    NATIVE = "--native" in sys.argv
+    names = [a for a in sys.argv[1:] if a not in ("--bless", "--native")]
     tasks = [HERE / n for n in names] if names else sorted(p for p in HERE.iterdir() if (p / "prompt.md").exists())
     if "--bless" in sys.argv:
         for t in tasks:
