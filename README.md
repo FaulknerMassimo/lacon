@@ -13,15 +13,18 @@ Phase 0: testing whether agents actually spend fewer tokens in Lacon before
 any compiler work starts. There is a [primer](docs/primer.md) (the whole
 language in under 3,000 tokens), a throwaway tree-walking interpreter that
 runs Lacon programs and their tests, 30 benchmark tasks with hidden tests, and
-a harness that has Claude solve them in Lacon, Python, Rust and Go. There is no
-compiler or type checker yet. The design and build plan is in
+a harness that has Claude solve them in Lacon, Python, Rust and Go.
+
+Phase 1 has started with a static type checker: `run`, `test` and `check`
+report type errors before anything runs, each on one line with a fix where
+there is one. There is no compiler yet. The design and build plan is in
 [PLAN.md](PLAN.md).
 
 ```
 cargo build --release
 ./target/release/lacon run bench/tasks/rpn/solution.lc < bench/tasks/rpn/tests/1.in
 ./target/release/lacon test tests/unit/primer.lc     # run inline tests
-./target/release/lacon check file.lc                 # errors only, one per line
+./target/release/lacon check file.lc                 # syntax, name and type errors, one per line
 ./target/release/lacon sig bench/tokens/users.lc     # signatures and effects
 ./target/release/lacon explain E0202                 # long form of a diagnostic
 cargo test                                           # golden tests in tests/

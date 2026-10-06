@@ -84,16 +84,16 @@ A match covers every variant or ends with `_:`. Patterns: literals, `1 | 2`,
 
 `if`/`elif`/`else` and `while` as in Python. `for x in xs:`, `for i in 0..n:`
 (`0..=n` includes n), `for i, x in xs.enumerate():`, `for k, v in m:`
-(`for k in m:` gives keys). `if` and `match` are expressions;
-`a if c else b` works too. Operators are Python's except `//` and `~`, plus `??`;
-int `/` and `%` truncate as in Rust. Conditions must be `bool` (no truthiness):
-`!xs.is_empty()`, `n != 0`.
+(`for k in m:` gives keys). `if` and `match` are expressions. Operators are
+Python's except `//` and `~`, plus `??`; int `/` and `%` truncate as in Rust.
+Conditions must be `bool` (no truthiness): `!xs.is_empty()`, `n != 0`.
 
 ## Errors and optionals
 
 - A `T!` function fails with `fail "msg"`. `f()?` passes an error up, also from
   inside a lambda (`lines.map(parse(it)?)`); in a `T?` function, `x?` returns
-  `none`. Ignoring an error value is a runtime error.
+  `none`, also for an error. Using a `T?` or `T!` as a `T` unhandled is a
+  compile error; after `if x != none:`, `x` is a `T`.
 - `x ?? d` replaces `none` or an error with `d`. To handle an error, `match r`
   with arms `err(e): ...` then `v: ...`.
 - `m.get(k)`, `xs.get(i)`, `xs.first`, `xs.find(pred)`, `s.find(sub)`,
@@ -103,8 +103,8 @@ int `/` and `%` truncate as in Rust. Conditions must be `bool` (no truthiness):
 
 Every string interpolates: `"{name} is {age}"`. Format specs are Python's
 (`{n:>5}`, `{x:,.2f}`, `{s:<{w}}`), but `{x:.2}` means two decimals. `{{` is a
-literal brace, as is a `{` with no closing `}`. `"""` strings span lines and
-drop common indentation.
+literal brace, as is a `{` with no closing `}`; inside `{...}`, quote strings
+with `'`. `"""` strings span lines and drop common indentation.
 
 Strings index and slice like lists, by character. `len`, `split(",")`,
 `split()` (on whitespace), `lines`, `trim`, `upper`, `lower`, `replace(a, b)`,
@@ -139,14 +139,12 @@ min-heap (type `heap[T]`) with `push(x)`, `pop()` (the smallest), `first`,
 
 ## Standard library
 
-`print(a, b)` (space-separated), `eprint`, `io.read()` (all of stdin),
-`io.lines()`, `io.read_line()`, `io.write(s)` (no newline),
-`fs.read(path)` (str!), `fs.write(path, s)`, `os.args` (without the program
-name), `os.exit(code)`, `math.pi`, `math.inf`, `int.max`, `panic(msg)`.
-Numbers: `abs min max pow sqrt floor ceil round clamp`.
+`print(a, b)`, `eprint`, `io.read()` (all of stdin), `io.lines()`,
+`io.read_line()`, `io.write(s)` (no newline), `fs.read(path)` (str!),
+`fs.write(path, s)` (()!), `os.args` (without the program name),
+`os.exit(code)`, `math.pi`, `math.inf`, `int.max`, `panic(msg)`.
 
 ## Tests
 
 `test "name": expr` passes when `expr` is true. A test can be a block with
-`assert cond, "msg"` inside; a failing `a == b` on its last line shows both
-sides.
+`assert cond, "msg"` inside.

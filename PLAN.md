@@ -282,6 +282,11 @@ Type checker, C backend, core standard library (`str`, collections, `fs`, format
 
 **Done when** every benchmark task compiles natively and passes.
 
+**Status.** Started with the type checker (`crates/check`), which runs before
+`run`, `test` and `check` and reports type errors in the one-line diagnostics
+format. All 30 task solutions and the golden programs check clean; §14 has
+the design and what it found. Not started: the C backend.
+
 ### Phase 2 — Memory model and agent tooling
 
 Mode checking, Perceus reference counting with reuse, `sig`, `fix`, `put`,
@@ -356,6 +361,16 @@ can overturn.
   hit it at once (§13). *A `match` inside brackets finds its arms by column:
   each starts a line at the first arm's column and is one expression. Arms
   that need statements get a hint to bind the match first.*
+- **Branches of different types.** `print(eval(line) ?? "error")` (`calc`,
+  `rpn`) and `[region] + counts` (`pivot`) join an int with a str. *Allowed:
+  the value can be printed or interpolated, and anything else is E0303.*
+- **Unhandled optionals and results.** Using a `T?` or `T!` as a `T` was a
+  runtime error. *A compile error with a fix (`?? 0` or `?`); after
+  `if x != none:` (or a `none:` arm), `x` is a `T`.*
+- **`?` on an error in a `T?` function.** *Returns `none`, which is what
+  `ledger`'s `cents(s) int?` assumed of `int(s)? * 100`.*
+- **Ints that meet floats.** `var total = 0` then `total += x` with a float
+  `x`. *The variable is a float.* A declared `int` stays an error.
 
 ---
 
@@ -368,6 +383,7 @@ PLAN.md          this document
 docs/primer.md   the language primer an agent gets (≤ 3,000 tokens)
 crates/syntax    lexer, parser, AST, diagnostics
 crates/interp    Phase 0 resolver and tree-walking interpreter
+crates/check     type checker over the resolved IR
 crates/cli       the `lacon` binary
 tests/           golden tests: run/ (stdout), check/ (diagnostics), unit/ (`lacon test`)
 bench/tokens/    the same program in Rust, Go, Python and Lacon, plus a token counter
@@ -376,7 +392,7 @@ bench/harness/   has Claude solve the tasks in each language and reports tokens-
 bench/results/   harness runs (created by the harness)
 ```
 
-Planned: `check`, `ir` and `cgen` crates for the Phase 1 compiler.
+Planned: `ir` and `cgen` crates for the C backend.
 
 ---
 
@@ -388,7 +404,8 @@ overturn.
 - **Methods are functions.** No `impl` blocks or `self`: `fn area(s Shape)` is
   called `s.area()` or `area(s)`, overloaded on the first parameter's type.
   Builtin methods work as functions too (`len(xs)`). Traits aren't
-  implemented; generics are checked at run time.
+  implemented: the checker instantiates generics at each call but checks a
+  generic function's own body loosely, since nothing says what a `T` can do.
 - **Methods don't mutate**, except `push`, `pop`, `insert`, `remove`,
   `extend`, `clear`, `add`, `swap`, `truncate` and `retain`. `xs.sort()`
   returns the sorted list, and calling it as a statement is a static error
@@ -512,3 +529,70 @@ The tasks themselves split into parsing (`calc`, `json-format`, `ini-query`,
 `column-align`, `line-diff`, `kv-store`, `path-normalize`) and algorithms
 (`dijkstra`, `topo-order`, `edit-distance`, `knapsack`, `life`, `big-arith`,
 `grid-path`, `merge-intervals`). Lacon solutions average 26 lines.
+
+---
+
+## 14. Phase 1: the type checker
+
+`crates/check` checks the resolver's IR, so names are already slots, `it`
+arguments are lambdas, and assignment targets are places; the IR now keeps
+full declared types and a span on every expression. Signatures are declared
+and bodies inferred:
+
+- **Bidirectional where it helps, unification for the rest.** An expected type
+  flows into lambdas (`xs.map(it.trim())` knows `it` is a `str`), empty
+  literals and `none`. Everything else is unified.
+- **Deferred operations.** `var stack = []` says nothing about the elements,
+  and code often uses them before saying: `kv-store` calls
+  `stack[-1].push(...)` before `stack.push([])`, and `merge-intervals` reads
+  `merged[-1].1` before its first push. A method, field, index, loop or
+  operator on a value of unknown type waits until the type is known. At the
+  end of a function, the method names the type (`m[k].push(x)` makes the
+  values lists) and anything still unknown is left unchecked rather than
+  reported.
+- **Coercions** mirror the interpreter's: an int where a float is wanted, a
+  value where an optional or result is wanted, a range where a list is.
+- **Narrowing.** `x == none` and `x != none` in `if`, `while`, `and` and `or`,
+  `none:` and `err(_):` arms, and assignments of a plain value narrow an
+  optional variable. Loops forget what they assign, since the body runs again.
+- **Leniency.** A wrong type error costs a retry, so the checker reports only
+  what it is sure of: unknown types are never errors, generic bodies are
+  checked loosely, and a no-op `?` on a plain value passes.
+
+Writing it against the existing programs found:
+
+- **Three solutions mix types in a printed value**: `calc` and `rpn` print
+  `eval(line) ?? "error"`, an int or a str, and `pivot` prints
+  `([region] + counts).join(",")`, a list of strs and ints. Both are natural,
+  so a join of unrelated types is allowed as a value that can only be
+  displayed (§10).
+- **`ledger` relied on `?` in a `T?` function**, with an error the interpreter
+  would have reported only at run time; the checker made the rule explicit
+  (§10).
+- **Two golden tests were wrong under static types**: `sum(map(int, strs))`
+  sums `int!` values, and a `{str: int}` map got a list pushed into one key.
+  Both now fail with E0406 and E0203; the tests changed.
+- **`tests/run/basics.lc` never ran.** Its expected output was a parse error
+  since it was written: `"[{"ab":<4}]"` reads `{"` as a literal brace. The test
+  now quotes with `'`, and that parse error gets a hint saying so.
+- **`fn f() {str: int} =` didn't parse**; the map type was taken for a braced
+  body.
+
+The new codes: E0302 (`?` or `fail` in a function that can't fail), E0303 (a
+mixed value used other than for display), E0304 (a path ends without a value),
+E0305 (a function without a return type used for its value). Type mismatches
+are E0301, and optionals and results used unhandled reuse the runtime codes
+E0407 and E0406, so `lacon explain` gives the same advice either way.
+
+The primer now says that an unhandled `T?` or `T!` is a compile error, that
+`?` in a `T?` function also turns errors into `none`, that `fs.write` returns
+`()!`, and to quote with `'` inside `{...}`. Two lines whose guesses work
+(`a if c else b`, the list of number methods) were cut to pay for it, so it
+is 35 bytes shorter than the measured 2,988-token version. It hasn't been
+re-measured in Claude's tokenizer.
+
+Not checked yet: trait bounds (nothing says what a generic `T` supports),
+`mut`/`own` modes beyond what the resolver checks, exhaustiveness for matches
+that aren't over an enum, and error types (`T!E`). Whether the checker costs
+or saves tokens is a harness question: it moves errors from `submit` to `run`
+and catches them on paths the example input doesn't reach.
