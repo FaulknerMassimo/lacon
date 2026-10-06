@@ -1,0 +1,14 @@
+type User {name str, age u32, city str}
+
+fn parse_line(line str) User! =
+  p = line.split(',').map(it.trim())
+  if p.len != 3: fail "bad line: {line}"
+  User{p[0], p[1].parse()?, p[2]}
+
+fn main()! =
+  var counts = {}
+  for line in fs.read("users.csv")?.lines.skip(1):
+    u = parse_line(line)?
+    if u.age >= 18: counts[u.city] += 1
+  for city, n in counts.sort_by(-it.1):
+    print("{city}: {n}")
