@@ -15,9 +15,12 @@ language in under 3,000 tokens), a throwaway tree-walking interpreter that
 runs Lacon programs and their tests, 30 benchmark tasks with hidden tests, and
 a harness that has Claude solve them in Lacon, Python, Rust and Go.
 
-Phase 1 has started with a static type checker: `run`, `test` and `check`
+Phase 1 adds a static type checker and a C backend. `run`, `test` and `check`
 report type errors before anything runs, each on one line with a fix where
-there is one. There is no compiler yet. The design and build plan is in
+there is one. `build` compiles a program to a native executable through C;
+its output matches the interpreter's byte for byte on every golden program
+and task, and it runs 2-9x faster. Typed representations, which close the
+rest of the gap to Rust, come next. The design and build plan is in
 [PLAN.md](PLAN.md).
 
 ```
@@ -25,10 +28,12 @@ cargo build --release
 ./target/release/lacon run bench/tasks/rpn/solution.lc < bench/tasks/rpn/tests/1.in
 ./target/release/lacon test tests/unit/primer.lc     # run inline tests
 ./target/release/lacon check file.lc                 # syntax, name and type errors, one per line
+./target/release/lacon build file.lc -o prog         # native executable, through cc
 ./target/release/lacon sig bench/tokens/users.lc     # signatures and effects
 ./target/release/lacon explain E0202                 # long form of a diagnostic
 cargo test                                           # golden tests in tests/
 uv run bench/tasks/check.py                          # task solutions vs hidden tests
+uv run bench/tasks/check.py --native                 # the same, compiled with `lacon build`
 uv run bench/harness/run.py --agent claude-code      # Claude solves the tasks, through Claude Code (Opus 5.5)
 uv run bench/harness/run.py --langs lacon,python     # the same through the API (needs an API key)
 uv run bench/harness/report.py bench/results/<run>   # tokens-to-green per language

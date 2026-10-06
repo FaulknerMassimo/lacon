@@ -223,6 +223,9 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
        ─▶ RC insertion + reuse analysis ─▶ backend
 ```
 
+- **Now:** the parser, the resolver (to an IR of slots and explicit lambdas),
+  the type checker, then either the interpreter or the C backend. Mode
+  checking, RC insertion and reuse analysis are not built yet.
 - **Backends, in order:**
   1. **C** first. That's how Koka, Nim and Lean work, and it's the fastest way
      to native speed and portability.
@@ -282,10 +285,15 @@ Type checker, C backend, core standard library (`str`, collections, `fs`, format
 
 **Done when** every benchmark task compiles natively and passes.
 
-**Status.** Started with the type checker (`crates/check`), which runs before
-`run`, `test` and `check` and reports type errors in the one-line diagnostics
-format. All 30 task solutions and the golden programs check clean; §14 has
-the design and what it found. Not started: the C backend.
+**Status.** Done: every benchmark task compiles natively and passes. The type
+checker (`crates/check`, §14) runs before `run`, `test`, `check` and `build`.
+The C backend (`crates/cgen`, §15) compiles the resolved IR to C against a
+runtime that mirrors the interpreter, so native output matches the
+interpreter's byte for byte on every golden program and every task input.
+`lacon run` still interprets; `lacon build` makes an executable. Native code
+is 2-9x faster than the interpreter but well short of Rust, because every
+value is still a tagged, reference-counted cell; typed representations belong
+with Phase 2's memory model.
 
 ### Phase 2 — Memory model and agent tooling
 
@@ -384,6 +392,7 @@ docs/primer.md   the language primer an agent gets (≤ 3,000 tokens)
 crates/syntax    lexer, parser, AST, diagnostics
 crates/interp    Phase 0 resolver and tree-walking interpreter
 crates/check     type checker over the resolved IR
+crates/cgen      C backend: IR to C, and the C runtime in runtime/
 crates/cli       the `lacon` binary
 tests/           golden tests: run/ (stdout), check/ (diagnostics), unit/ (`lacon test`)
 bench/tokens/    the same program in Rust, Go, Python and Lacon, plus a token counter
@@ -392,7 +401,7 @@ bench/harness/   has Claude solve the tasks in each language and reports tokens-
 bench/results/   harness runs (created by the harness)
 ```
 
-Planned: `ir` and `cgen` crates for the C backend.
+Planned: an `ir` crate, once the resolver and IR move out of `crates/interp`.
 
 ---
 
@@ -596,3 +605,55 @@ Not checked yet: trait bounds (nothing says what a generic `T` supports),
 that aren't over an enum, and error types (`T!E`). Whether the checker costs
 or saves tokens is a harness question: it moves errors from `submit` to `run`
 and catches them on paths the example input doesn't reach.
+
+---
+
+## 15. Phase 1: the C backend
+
+`lacon build` compiles a program to C, runs `cc` and links against a runtime
+(`crates/cgen/runtime/`) that is compiled once and cached. The runtime is a C
+port of the interpreter's values and builtins, so the two agree by
+construction and the golden outputs check both:
+
+- **Values** are a tagged 16-byte `lc_v`. Strings, lists, maps, sets, heaps,
+  structs and variants are reference counted and copied on write, the
+  interpreter's `Rc::make_mut`; a unique string or list is appended to in
+  place, so `s += x` in a loop stays linear.
+- **Expressions** become GCC statement expressions that yield owned values;
+  runtime functions borrow their arguments. A function's slots are a C array,
+  or a heap frame when the function contains a lambda: closures share that
+  frame, as the interpreter's do, so a lambda sees later assignments and can
+  push to a captured list (`xs.each(acc.push(it))`).
+- **`?` and `return` inside a lambda** leave the enclosing named function. The
+  lambda sets a flag and returns, every runtime function that calls functions
+  stops at once, and the first named function on the way up takes the value.
+- **Errors** carry the same codes, messages, spans and call traces, down to
+  which of two incomparable keys a sort names first.
+
+Verified by running every golden program and every task input both ways and
+comparing stdout, stderr and the exit code byte for byte (118 runs), also
+under AddressSanitizer and UndefinedBehaviorSanitizer; `cargo test` builds the
+golden programs natively, and `bench/tasks/check.py --native` checks the
+tasks compiled.
+
+Where it stands against §6:
+
+| | Interpreter | Native |
+|---|---|---|
+| `fib(27)` | 0.14 s | 0.016 s |
+| sieve of 2,000,000 | 1.17 s | 0.28 s |
+| 300,000 map updates | 0.10 s | 0.05 s |
+| 200,000 structs filtered, mapped, sorted | 0.24 s | 0.16 s |
+
+That is a tree-walker's overhead removed, not Rust's speed: every value is
+still a tagged cell, every operation a runtime call with a type check, and
+every read of a variable a reference count. The next step is the one §3.3 and
+Phase 2 describe: representations from the checker's types (unboxed ints and
+floats, typed lists and structs), then Perceus-style RC insertion and reuse.
+The checker has to record a type for every expression for that, which it
+doesn't yet.
+
+Build time is the other gap: a 109-line program becomes 77 KB of C and takes
+1.7 s at `-O2` (0.3 s for a small one), against §6's 1 s for 10,000 lines.
+The generated C is verbose; a less wordy generator, `-O1` for debug builds,
+or Cranelift (Phase 3) would cut it.
