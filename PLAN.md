@@ -291,7 +291,7 @@ The C backend (`crates/cgen`, §15) compiles the resolved IR to C against a
 runtime that mirrors the interpreter, so native output matches the
 interpreter's byte for byte on every golden program and every task input.
 `lacon run` still interprets; `lacon build` makes an executable. Native code
-is 2-9x faster than the interpreter but well short of Rust, because every
+is 2-15x faster than the interpreter but well short of Rust, because every
 value is still a tagged, reference-counted cell; typed representations belong
 with Phase 2's memory model.
 
@@ -657,6 +657,7 @@ The checker has to record a type for every expression for that, which it
 doesn't yet.
 
 Build time is the other gap: a 109-line program becomes 77 KB of C and takes
-1.7 s at `-O2` (0.3 s for a small one), against §6's 1 s for 10,000 lines.
-The generated C is verbose; a less wordy generator, `-O1` for debug builds,
-or Cranelift (Phase 3) would cut it.
+1.2 s (0.3 s for a small one), against §6's 1 s for 10,000 lines. Programs
+compile at `-O1`, which runs as fast as `-O2` on this code in 60% of the time;
+the runtime is compiled once at `-O2` and cached. The generated C is verbose;
+a less wordy generator or Cranelift (Phase 3) would cut the rest.

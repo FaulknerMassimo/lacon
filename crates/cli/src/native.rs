@@ -9,7 +9,11 @@ fn cc() -> String {
     std::env::var("CC").unwrap_or_else(|_| "cc".into())
 }
 
-const CFLAGS: &[&str] = &["-std=gnu11", "-O2", "-D_GNU_SOURCE", "-w"];
+const CFLAGS: &[&str] = &["-std=gnu11", "-D_GNU_SOURCE", "-w"];
+/// The runtime is compiled once, so it gets `-O2`; programs get `-O1`, which
+/// runs about as fast on generated code and compiles in about half the time.
+const RUNTIME_OPT: &str = "-O2";
+const PROGRAM_OPT: &str = "-O1";
 
 /// Extra C compiler flags from `LACON_CFLAGS` (e.g. `-fsanitize=address`).
 fn extra() -> Vec<String> {
@@ -46,6 +50,7 @@ fn runtime(dir: &Path) -> Result<Vec<PathBuf>, String> {
     }
     cc().hash(&mut h);
     CFLAGS.hash(&mut h);
+    RUNTIME_OPT.hash(&mut h);
     extra().hash(&mut h);
     let rt = dir.join(format!("rt-{:016x}", h.finish()));
     let objs: Vec<PathBuf> = lacon_cgen::RUNTIME.iter().map(|(n, _)| rt.join(n.replace(".c", ".o"))).collect();
@@ -60,7 +65,7 @@ fn runtime(dir: &Path) -> Result<Vec<PathBuf>, String> {
     for (name, text) in lacon_cgen::RUNTIME {
         let c = tmp.join(name);
         std::fs::write(&c, text).map_err(|e| e.to_string())?;
-        run(Command::new(cc()).args(CFLAGS).args(extra()).arg("-c").arg(&c).arg("-o").arg(tmp.join(name.replace(".c", ".o"))))?;
+        run(Command::new(cc()).args(CFLAGS).arg(RUNTIME_OPT).args(extra()).arg("-c").arg(&c).arg("-o").arg(tmp.join(name.replace(".c", ".o"))))?;
     }
     if std::fs::rename(&tmp, &rt).is_err() {
         let _ = std::fs::remove_dir_all(&tmp);
@@ -80,7 +85,7 @@ pub fn compile(c: &str, out: &str, keep_c: bool) -> Result<(), String> {
     if keep_c {
         std::fs::write(format!("{out}.c"), c).map_err(|e| e.to_string())?;
     }
-    let r = run(Command::new(cc()).args(CFLAGS).args(extra()).arg(&prog_c).args(&objs).arg("-lm").arg("-lpthread").arg("-o").arg(out));
+    let r = run(Command::new(cc()).args(CFLAGS).arg(PROGRAM_OPT).args(extra()).arg(&prog_c).args(&objs).arg("-lm").arg("-lpthread").arg("-o").arg(out));
     let _ = std::fs::remove_dir_all(&work);
     r
 }
