@@ -9,7 +9,9 @@ fn cc() -> String {
     std::env::var("CC").unwrap_or_else(|_| "cc".into())
 }
 
-const CFLAGS: &[&str] = &["-std=gnu11", "-D_GNU_SOURCE", "-w"];
+/// No fused multiply-add: unboxed float arithmetic must round as the
+/// interpreter's does.
+const CFLAGS: &[&str] = &["-std=gnu11", "-D_GNU_SOURCE", "-w", "-ffp-contract=off"];
 /// The runtime is compiled once, so it gets `-O2`; programs get `-O1`, which
 /// runs about as fast on generated code and compiles in about half the time.
 const RUNTIME_OPT: &str = "-O2";

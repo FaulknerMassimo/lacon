@@ -54,6 +54,9 @@ enum Rep {
     Int,
     /// A C `bool`.
     Bool,
+    /// A `double`. The checker's `f64` isn't enough, since an `f64` can hold
+    /// an int at run time (`if c: 1 else: 2.5`); see `Gen::certain_float`.
+    Float,
 }
 
 fn rep_of_type(t: &T) -> Rep {
@@ -123,6 +126,7 @@ fn c_type(r: Rep) -> &'static str {
         Rep::Boxed => "lc_v",
         Rep::Int => "int64_t",
         Rep::Bool => "bool",
+        Rep::Float => "double",
     }
 }
 
@@ -131,8 +135,27 @@ fn box_c(r: Rep, v: &str) -> String {
         Rep::Boxed => v.to_string(),
         Rep::Int => format!("lc_int({v})"),
         Rep::Bool => format!("lc_bool({v})"),
+        Rep::Float => format!("lc_float({v})"),
     }
 }
+
+/// A float as a C literal.
+fn float_c(f: f64) -> String {
+    if f.is_nan() {
+        "NAN".into()
+    } else if f.is_infinite() {
+        if f > 0.0 { "INFINITY" } else { "(-INFINITY)" }.into()
+    } else {
+        format!("({f:?})")
+    }
+}
+
+/// Float methods that give a float whatever number they are called on.
+const FLOAT_FNS: &[&str] = &["sqrt", "cbrt", "exp", "ln", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "fract", "atan2", "hypot", "log"];
+/// Number methods that give a float when called on one.
+const FLOAT_KEEPS: &[&str] = &["abs", "floor", "ceil", "round", "trunc", "sign", "min", "max", "clamp", "pow"];
+
+
 
 struct Gen<'p> {
     prog: &'p Program,
@@ -239,9 +262,11 @@ fn has_lambda(e: &Ex) -> bool {
     found
 }
 
-/// What the walk visits: expressions, and places with how they are used.
+/// What the walk visits: expressions, statements, and places with how they
+/// are used.
 enum Node<'a> {
     Ex(&'a Ex),
+    St(&'a St),
     /// A place, and whether a builtin method changes it in place.
     Place(&'a Place, bool),
 }
@@ -249,7 +274,7 @@ enum Node<'a> {
 /// Visits every expression and place under `e`. `d` counts the lambdas
 /// entered on the way, so `Ex::Up(d, _)` at depth `d` names a slot of the
 /// frame the walk started in.
-fn walk_ex(e: &Ex, d: u32, f: &mut dyn FnMut(Node, u32)) {
+fn walk_ex<'a>(e: &'a Ex, d: u32, f: &mut dyn FnMut(Node<'a>, u32)) {
     f(Node::Ex(e), d);
     match e {
         Ex::Str(ps, _) => {
@@ -345,8 +370,9 @@ fn walk_ex(e: &Ex, d: u32, f: &mut dyn FnMut(Node, u32)) {
     }
 }
 
-fn walk_stmts(ss: &[St], d: u32, f: &mut dyn FnMut(Node, u32)) {
+fn walk_stmts<'a>(ss: &'a [St], d: u32, f: &mut dyn FnMut(Node<'a>, u32)) {
     for s in ss {
+        f(Node::St(s), d);
         match s {
             St::Expr(e, _) | St::Fail(e, _) | St::Bind(_, e, _, _) => walk_ex(e, d, f),
             St::Assign { place, value, .. } => {
@@ -381,13 +407,71 @@ fn walk_stmts(ss: &[St], d: u32, f: &mut dyn FnMut(Node, u32)) {
     }
 }
 
-fn walk_place(p: &Place, mutated: bool, d: u32, f: &mut dyn FnMut(Node, u32)) {
+fn walk_place<'a>(p: &'a Place, mutated: bool, d: u32, f: &mut dyn FnMut(Node<'a>, u32)) {
     f(Node::Place(p, mutated), d);
     for s in &p.path {
         if let Seg::Index(e, _) = s {
             walk_ex(e, d, f);
         }
     }
+}
+
+/// A function's parameter slots, and those of them declared `f64`, which
+/// the runtime converts to floats on entry.
+fn param_slots(fd: &FnDef) -> (Vec<u32>, Vec<u32>) {
+    let all = (0..fd.params.len() as u32).collect();
+    let floats = fd.params.iter().enumerate().filter(|(_, p)| matches!(p.ty, Ty::Float)).map(|(i, _)| i as u32).collect();
+    (all, floats)
+}
+
+/// The slots a pattern binds.
+fn pat_slots(p: &PatIr, out: &mut Vec<u32>) {
+    match p {
+        PatIr::Bind(s) => out.push(*s),
+        PatIr::Tuple(ps) | PatIr::Or(ps) => ps.iter().for_each(|p| pat_slots(p, out)),
+        PatIr::List { items, rest } => {
+            items.iter().for_each(|p| pat_slots(p, out));
+            if let Some(Some(s)) = rest {
+                out.push(*s);
+            }
+        }
+        PatIr::Variant { args, .. } => args.iter().for_each(|p| pat_slots(p, out)),
+        PatIr::Struct { fields, .. } => fields.iter().for_each(|(_, p)| pat_slots(p, out)),
+        PatIr::Err(p) | PatIr::Ok(p) | PatIr::Some(p) => pat_slots(p, out),
+        PatIr::Wild | PatIr::Lit(_) | PatIr::Range { .. } | PatIr::None => {}
+    }
+}
+
+/// What the frame's own code writes to its slots: the value of a plain
+/// binding or assignment, or `None` where a pattern or an unpacking binds
+/// a slot from inside another value. Compound assignments are left out.
+fn frame_writes(body: &Ex) -> Vec<(u32, Option<&Ex>)> {
+    let mut out = Vec::new();
+    walk_ex(body, 0, &mut |n, d| {
+        if d != 0 {
+            return;
+        }
+        let mut bound = Vec::new();
+        match n {
+            Node::St(St::Bind(PatIr::Bind(s), e, _, _)) => out.push((*s, Some(e))),
+            Node::St(St::Bind(p, ..)) | Node::St(St::For { pat: p, .. }) => pat_slots(p, &mut bound),
+            Node::St(St::Assign { place: Place { root: Root::Local(s), path, .. }, op: None, value, .. }) if path.is_empty() => {
+                out.push((*s, Some(value)));
+            }
+            Node::St(St::AssignMulti { targets, .. }) => {
+                for t in targets {
+                    match t {
+                        Target::Bind(s) | Target::Place(Place { root: Root::Local(s), .. }) => bound.push(*s),
+                        _ => {}
+                    }
+                }
+            }
+            Node::Ex(Ex::Match { arms, .. }) => arms.iter().for_each(|a| pat_slots(&a.pat, &mut bound)),
+            _ => {}
+        }
+        out.extend(bound.into_iter().map(|s| (s, None)));
+    });
+    out
 }
 
 /// Slots of the frame whose body is `body` that must stay boxed whatever
@@ -460,7 +544,50 @@ impl<'p> Gen<'p> {
         if !self.typed {
             return Rep::Boxed;
         }
-        self.types.of(e).map_or(Rep::Boxed, rep_of_type)
+        match self.types.of(e) {
+            Some(T::Float) if self.certain_float(e) => Rep::Float,
+            Some(t) => rep_of_type(t),
+            None => Rep::Boxed,
+        }
+    }
+
+    /// Typed int or `f64` by the checker: an int or a float at run time.
+    fn numeric(&self, e: &Ex) -> bool {
+        self.typed && matches!(self.types.of(e), Some(T::Int(_) | T::Float))
+    }
+
+    /// An `f64` expression that is a float at run time, not an int: it is
+    /// made by something that always makes floats (a float literal, `f64(n)`,
+    /// `sqrt`, a declared `f64` parameter or result, which the runtime
+    /// converts) or computed from one with numbers.
+    fn certain_float(&self, e: &Ex) -> bool {
+        let float_or_never = |x: &Ex| self.rep(x) == Rep::Float || matches!(self.types.of(x), Some(T::Never));
+        match e {
+            Ex::Lit(Value::Float(_), _) => true,
+            Ex::Local(s, _) => self.slot_rep(*s) == Rep::Float,
+            Ex::Binary { op, l, r, .. } => {
+                matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Pow)
+                    && self.numeric(l)
+                    && self.numeric(r)
+                    && (self.rep(l) == Rep::Float || self.rep(r) == Rep::Float)
+            }
+            Ex::Unary { op: UnOp::Neg, e: x, .. } => self.rep(x) == Rep::Float,
+            Ex::If { then, els: Some(els), .. } => float_or_never(then) && float_or_never(els),
+            Ex::Block(_, Some(t)) => self.rep(t) == Rep::Float,
+            Ex::Match { arms, .. } => arms.iter().all(|a| float_or_never(&a.body)),
+            Ex::CallFn { fns, args, .. } => self.direct_entry(fns, args).is_some_and(|en| en.ret == Rep::Float),
+            Ex::CallBuiltin { f: Builtin::Conv(ConvTo::Float), args, .. } => args.len() == 1 && self.numeric(&args[0]),
+            Ex::Cast { to: ConvTo::Float, e: x, .. } => self.numeric(x),
+            Ex::Method { recv, name, user: None, .. } => {
+                let recv_float = match recv {
+                    Recv::Value(x) => self.rep(x) == Rep::Float,
+                    Recv::Place(Place { root: Root::Local(s), path, .. }) => path.is_empty() && self.slot_rep(*s) == Rep::Float,
+                    Recv::Place(_) => false,
+                };
+                FLOAT_FNS.contains(&&**name) || (recv_float && FLOAT_KEEPS.contains(&&**name))
+            }
+            _ => false,
+        }
     }
 
     fn slot_rep(&self, s: u32) -> Rep {
@@ -470,7 +597,13 @@ impl<'p> Gen<'p> {
     /// How each slot of a frame is held: unboxed where the checker proved it
     /// an int or a bool, unless something reaches it by pointer. `boxed`
     /// slots stay boxed regardless.
-    fn frame_reps(&self, body: &Ex, nslots: u32, boxed: &[u32]) -> Vec<Rep> {
+    ///
+    /// An `f64` slot is unboxed when everything written to it is a float
+    /// for certain (`certain_float`). `params` are written by callers, and
+    /// only the `float_params` among them for certain, being converted on
+    /// entry; patterns never are. Starting from every `f64` slot, those with
+    /// a write that may be an int are dropped until none is left.
+    fn frame_reps(&mut self, body: &Ex, nslots: u32, boxed: &[u32], params: &[u32], float_params: &[u32]) -> Vec<Rep> {
         let mut reps = vec![Rep::Boxed; nslots as usize];
         if !self.typed {
             return reps;
@@ -480,10 +613,33 @@ impl<'p> Gen<'p> {
         for (i, t) in ts.iter().enumerate().take(nslots as usize) {
             let s = i as u32;
             if !pinned.contains(&s) && !boxed.contains(&s) {
-                reps[i] = rep_of_type(t);
+                reps[i] = match t {
+                    T::Float => Rep::Float,
+                    t => rep_of_type(t),
+                };
             }
         }
-        reps
+        let writes = frame_writes(body);
+        let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
+        for &s in params {
+            if self.cx.slots.get(s as usize) == Some(&Rep::Float) && !float_params.contains(&s) {
+                self.cx.slots[s as usize] = Rep::Boxed;
+            }
+        }
+        loop {
+            let mut changed = false;
+            for (s, w) in &writes {
+                let i = *s as usize;
+                if self.cx.slots.get(i) == Some(&Rep::Float) && !w.is_some_and(|e| self.rep(e) == Rep::Float) {
+                    self.cx.slots[i] = Rep::Boxed;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        std::mem::replace(&mut self.cx, saved).slots
     }
 
     /// Declarations of the current frame's unboxed slots.
@@ -497,6 +653,9 @@ impl<'p> Gen<'p> {
                 Rep::Bool => {
                     let _ = writeln!(out, "    bool N{i} = 0;");
                 }
+                Rep::Float => {
+                    let _ = writeln!(out, "    double N{i} = 0;");
+                }
                 Rep::Boxed => {}
             }
         }
@@ -509,6 +668,7 @@ impl<'p> Gen<'p> {
         match self.slot_rep(s) {
             Rep::Int => format!("N{s} = lc_unbox_int({v}, {site}); "),
             Rep::Bool => format!("N{s} = lc_unbox_bool({v}, {site}); "),
+            Rep::Float => format!("N{s} = lc_unbox_float({v}, {site}); "),
             Rep::Boxed => format!("lc_set(&S[{s}], {v}); "),
         }
     }
@@ -642,7 +802,12 @@ impl<'p> Gen<'p> {
             self.funcs.push_str(&body);
             let _ = writeln!(self.init, "    K{i} = KI{i}();");
         }
-        self.entries = (0..prog.fns.len()).map(|id| self.entry_of(id as FnId)).collect();
+        // Entries first, so bodies can call them; a parameter's rep never
+        // depends on the calls in its function.
+        for id in 0..prog.fns.len() {
+            let en = self.entry_of(id as FnId);
+            self.entries.push(en);
+        }
         for (id, fd) in prog.fns.iter().enumerate() {
             let _ = writeln!(self.statics, "static lc_v F{id}(lc_v *a);");
             if let Some(en) = &self.entries[id] {
@@ -750,7 +915,7 @@ impl<'p> Gen<'p> {
     /// A function of no arguments that computes a value: a constant or a
     /// default.
     fn thunk_fn(&mut self, name: &str, body: &Ex, nslots: u32) -> String {
-        let reps = self.frame_reps(body, nslots, &[]);
+        let reps = self.frame_reps(body, nslots, &[], &[], &[]);
         let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
         let heap = has_lambda(body);
         let e = self.expr(body);
@@ -765,7 +930,7 @@ impl<'p> Gen<'p> {
 
     /// The typed entry of function `id`, if it gets one: any function but
     /// `main` without generics, `mut` parameters, defaults or lambdas.
-    fn entry_of(&self, id: FnId) -> Option<Entry> {
+    fn entry_of(&mut self, id: FnId) -> Option<Entry> {
         let fd = &self.prog.fns[id as usize];
         if !self.typed || self.prog.main == Some(id) || !fd.generics.is_empty() || has_lambda(&fd.body) {
             return None;
@@ -773,10 +938,12 @@ impl<'p> Gen<'p> {
         if fd.params.iter().any(|p| p.mode == Mode::Mut || p.default.is_some()) {
             return None;
         }
-        let reps = self.frame_reps(&fd.body, fd.nslots, &[]);
+        let (params, floats) = param_slots(fd);
+        let reps = self.frame_reps(&fd.body, fd.nslots, &[], &params, &floats);
         let ret = match &fd.ret {
             Some(Ty::Int { .. }) => Rep::Int,
             Some(Ty::Bool) => Rep::Bool,
+            Some(Ty::Float) => Rep::Float,
             _ => Rep::Boxed,
         };
         Some(Entry { params: reps[..fd.params.len()].to_vec(), ret })
@@ -814,6 +981,7 @@ impl<'p> Gen<'p> {
         match r {
             Rep::Int => format!("({checked}).u.i"),
             Rep::Bool => format!("(({checked}).u.i != 0)"),
+            Rep::Float => format!("({checked}).u.f"),
             Rep::Boxed => checked,
         }
     }
@@ -822,12 +990,15 @@ impl<'p> Gen<'p> {
     /// calls it.
     fn typed_fn(&mut self, id: FnId, en: &Entry) -> String {
         let fd = &self.prog.fns[id as usize];
-        let mut cx = Cx::new(self.frame_reps(&fd.body, fd.nslots, &[]));
+        let (params, floats) = param_slots(fd);
+        let mut cx = Cx::new(self.frame_reps(&fd.body, fd.nslots, &[], &params, &floats));
         cx.ret = en.ret;
         let saved = std::mem::replace(&mut self.cx, cx);
         let body = match en.ret {
             Rep::Int => self.int(&fd.body),
             Rep::Bool => self.boolean(&fd.body),
+            // The runtime makes an int returned for an `f64` a float.
+            Rep::Float => self.num(&fd.body),
             Rep::Boxed => self.expr(&fd.body),
         };
         let natives = self.native_decls();
@@ -873,7 +1044,11 @@ impl<'p> Gen<'p> {
             }
             (Some(t), r) => {
                 let ty = self.ty(t);
-                let unbox = if r == Rep::Int { "u.i" } else { "u.i != 0" };
+                let unbox = match r {
+                    Rep::Int => "u.i",
+                    Rep::Float => "u.f",
+                    _ => "u.i != 0",
+                };
                 let _ = writeln!(f, "    if (unwound) ret = lc_coerce_ret(unw, {ty}, {fname}, {fsite}).{unbox};");
                 if let Ty::Int { min, max, .. } = t {
                     if *min != i64::MIN || *max != i64::MAX {
@@ -918,9 +1093,12 @@ impl<'p> Gen<'p> {
         let mut vals = Vec::new();
         for (a, r) in args.iter().zip(&en.params) {
             let t = self.t();
-            let native = *r != Rep::Boxed && self.rep(a) == *r;
+            // An int passed for an `f64` is converted, as the runtime does.
+            let int_to_float = *r == Rep::Float && self.rep(a) == Rep::Int;
+            let native = *r != Rep::Boxed && (self.rep(a) == *r || int_to_float);
             let v = match (native, r) {
                 (true, Rep::Int) => self.int(a),
+                (true, Rep::Float) => self.num(a),
                 (true, _) => self.boolean(a),
                 (false, _) => self.expr(a),
             };
@@ -950,7 +1128,8 @@ impl<'p> Gen<'p> {
         let fd = &self.prog.fns[id as usize];
         // `mut` parameters are copied back out of their slots.
         let muts: Vec<u32> = fd.params.iter().enumerate().filter(|(_, p)| p.mode == Mode::Mut).map(|(i, _)| i as u32).collect();
-        let reps = self.frame_reps(&fd.body, fd.nslots, &muts);
+        let (params, floats) = param_slots(fd);
+        let reps = self.frame_reps(&fd.body, fd.nslots, &muts, &params, &floats);
         let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
         let heap = has_lambda(&fd.body);
         let body = self.expr(&fd.body);
@@ -984,6 +1163,9 @@ impl<'p> Gen<'p> {
                 }
                 Rep::Bool => {
                     let _ = writeln!(f, "    N{i} = ({checked}).u.i != 0;");
+                }
+                Rep::Float => {
+                    let _ = writeln!(f, "    N{i} = ({checked}).u.f;");
                 }
                 Rep::Boxed => {
                     let _ = writeln!(f, "    S[{i}] = {checked};");
@@ -1167,9 +1349,8 @@ impl<'p> Gen<'p> {
     fn read_place(&mut self, p: &Place) -> String {
         if let (Root::Local(s), true) = (&p.root, p.path.is_empty()) {
             match self.slot_rep(*s) {
-                Rep::Int => return format!("lc_int(N{s})"),
-                Rep::Bool => return format!("lc_bool(N{s})"),
                 Rep::Boxed => {}
+                r => return box_c(r, &format!("N{s}")),
             }
         }
         let root = self.root(&p.root);
@@ -1272,7 +1453,106 @@ impl<'p> Gen<'p> {
                 let c = self.boolean(e);
                 format!("lc_bool({c})")
             }
+            Rep::Float if self.float_native(e) => {
+                let c = self.float(e);
+                format!("lc_float({c})")
+            }
             _ => self.expr_boxed(e),
+        }
+    }
+
+    /// Can `float` compute `e` (proven a float) without a boxed value?
+    fn float_native(&self, e: &Ex) -> bool {
+        match e {
+            Ex::Lit(Value::Float(_), _) | Ex::Binary { .. } | Ex::Unary { op: UnOp::Neg, .. } => true,
+            Ex::Local(s, _) => self.slot_rep(*s) == Rep::Float,
+            Ex::If { els: Some(_), .. } | Ex::Block(_, Some(_)) | Ex::Match { .. } | Ex::CallFn { .. } => true,
+            Ex::CallBuiltin { f: Builtin::Conv(ConvTo::Float), args, .. } => matches!(self.rep(&args[0]), Rep::Int | Rep::Float),
+            Ex::Method { recv: Recv::Value(x), name, args, .. } => args.is_empty() && matches!(&**name, "sqrt" | "abs") && self.rep(x) == Rep::Float,
+            Ex::Method { recv: Recv::Place(Place { root: Root::Local(s), path, .. }), name, args, .. } => {
+                args.is_empty() && matches!(&**name, "sqrt" | "abs") && path.is_empty() && self.slot_rep(*s) == Rep::Float
+            }
+            _ => false,
+        }
+    }
+
+    /// `e`, proven a float, as a C `double`.
+    fn float(&mut self, e: &Ex) -> String {
+        if self.rep(e) != Rep::Float || !self.float_native(e) {
+            let site = self.site(e.span());
+            let v = self.expr(e);
+            return format!("lc_unbox_float({v}, {site})");
+        }
+        match e {
+            Ex::Lit(Value::Float(f), _) => float_c(*f),
+            Ex::Local(s, _) => format!("N{s}"),
+            Ex::Binary { op, l, r, .. } => {
+                let (a, b) = (self.num(l), self.num(r));
+                let apply = |x: &str, y: &str| match op {
+                    BinOp::Add => format!("({x} + {y})"),
+                    BinOp::Sub => format!("({x} - {y})"),
+                    BinOp::Mul => format!("({x} * {y})"),
+                    BinOp::Div => format!("({x} / {y})"),
+                    BinOp::Rem => format!("fmod({x}, {y})"),
+                    _ => format!("pow({x}, {y})"),
+                };
+                if self.simple(l) || self.simple(r) {
+                    apply(&a, &b)
+                } else {
+                    let (x, y) = (self.t(), self.t());
+                    format!("({{ double {x} = {a}; double {y} = {b}; {}; }})", apply(&x, &y))
+                }
+            }
+            Ex::Unary { e: x, .. } => format!("(-{})", self.float(x)),
+            Ex::If { cond, then, els: Some(els), span } => {
+                let site = self.site(if cond.span() == Span::default() { *span } else { cond.span() });
+                let c = self.cond_at(cond, &site);
+                let (t, f) = (self.float(then), self.float(els));
+                format!("({c} ? {t} : {f})")
+            }
+            Ex::Block(stmts, Some(tail)) => {
+                let mut code = String::from("({ ");
+                for s in stmts {
+                    code.push_str(&self.stmt(s));
+                }
+                let r = self.t();
+                let tv = self.float(tail);
+                let _ = write!(code, "double {r} = {tv}; {r}; }})");
+                code
+            }
+            Ex::Match { scrut, arms, span } => self.match_native(scrut, arms, *span, Rep::Float),
+            Ex::CallFn { fns, args, span, .. } => {
+                let en = self.direct_entry(fns, args).unwrap();
+                self.typed_call(fns[0], &en, args, *span)
+            }
+            Ex::CallBuiltin { args, .. } => self.num(&args[0]),
+            Ex::Method { recv, name, .. } => {
+                let x = match recv {
+                    Recv::Value(x) => self.float(x),
+                    Recv::Place(Place { root: Root::Local(s), .. }) => format!("N{s}"),
+                    Recv::Place(_) => unreachable!(),
+                };
+                if &**name == "sqrt" {
+                    format!("sqrt({x})")
+                } else {
+                    format!("fabs({x})")
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// `e`, typed int or `f64`, as a C `double`, as the runtime's float
+    /// operators convert their operands.
+    fn num(&mut self, e: &Ex) -> String {
+        match self.rep(e) {
+            Rep::Float => self.float(e),
+            Rep::Int => format!("((double){})", self.int(e)),
+            _ => {
+                let site = self.site(e.span());
+                let v = self.expr(e);
+                format!("lc_num({v}, {site})")
+            }
         }
     }
 
@@ -1306,7 +1586,7 @@ impl<'p> Gen<'p> {
     /// it is evaluated in doesn't matter.
     fn simple(&self, e: &Ex) -> bool {
         match e {
-            Ex::Lit(Value::Int(_) | Value::Bool(_), _) => true,
+            Ex::Lit(Value::Int(_) | Value::Bool(_) | Value::Float(_), _) => true,
             Ex::Local(s, _) => self.slot_rep(*s) != Rep::Boxed,
             _ => false,
         }
@@ -1431,35 +1711,83 @@ impl<'p> Gen<'p> {
 
     /// A comparison chain `a < b <= c` as a C `bool`.
     fn compare(&mut self, first: &Ex, rest: &[(CmpOp, Ex, Span)]) -> String {
-        let all_int = self.rep(first) == Rep::Int && rest.iter().all(|(op, x, _)| cmp_op(*op).is_some() && self.rep(x) == Rep::Int);
-        let bools = rest.len() == 1
-            && matches!(rest[0].0, CmpOp::Eq | CmpOp::Ne)
-            && self.rep(first) == Rep::Bool
-            && self.rep(&rest[0].1) == Rep::Bool;
-        if bools || (all_int && rest.len() == 1) {
-            let (op, x, _) = &rest[0];
-            let (a, b) = if bools { (self.boolean(first), self.boolean(x)) } else { (self.int(first), self.int(x)) };
-            let c = cmp_op(*op).unwrap_or("==");
-            if self.simple(first) || self.simple(x) {
-                return format!("({a} {c} {b})");
-            }
-            let ty = if bools { "bool" } else { "int64_t" };
-            let (p, n) = (self.t(), self.t());
-            return format!("({{ {ty} {p} = {a}; {ty} {n} = {b}; {p} {c} {n}; }})");
+        // How each operand is compared: unboxed, or a boxed number read as
+        // a double (against a float only, as the runtime converts it).
+        #[derive(Clone, Copy, PartialEq)]
+        enum K {
+            Int,
+            Bool,
+            Float,
+            Num,
         }
-        let ok = self.t();
-        let p = self.t();
-        if all_int {
-            let fv = self.int(first);
-            let mut code = format!("({{ int64_t {p} = {fv}; bool {ok} = true; ");
-            for (op, x, _) in rest {
-                let n = self.t();
-                let xv = self.int(x);
-                let _ = write!(code, "if ({ok}) {{ int64_t {n} = {xv}; {ok} = {p} {} {n}; {p} = {n}; }} ", cmp_op(*op).unwrap_or("=="));
+        let operands: Vec<&Ex> = std::iter::once(first).chain(rest.iter().map(|(_, x, _)| x)).collect();
+        let kinds: Option<Vec<K>> = operands
+            .iter()
+            .map(|x| match self.rep(x) {
+                Rep::Int => Some(K::Int),
+                Rep::Bool => Some(K::Bool),
+                Rep::Float => Some(K::Float),
+                Rep::Boxed if self.numeric(x) => Some(K::Num),
+                Rep::Boxed => None,
+            })
+            .collect();
+        let native = kinds.as_ref().is_some_and(|ks| {
+            rest.iter().enumerate().all(|(i, (op, _, _))| {
+                cmp_op(*op).is_some()
+                    && match (ks[i], ks[i + 1]) {
+                        (K::Int, K::Int) => true,
+                        (K::Bool, K::Bool) => matches!(op, CmpOp::Eq | CmpOp::Ne),
+                        (K::Float, K::Float | K::Int | K::Num) | (K::Int | K::Num, K::Float) => true,
+                        _ => false,
+                    }
+            })
+        });
+        if native {
+            let ks = kinds.unwrap_or_default();
+            let mut vals = Vec::new();
+            for (x, k) in operands.iter().zip(&ks) {
+                vals.push(match k {
+                    K::Int => self.int(x),
+                    K::Bool => self.boolean(x),
+                    K::Float => self.float(x),
+                    K::Num => self.num(x),
+                });
+            }
+            let mut cmps = Vec::new();
+            for (i, (op, _, sp)) in rest.iter().enumerate() {
+                let site = self.site(*sp);
+                cmps.push((i, *op, site));
+            }
+            let pair = |a: &str, b: &str, i: usize, op: CmpOp, site: &str| -> String {
+                let c = cmp_op(op).unwrap_or("==");
+                match (ks[i], ks[i + 1]) {
+                    (K::Int, K::Int) | (K::Bool, K::Bool) => format!("({a} {c} {b})"),
+                    (K::Int, _) => format!("lc_fcmp({}, (double){a}, {b}, {site})", cmp_c(op)),
+                    (_, K::Int) => format!("lc_fcmp({}, {a}, (double){b}, {site})", cmp_c(op)),
+                    _ => format!("lc_fcmp({}, {a}, {b}, {site})", cmp_c(op)),
+                }
+            };
+            if rest.len() == 1 && (self.simple(first) || self.simple(&rest[0].1)) {
+                let (i, op, site) = &cmps[0];
+                return pair(&vals[0], &vals[1], *i, *op, site);
+            }
+            let ok = self.t();
+            let ts: Vec<String> = (0..vals.len()).map(|_| self.t()).collect();
+            let ctype = |k: K| match k {
+                K::Int => "int64_t",
+                K::Bool => "bool",
+                K::Float | K::Num => "double",
+            };
+            let mut code = format!("({{ {} {} = {}; bool {ok} = true; ", ctype(ks[0]), ts[0], vals[0]);
+            for (i, op, site) in &cmps {
+                let (a, b) = (&ts[*i], &ts[i + 1]);
+                let _ = write!(code, "{} {b}; if ({ok}) {{ {b} = {}; {ok} = {}; }} ", ctype(ks[i + 1]), vals[i + 1], pair(a, b, *i, *op, site));
             }
             let _ = write!(code, "{ok}; }})");
             return code;
         }
+        let ok = self.t();
+        let p = self.t();
         let fv = self.expr(first);
         let mut code = format!("({{ lc_v {p} = {fv}; bool {ok} = true; ");
         for (op, x, sp) in rest {
@@ -1477,7 +1805,7 @@ impl<'p> Gen<'p> {
         let site = self.site(span);
         let (sv, r) = (self.t(), self.t());
         let scv = self.expr(scrut);
-        let ty = if rep == Rep::Int { "int64_t" } else { "bool" };
+        let ty = c_type(rep);
         let mut code = format!("({{ lc_v {sv} = {scv}; {ty} {r}; ");
         for arm in arms {
             let cond = self.pat(&arm.pat, &sv, &site);
@@ -1485,7 +1813,11 @@ impl<'p> Gen<'p> {
                 Some(g) => format!(" && {}", self.cond_at(g, &site)),
                 None => String::new(),
             };
-            let body = if rep == Rep::Int { self.int(&arm.body) } else { self.boolean(&arm.body) };
+            let body = match rep {
+                Rep::Int => self.int(&arm.body),
+                Rep::Float => self.float(&arm.body),
+                _ => self.boolean(&arm.body),
+            };
             let _ = write!(code, "if (({cond}){guard}) {r} = {body}; else ");
         }
         let _ = write!(code, "lc_no_arm({sv}, {site}); lc_release({sv}); {r}; }})");
@@ -1498,9 +1830,8 @@ impl<'p> Gen<'p> {
             Ex::Lit(v, _) => self.lit(v),
             Ex::Str(pieces, _) => self.interp(pieces),
             Ex::Local(s, _) => match self.slot_rep(*s) {
-                Rep::Int => format!("lc_int(N{s})"),
-                Rep::Bool => format!("lc_bool(N{s})"),
                 Rep::Boxed => format!("lc_retain({})", self.slot(0, *s)),
+                r => box_c(r, &format!("N{s}")),
             },
             Ex::Up(d, s, _) => format!("lc_retain({})", self.slot(*d, *s)),
             Ex::Global(g, _) => format!("lc_retain(K{g})"),
@@ -2092,7 +2423,7 @@ impl<'p> Gen<'p> {
     fn lambda(&mut self, def: &LambdaDef) -> String {
         self.lambda_n += 1;
         let n = self.lambda_n;
-        let reps = self.frame_reps(&def.body, def.nslots, &[]);
+        let reps = self.frame_reps(&def.body, def.nslots, &[], &def.params, &[]);
         let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
         let heap = has_lambda(&def.body);
         let body = self.expr(&def.body);
@@ -2214,6 +2545,7 @@ impl<'p> Gen<'p> {
                 match self.rep(e) {
                     Rep::Int if self.int_native(e) => return format!("(void)({}); ", self.int(e)),
                     Rep::Bool if self.bool_native(e) => return format!("(void)({}); ", self.boolean(e)),
+                    Rep::Float if self.float_native(e) => return format!("(void)({}); ", self.float(e)),
                     _ => {}
                 }
                 let site = self.site(*span);
@@ -2224,6 +2556,7 @@ impl<'p> Gen<'p> {
             St::Bind(PatIr::Bind(slot), e, _, _) => match self.slot_rep(*slot) {
                 Rep::Int => format!("N{slot} = {}; ", self.int(e)),
                 Rep::Bool => format!("N{slot} = {}; ", self.boolean(e)),
+                Rep::Float => format!("N{slot} = {}; ", self.float(e)),
                 Rep::Boxed => {
                     let v = self.expr(e);
                     let s = self.slot(0, *slot);
@@ -2245,7 +2578,21 @@ impl<'p> Gen<'p> {
                 let r = self.slot_rep(s);
                 match op {
                     None if r == Rep::Int => format!("N{s} = {}; ", self.int(value)),
+                    None if r == Rep::Float => format!("N{s} = {}; ", self.float(value)),
                     None => format!("N{s} = {}; ", self.boolean(value)),
+                    Some(op) if r == Rep::Float => {
+                        // A float stays one whatever number is added to it.
+                        let (t, v) = (self.t(), self.num(value));
+                        let new = match op {
+                            BinOp::Rem => format!("fmod(N{s}, {t})"),
+                            BinOp::Pow => format!("pow(N{s}, {t})"),
+                            BinOp::Add => format!("N{s} + {t}"),
+                            BinOp::Sub => format!("N{s} - {t}"),
+                            BinOp::Mul => format!("N{s} * {t}"),
+                            _ => format!("N{s} / {t}"),
+                        };
+                        format!("{{ double {t} = {v}; N{s} = {new}; }} ")
+                    }
                     Some(op) if r == Rep::Int && self.rep(value) == Rep::Int && int_op(*op).is_some() => {
                         let f = int_op(*op).unwrap_or("+");
                         let v = self.int(value);
@@ -2258,7 +2605,7 @@ impl<'p> Gen<'p> {
                     }
                     Some(op) => {
                         // Bools under `&=` and the like: as the runtime does it.
-                        let (t, old) = (self.t(), if r == Rep::Int { format!("lc_int(N{s})") } else { format!("lc_bool(N{s})") });
+                        let (t, old) = (self.t(), box_c(r, &format!("N{s}")));
                         let v = self.expr(value);
                         let st = self.store(s, &format!("lc_arith_own({}, {old}, {t}, {site})", binop_c(*op)), &site);
                         format!("{{ lc_v {t} = {v}; {st}}} ")
@@ -2389,6 +2736,7 @@ impl<'p> Gen<'p> {
                 let v = match (e, self.cx.ret) {
                     (Some(x), Rep::Int) => self.int(x),
                     (Some(x), Rep::Bool) => self.boolean(x),
+                    (Some(x), Rep::Float) => self.num(x),
                     (Some(x), Rep::Boxed) => self.expr(x),
                     (None, _) => "LC_UNIT".to_string(),
                 };

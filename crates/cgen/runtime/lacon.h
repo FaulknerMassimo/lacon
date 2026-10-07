@@ -409,6 +409,30 @@ static inline __attribute__((always_inline)) bool lc_unbox_bool(lc_v v, const ch
     if (__builtin_expect(v.tag == T_BOOL, 1)) return v.u.i != 0;
     lc_unbox_fail(v, "bool", site);
 }
+/* A float the checker proved is one. */
+static inline __attribute__((always_inline)) double lc_unbox_float(lc_v v, const char *site) {
+    if (__builtin_expect(v.tag == T_FLOAT, 1)) return v.u.f;
+    lc_unbox_fail(v, "f64", site);
+}
+/* A number typed f64, which may still hold an int (`if c: 1 else: 2.5`):
+ * as the runtime's float operators see it. */
+static inline __attribute__((always_inline)) double lc_num(lc_v v, const char *site) {
+    if (v.tag == T_FLOAT) return v.u.f;
+    if (__builtin_expect(v.tag == T_INT, 1)) return (double)v.u.i;
+    lc_unbox_fail(v, "number", site);
+}
+/* Comparing unboxed floats; ordering NaN is the runtime's error. */
+static inline __attribute__((always_inline)) bool lc_fcmp(int op, double a, double b, const char *site) {
+    if (__builtin_expect(a != a || b != b, 0)) return lc_compare(op, lc_float(a), lc_float(b), site);
+    switch (op) {
+    case CMP_EQ: return a == b;
+    case CMP_NE: return a != b;
+    case CMP_LT: return a < b;
+    case CMP_LE: return a <= b;
+    case CMP_GT: return a > b;
+    default: return a >= b;
+    }
+}
 static inline __attribute__((always_inline)) int64_t lc_iadd(int64_t a, int64_t b, const char *site) {
     int64_t r;
     if (__builtin_add_overflow(a, b, &r)) lc_panic("E0405", site, "integer overflow in `%s`", "+");

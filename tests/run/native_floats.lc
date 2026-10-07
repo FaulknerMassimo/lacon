@@ -1,0 +1,43 @@
+# Floats are unboxed in native code only where they are floats for certain:
+# an `f64` can hold an int at run time, and must print as one.
+
+type P {x f64, y f64}
+
+fn half(x f64) f64 = x / 2.0
+
+fn whole(n int) f64 = n
+
+fn norm(x f64, y f64) f64 = (x * x + y * y).sqrt()
+
+fn main() =
+  c = true
+  a = if c: 1 else: 2.5
+  print(a, a + 0.5)
+  var t = 0
+  for x in []: t += 1.5
+  print(t)
+  var u = 0
+  for x in [1.5, 2.0]: u += x
+  print(u)
+  var z = 0.0
+  n = 3
+  z = n
+  print(z, z * 2)
+  print(half(3), whole(4), norm(3, 4), half(1) + 1)
+  print(7.5 % 2.0, 2.0 ** 10, -0.0, 1.0 / 0.0, -1.0 / 0.0, 0.1 + 0.2)
+  print(2 < 2.5, 3 == 3.0, 0 < 0.5 < 1, 1.5 >= 2, 4.0 != 4)
+  nan = 0.0 / 0.0
+  print(nan == nan, nan != nan)
+  var acc = 1.0
+  for i in 0..5: acc = acc * 1.5 + f64(i)
+  print(acc, acc.floor(), acc.round(), (-acc).abs(), acc.sqrt())
+  p = P{1, 2.5}
+  var q = p
+  q.x = 3
+  print(p, q, q.x + q.y)
+  scale = 2.0
+  print([1.0, 2.0].map(it * scale))
+  var m = 1.0
+  m += 1
+  print([1, 2].map(it + m), m)
+  print(nan < 1.0)
