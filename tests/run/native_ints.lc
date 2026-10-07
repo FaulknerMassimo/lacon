@@ -1,0 +1,62 @@
+# Ints and bools the checker proves are held unboxed in native code; the
+# output must match the interpreter's.
+
+fn fib(n int) int = if n < 2: n else: fib(n - 1) + fib(n - 2)
+
+fn clamp8(x int) u8 =
+  if x < 0: return 0
+  if x > 255: return 255
+  x
+
+fn is_even(n int) bool = n % 2 == 0
+
+fn pick(f fn(int) int, x int) int = f(x)
+
+fn first_neg(xs [int]) int =
+  # `return` inside a lambda leaves `first_neg` through `map`.
+  ys = xs.map(|x| if x < 0: return x else: x)
+  ys.len - ys.len
+
+fn bump(mut n int, by int) =
+  n += by
+
+fn main() =
+  print(fib(20), clamp8(-5), clamp8(300), clamp8(7))
+  var total = 0
+  for i in 0..10: total += i * i
+  for i in 3..=5: total -= i
+  for i in 5..2: total += 1000
+  print(total)
+  print(7 / 2, -7 / 2, 7 % 3, -7 % 3, 1 << 10, 1024 >> 3, 6 & 3, 6 | 3, 6 ^ 3)
+  a = 5
+  b = 3
+  print(a < b, a > b, a == 5, a != 5, 1 < a < 10, 1 < a < 3, is_even(a), !is_even(a))
+  print(a < b or b < a, a < b and b < a)
+  flags = [true, false]
+  ok = flags[0] and !flags[1]
+  print(ok)
+  m = {"a": 1}
+  x = m.get("a")
+  if x != none: print(x + 1)
+  y = m.get("b") ?? 10
+  print(y * 2)
+  n = match a
+    1: 10
+    5: 50
+    _: 0
+  print(n)
+  print(pick(it * 3, 4), first_neg([3, -2, 5]), first_neg([1]))
+  var k = 0
+  while k < 5:
+    k += 2
+  print(k)
+  var c = 1
+  bump(c, 41)
+  print(c)
+  big = 9223372036854775807
+  print(big, -big - 1)
+  var p = 0
+  q = 3
+  for (i, v) in [10, 20].enumerate():
+    p += i * v + q
+  print(p)

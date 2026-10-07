@@ -1,0 +1,5 @@
+2432902008176640000
+E0405 overflow_trace.lc:2:41 integer overflow in `*`
+  in `fact`, called at overflow_trace.lc:2:45 (4 times)
+  in `fact`, called at overflow_trace.lc:6:9
+[exit 1]

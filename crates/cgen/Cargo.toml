@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 lacon-syntax = { path = "../syntax" }
 lacon-interp = { path = "../interp" }
+lacon-check = { path = "../check" }

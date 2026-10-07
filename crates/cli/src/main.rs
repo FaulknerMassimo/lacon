@@ -90,7 +90,7 @@ fn usage_err(msg: &str) -> ExitCode {
 }
 
 /// Reads, parses and resolves a file, printing diagnostics. `None` on errors.
-fn load(path: &str) -> Option<(Source, Program)> {
+fn load(path: &str) -> Option<(Source, Program, lacon_check::Types)> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
@@ -100,11 +100,14 @@ fn load(path: &str) -> Option<(Source, Program)> {
     };
     let src = Source::new(path, text);
     let (mut prog, mut diags) = lacon_interp::load(&src);
+    let mut types = lacon_check::Types::default();
     // Type errors after a syntax error are mostly noise; after a name error,
     // only the lines that already have one are.
     if !diags.iter().any(|d| d.code.starts_with("E01")) {
         let lines: std::collections::HashSet<usize> = diags.iter().map(|d| src.line_col(d.span.start).0).collect();
-        diags.extend(lacon_check::check(&mut prog, &src.text).into_iter().filter(|d| !lines.contains(&src.line_col(d.span.start).0)));
+        let (tdiags, t) = lacon_check::check(&mut prog, &src.text);
+        types = t;
+        diags.extend(tdiags.into_iter().filter(|d| !lines.contains(&src.line_col(d.span.start).0)));
     }
     if !diags.is_empty() {
         for line in render_all(&diags, &src, MAX_DIAGS) {
@@ -112,7 +115,7 @@ fn load(path: &str) -> Option<(Source, Program)> {
         }
         return None;
     }
-    Some((src, prog))
+    Some((src, prog, types))
 }
 
 fn render_panic(p: &Panic, src: &Source) -> Vec<String> {
@@ -144,7 +147,7 @@ fn render_panic(p: &Panic, src: &Source) -> Vec<String> {
 }
 
 fn run(path: &str, args: Vec<String>) -> ExitCode {
-    let Some((src, prog)) = load(path) else {
+    let Some((src, prog, _)) = load(path) else {
         return ExitCode::from(1);
     };
     if prog.main.is_none() {
@@ -187,7 +190,7 @@ fn test(args: &[String]) -> ExitCode {
     let (mut passed, mut failed) = (0, 0);
     let mut load_failed = false;
     for path in &files {
-        let Some((src, prog)) = load(path) else {
+        let Some((src, prog, _)) = load(path) else {
             load_failed = true;
             continue;
         };
@@ -255,7 +258,7 @@ fn build(args: &[String]) -> ExitCode {
     let Some(file) = file else {
         return usage_err("build needs a file");
     };
-    let Some((src, prog)) = load(&file) else {
+    let Some((src, prog, types)) = load(&file) else {
         return ExitCode::from(1);
     };
     if prog.main.is_none() {
@@ -263,7 +266,7 @@ fn build(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     let out = out.unwrap_or_else(|| std::path::Path::new(&file).file_stem().map_or("a.out".into(), |s| s.to_string_lossy().into_owned()));
-    let c = lacon_cgen::generate(&prog, &src);
+    let c = lacon_cgen::generate(&prog, &src, &types);
     match native::compile(&c, &out, keep_c) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -274,7 +277,7 @@ fn build(args: &[String]) -> ExitCode {
 }
 
 fn sig(path: &str) -> ExitCode {
-    let Some((_, prog)) = load(path) else {
+    let Some((_, prog, _)) = load(path) else {
         return ExitCode::from(1);
     };
     for s in &prog.structs {

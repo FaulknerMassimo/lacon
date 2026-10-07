@@ -1,0 +1,4 @@
+E0402 lambda_trace.lc:4:14 index 5 out of range for length 1
+  in `down`, called at lambda_trace.lc:5:17 (3 times)
+  in `down`, called at lambda_trace.lc:8:9
+[exit 1]

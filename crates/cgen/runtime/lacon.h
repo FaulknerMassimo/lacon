@@ -61,27 +61,27 @@ typedef struct lc_fn {
 #define LC_FALSE ((lc_v){T_BOOL, {.i = 0}})
 #define LC_IMMORTAL ((int64_t)1 << 60)
 
-static inline lc_v lc_int(int64_t i) { lc_v v; v.tag = T_INT; v.u.i = i; return v; }
-static inline lc_v lc_float(double f) { lc_v v; v.tag = T_FLOAT; v.u.f = f; return v; }
-static inline lc_v lc_bool(bool b) { lc_v v; v.tag = T_BOOL; v.u.i = b; return v; }
-static inline lc_v lc_obj_v(uint32_t tag, void *o) { lc_v v; v.tag = tag; v.u.o = (lc_obj *)o; return v; }
+static inline __attribute__((always_inline)) lc_v lc_int(int64_t i) { lc_v v; v.tag = T_INT; v.u.i = i; return v; }
+static inline __attribute__((always_inline)) lc_v lc_float(double f) { lc_v v; v.tag = T_FLOAT; v.u.f = f; return v; }
+static inline __attribute__((always_inline)) lc_v lc_bool(bool b) { lc_v v; v.tag = T_BOOL; v.u.i = b; return v; }
+static inline __attribute__((always_inline)) lc_v lc_obj_v(uint32_t tag, void *o) { lc_v v; v.tag = tag; v.u.o = (lc_obj *)o; return v; }
 
 void lc_free(lc_v v);
-static inline lc_v lc_retain(lc_v v) {
+static inline __attribute__((always_inline)) lc_v lc_retain(lc_v v) {
     if (v.tag >= T_STR) v.u.o->rc++;
     return v;
 }
-static inline void lc_release(lc_v v) {
+static inline __attribute__((always_inline)) void lc_release(lc_v v) {
     if (v.tag >= T_STR && --v.u.o->rc == 0) lc_free(v);
 }
 /* Stores an owned value into a slot, releasing what was there. */
-static inline void lc_set(lc_v *slot, lc_v v) {
+static inline __attribute__((always_inline)) void lc_set(lc_v *slot, lc_v v) {
     lc_v old = *slot;
     *slot = v;
     lc_release(old);
 }
 /* Moves a value out of a slot, leaving unit. */
-static inline lc_v lc_take(lc_v *slot) {
+static inline __attribute__((always_inline)) lc_v lc_take(lc_v *slot) {
     lc_v v = *slot;
     *slot = LC_UNIT;
     return v;
@@ -180,7 +180,7 @@ void lc_enter_slow(int fn_id);
 typedef struct { int fn; const char *site; } lc_call_rec;
 extern lc_call_rec *lc_frames;
 extern int64_t lc_frames_cap;
-static inline void lc_enter(int fn_id) {
+static inline __attribute__((always_inline)) void lc_enter(int fn_id) {
     if (lc_depth < lc_frames_cap && lc_depth < 20000) {
         lc_frames[lc_depth].fn = fn_id;
         lc_frames[lc_depth].site = lc_callsite;
@@ -189,7 +189,9 @@ static inline void lc_enter(int fn_id) {
         lc_enter_slow(fn_id);
     }
 }
-static inline void lc_leave(void) { lc_depth--; }
+static inline __attribute__((always_inline)) void lc_leave(void) { lc_depth--; }
+/* A lambda call: counts toward the depth limit but shows in no trace. */
+void lc_enter_lambda(const char *site);
 
 /* `?` inside a lambda leaves the enclosing named function: the lambda sets
  * this and returns, and every caller up to that function passes it on. */
@@ -325,17 +327,17 @@ lc_v lc_mutate(int m, lc_v *place, int argc, lc_v *args, const char *site);
 
 /* ----- fast paths ----- */
 
-static inline lc_v lc_add(lc_v a, lc_v b, const char *site) {
+static inline __attribute__((always_inline)) lc_v lc_add(lc_v a, lc_v b, const char *site) {
     int64_t r;
     if (a.tag == T_INT && b.tag == T_INT && !__builtin_add_overflow(a.u.i, b.u.i, &r)) return lc_int(r);
     return lc_binop(OP_ADD, a, b, site);
 }
-static inline lc_v lc_sub(lc_v a, lc_v b, const char *site) {
+static inline __attribute__((always_inline)) lc_v lc_sub(lc_v a, lc_v b, const char *site) {
     int64_t r;
     if (a.tag == T_INT && b.tag == T_INT && !__builtin_sub_overflow(a.u.i, b.u.i, &r)) return lc_int(r);
     return lc_binop(OP_SUB, a, b, site);
 }
-static inline bool lc_cmp_fast(int op, lc_v a, lc_v b, const char *site) {
+static inline __attribute__((always_inline)) bool lc_cmp_fast(int op, lc_v a, lc_v b, const char *site) {
     if (a.tag == T_INT && b.tag == T_INT) {
         switch (op) {
         case CMP_EQ: return a.u.i == b.u.i;
@@ -349,7 +351,7 @@ static inline bool lc_cmp_fast(int op, lc_v a, lc_v b, const char *site) {
     return lc_compare(op, a, b, site);
 }
 /* `lc_binop_own` with ints done inline. Consumes both operands. */
-static inline lc_v lc_arith_own(int op, lc_v a, lc_v b, const char *site) {
+static inline __attribute__((always_inline)) lc_v lc_arith_own(int op, lc_v a, lc_v b, const char *site) {
     if (a.tag == T_INT && b.tag == T_INT) {
         int64_t r;
         switch (op) {
@@ -369,7 +371,7 @@ static inline lc_v lc_arith_own(int op, lc_v a, lc_v b, const char *site) {
     return r;
 }
 /* `xs[i]` on a list with an int index in range, else the general case. */
-static inline lc_v lc_index_fast(lc_v o, lc_v i, const char *site) {
+static inline __attribute__((always_inline)) lc_v lc_index_fast(lc_v o, lc_v i, const char *site) {
     if ((o.tag == T_LIST || o.tag == T_TUPLE) && i.tag == T_INT) {
         lc_vec *v = VEC(o);
         int64_t k = i.u.i < 0 ? v->len + i.u.i : i.u.i;
@@ -377,7 +379,7 @@ static inline lc_v lc_index_fast(lc_v o, lc_v i, const char *site) {
     }
     return lc_index(o, i, site);
 }
-static inline lc_v *lc_place_index_fast(lc_v *p, lc_v key, int viv, lc_v zero, int method, const char *site) {
+static inline __attribute__((always_inline)) lc_v *lc_place_index_fast(lc_v *p, lc_v key, int viv, lc_v zero, int method, const char *site) {
     if (p->tag == T_LIST && key.tag == T_INT && p->u.o->rc == 1) {
         lc_vec *v = VEC(*p);
         int64_t k = key.u.i < 0 ? v->len + key.u.i : key.u.i;
@@ -385,9 +387,64 @@ static inline lc_v *lc_place_index_fast(lc_v *p, lc_v key, int viv, lc_v zero, i
     }
     return lc_place_index(p, key, viv, zero, method, site);
 }
-static inline bool lc_test(lc_v c, const char *site) {
+static inline __attribute__((always_inline)) bool lc_test(lc_v c, const char *site) {
     if (c.tag == T_BOOL) return c.u.i != 0;
     return lc_truth(c, site);
+}
+
+/* ----- unboxed ints and bools -----
+ *
+ * Where the checker proves a value is an int or a bool, generated code holds
+ * it as an `int64_t` or `bool`. These are the runtime's int operators on
+ * such values, with the same errors. */
+
+/* A value the checker typed as an int or a bool turned out not to be one: a
+ * checker bug, never a program's. */
+_Noreturn void lc_unbox_fail(lc_v v, const char *want, const char *site);
+static inline __attribute__((always_inline)) int64_t lc_unbox_int(lc_v v, const char *site) {
+    if (__builtin_expect(v.tag == T_INT, 1)) return v.u.i;
+    lc_unbox_fail(v, "int", site);
+}
+static inline __attribute__((always_inline)) bool lc_unbox_bool(lc_v v, const char *site) {
+    if (__builtin_expect(v.tag == T_BOOL, 1)) return v.u.i != 0;
+    lc_unbox_fail(v, "bool", site);
+}
+static inline __attribute__((always_inline)) int64_t lc_iadd(int64_t a, int64_t b, const char *site) {
+    int64_t r;
+    if (__builtin_add_overflow(a, b, &r)) lc_panic("E0405", site, "integer overflow in `%s`", "+");
+    return r;
+}
+static inline __attribute__((always_inline)) int64_t lc_isub(int64_t a, int64_t b, const char *site) {
+    int64_t r;
+    if (__builtin_sub_overflow(a, b, &r)) lc_panic("E0405", site, "integer overflow in `%s`", "-");
+    return r;
+}
+static inline __attribute__((always_inline)) int64_t lc_imul(int64_t a, int64_t b, const char *site) {
+    int64_t r;
+    if (__builtin_mul_overflow(a, b, &r)) lc_panic("E0405", site, "integer overflow in `%s`", "*");
+    return r;
+}
+static inline __attribute__((always_inline)) int64_t lc_idiv(int64_t a, int64_t b, const char *site) {
+    if (b == 0) lc_panic("E0404", site, "division by zero");
+    if (a == INT64_MIN && b == -1) lc_panic("E0405", site, "integer overflow in `%s`", "/");
+    return a / b;
+}
+static inline __attribute__((always_inline)) int64_t lc_irem(int64_t a, int64_t b, const char *site) {
+    if (b == 0) lc_panic("E0404", site, "division by zero");
+    if (a == INT64_MIN && b == -1) lc_panic("E0405", site, "integer overflow in `%s`", "%");
+    return a % b;
+}
+static inline __attribute__((always_inline)) int64_t lc_ishl(int64_t a, int64_t b, const char *site) {
+    if (b < 0 || b >= 64) lc_panic("E0405", site, "integer overflow in `%s`", "<<");
+    return (int64_t)((uint64_t)a << b);
+}
+static inline __attribute__((always_inline)) int64_t lc_ishr(int64_t a, int64_t b, const char *site) {
+    if (b < 0 || b >= 64) lc_panic("E0405", site, "integer overflow in `%s`", ">>");
+    return a >> b;
+}
+static inline __attribute__((always_inline)) int64_t lc_ineg(int64_t a, const char *site) {
+    if (a == INT64_MIN) lc_panic("E0405", site, "integer overflow");
+    return -a;
 }
 
 #endif

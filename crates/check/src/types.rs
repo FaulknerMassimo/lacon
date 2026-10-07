@@ -66,6 +66,10 @@ impl T {
 #[derive(Clone, Default)]
 pub struct Subst {
     vars: Vec<Option<T>>,
+    /// How often an unknown type met a known one (a value of type `any`
+    /// flowing into an `int`, say). Each makes the inferred types unsafe to
+    /// compile from, since the checker let something through unchecked.
+    pub leaks: u32,
 }
 
 impl Subst {
@@ -124,7 +128,11 @@ impl Subst {
     }
 
     fn bind(&mut self, v: u32, t: &T) -> bool {
-        if matches!(t, T::Unknown | T::Never) {
+        if matches!(t, T::Unknown) {
+            self.leaks += 1;
+            return true;
+        }
+        if matches!(t, T::Never) {
             return true;
         }
         if self.occurs(v, t) {
@@ -141,7 +149,13 @@ impl Subst {
         match (&a, &b) {
             (T::Var(x), T::Var(y)) if x == y => true,
             (T::Var(x), t) | (t, T::Var(x)) => self.bind(*x, t),
-            (T::Unknown, _) | (_, T::Unknown) | (T::Never, _) | (_, T::Never) => true,
+            (T::Unknown, t) | (t, T::Unknown) => {
+                if !matches!(t, T::Unknown | T::Never) {
+                    self.leaks += 1;
+                }
+                true
+            }
+            (T::Never, _) | (_, T::Never) => true,
             (T::Int(_), T::Int(_)) | (T::Float, T::Float) | (T::Bool, T::Bool) | (T::Str, T::Str) | (T::Unit, T::Unit) | (T::Range, T::Range) => true,
             (T::List(x), T::List(y)) | (T::Set(x), T::Set(y)) | (T::Heap(x), T::Heap(y)) | (T::Opt(x), T::Opt(y)) | (T::Res(x), T::Res(y)) => {
                 self.unify(x, y)
@@ -186,7 +200,14 @@ impl Subst {
     pub fn coerce(&mut self, from: &T, to: &T) -> bool {
         let (f, t) = (self.resolve(from), self.resolve(to));
         match (&f, &t) {
-            (_, T::Unknown) | (T::Unknown, _) | (T::Never, _) => true,
+            (T::Unknown, t) => {
+                // An unchecked value flows into a typed place.
+                if !matches!(t, T::Unknown | T::Never) {
+                    self.leaks += 1;
+                }
+                true
+            }
+            (_, T::Unknown) | (T::Never, _) => true,
             (T::Var(_), T::Opt(inner) | T::Res(inner)) => self.unify(&f, inner),
             (T::Var(_), _) | (_, T::Var(_)) => self.unify(&f, &t),
             (T::Int(_), T::Float) => true,

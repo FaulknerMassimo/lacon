@@ -1,0 +1,7 @@
+# A sized int parameter is range-checked however the function is called.
+fn shade(level u8) str = "#" * level
+
+fn main() =
+  for i in 0..3: print(shade(i))
+  n = 256
+  print(shade(n))

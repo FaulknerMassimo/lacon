@@ -28,6 +28,7 @@ dependencies = [
 name = "lacon-cgen"
 version = "0.0.1"
 dependencies = [
+ "lacon-check",
  "lacon-interp",
  "lacon-syntax",
 ]

@@ -1,0 +1,21 @@
+fn main() =
+  n = 2000
+  cap = 5000
+  var w = []
+  var v = []
+  var seed = 42
+  for i in 0..n:
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    w.push(seed % 100 + 1)
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    v.push(seed % 1000)
+  var best = [0] * (cap + 1)
+  for i in 0..n:
+    wi = w[i]
+    vi = v[i]
+    var c = cap
+    while c >= wi:
+      cand = best[c - wi] + vi
+      if cand > best[c]: best[c] = cand
+      c -= 1
+  print(best[cap])

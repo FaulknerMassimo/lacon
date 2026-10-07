@@ -1046,6 +1046,16 @@ void lc_enter_slow(int fn_id) {
     lc_frames[lc_depth++] = (lc_call_rec){fn_id, lc_callsite};
 }
 
+void lc_enter_lambda(const char *site) {
+    if (lc_depth >= MAX_DEPTH) lc_panic("E0408", site, "stack overflow");
+    if (lc_depth == lc_frames_cap) {
+        lc_frames_cap = lc_frames_cap ? lc_frames_cap * 2 : 256;
+        lc_frames = xrealloc(lc_frames, sizeof(lc_call_rec) * lc_frames_cap);
+    }
+    /* No site: traces leave lambdas out. */
+    lc_frames[lc_depth++] = (lc_call_rec){-1, NULL};
+}
+
 _Noreturn void lc_exit(int code) {
     lc_flush();
     fflush(stderr);
@@ -1060,26 +1070,32 @@ _Noreturn void lc_panic(const char *code, const char *site, const char *fmt, ...
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     va_end(ap);
-    /* Enclosing calls, innermost first, runs of one frame collapsed. */
-    int shown = 0, total = 0;
-    int64_t i = lc_depth - 1;
-    while (i >= 0) {
-        if (!frames[i].site) {
-            i--;
+    /* Enclosing calls, innermost first, runs of one frame collapsed. Frames
+     * without a site (lambdas, `main`) are left out, as the interpreter
+     * leaves them out. */
+    int shown = 0, total = 0, count = 0, fn = -1;
+    const char *at = NULL;
+    for (int64_t i = lc_depth - 1; i >= -1; i--) {
+        if (i >= 0 && !frames[i].site) continue;
+        if (i >= 0 && count > 0 && frames[i].fn == fn && frames[i].site == at) {
+            count++;
             continue;
         }
-        int64_t j = i;
-        while (j - 1 >= 0 && frames[j - 1].fn == frames[i].fn && frames[j - 1].site == frames[i].site) j--;
-        int count = (int)(i - j + 1);
-        total++;
-        if (shown < 4) {
-            if (count > 1)
-                fprintf(stderr, "  in `%s`, called at %s (%d times)\n", lc_prog->fn_names[frames[i].fn], frames[i].site, count);
-            else
-                fprintf(stderr, "  in `%s`, called at %s\n", lc_prog->fn_names[frames[i].fn], frames[i].site);
-            shown++;
+        if (count > 0) {
+            total++;
+            if (shown < 4) {
+                if (count > 1)
+                    fprintf(stderr, "  in `%s`, called at %s (%d times)\n", lc_prog->fn_names[fn], at, count);
+                else
+                    fprintf(stderr, "  in `%s`, called at %s\n", lc_prog->fn_names[fn], at);
+                shown++;
+            }
         }
-        i = j - 1;
+        if (i >= 0) {
+            fn = frames[i].fn;
+            at = frames[i].site;
+            count = 1;
+        }
     }
     if (total > 4) fprintf(stderr, "  ... %d more frames\n", total - 4);
     lc_exit(1);

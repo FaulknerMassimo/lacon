@@ -1,0 +1,17 @@
+fn main() =
+  size = 400
+  var inside = 0
+  for py in 0..size:
+    for px in 0..size:
+      cx = f64(px) / f64(size) * 3.0 - 2.0
+      cy = f64(py) / f64(size) * 2.0 - 1.0
+      var x = 0.0
+      var y = 0.0
+      var k = 0
+      while k < 100 and x * x + y * y <= 4.0:
+        t = x * x - y * y + cx
+        y = 2.0 * x * y + cy
+        x = t
+        k += 1
+      if k == 100: inside += 1
+  print(inside)

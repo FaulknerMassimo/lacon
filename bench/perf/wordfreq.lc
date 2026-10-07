@@ -1,0 +1,11 @@
+fn main() =
+  words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
+  var counts = {}
+  var seed = 1
+  for i in 0..2000000:
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    w = words[seed % 8] + str(seed / 8 % 50)
+    counts[w] += 1
+  for (w, n) in counts.sort_by(-it.1).take(3):
+    print("{w} {n}")
+  print(counts.len)

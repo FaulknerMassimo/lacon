@@ -373,6 +373,11 @@ bool lc_compare(int op, lc_v a, lc_v b, const char *site) {
     }
 }
 
+_Noreturn void lc_unbox_fail(lc_v v, const char *want, const char *site) {
+    char k[64];
+    lc_panic("E0000", site, "internal error: the checker typed this %s, but it is %s", want, lc_kind(v, k));
+}
+
 int64_t lc_int_of(lc_v v, const char *site) {
     char k[64];
     if (v.tag == T_INT) return v.u.i;
@@ -1232,15 +1237,13 @@ lc_v lc_call(lc_v f, int argc, lc_v *args, const char *site) {
         int np = fn->nparams;
         if (np > 1 && argc == 1 && args[0].tag == T_TUPLE && VEC(args[0])->len == np) {
             lc_v *spread = VEC(args[0])->items;
-            if (lc_depth >= 20000) lc_panic("E0408", site, "stack overflow");
-            lc_depth++;
+            lc_enter_lambda(site);
             lc_v r = fn->code(fn, np, spread, site);
             lc_depth--;
             return r;
         }
         if (argc != np) lc_panic("E0206", site, "lambda takes %d argument(s), got %d", np, argc);
-        if (lc_depth >= 20000) lc_panic("E0408", site, "stack overflow");
-        lc_depth++;
+        lc_enter_lambda(site);
         lc_v r = fn->code(fn, argc, args, site);
         lc_depth--;
         return r;

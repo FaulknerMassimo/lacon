@@ -1,0 +1,8 @@
+# A lambda between two calls of one function doesn't split the run of
+# frames in the trace, and leaves no stale frame behind.
+fn down(n int) int =
+  if n == 0: [1][5]
+  else: [n].map(down(it - 1)).sum()
+
+fn main() =
+  print(down(3))

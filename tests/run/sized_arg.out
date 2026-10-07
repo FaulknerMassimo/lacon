@@ -1,0 +1,5 @@
+
+#
+##
+E0301 sized_arg.lc:7:9 argument `level` of `shade`: want u8 got 256 (out of range for u8)
+[exit 1]

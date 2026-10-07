@@ -1,0 +1,6 @@
+# Overflow in unboxed int arithmetic names the operator and the calls.
+fn fact(n int) int = if n == 0: 1 else: n * fact(n - 1)
+
+fn main() =
+  print(fact(20))
+  print(fact(25))

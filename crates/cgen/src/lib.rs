@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::rc::Rc;
 
+use lacon_check::{Types, T};
 use lacon_interp::builtins::{is_method, is_mutator, METHODS};
 use lacon_interp::ir::*;
 use lacon_interp::value::{Func, Value};
@@ -27,9 +28,10 @@ pub const RUNTIME: &[(&str, &str)] = &[
     ("rt_methods.c", include_str!("../runtime/rt_methods.c")),
 ];
 
-/// The C source of a program, to compile with the runtime.
-pub fn generate(prog: &Program, src: &Source) -> String {
-    Gen::new(prog, src).run()
+/// The C source of a program, to compile with the runtime. `types` is what
+/// the checker inferred; when they are sound, ints and bools are unboxed.
+pub fn generate(prog: &Program, src: &Source, types: &Types) -> String {
+    Gen::new(prog, src, types).run()
 }
 
 /// The conversion names, in the order of the runtime's `lc_convs`.
@@ -43,15 +45,101 @@ enum Kind {
     Nested,
 }
 
+/// How a value is held in C: a tagged `lc_v`, or unboxed where the checker
+/// proved its type.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Rep {
+    Boxed,
+    /// An `int64_t`.
+    Int,
+    /// A C `bool`.
+    Bool,
+}
+
+fn rep_of_type(t: &T) -> Rep {
+    match t {
+        T::Int(_) => Rep::Int,
+        T::Bool => Rep::Bool,
+        _ => Rep::Boxed,
+    }
+}
+
+/// Integer operators done on unboxed ints, as the runtime does them.
+fn int_op(op: BinOp) -> Option<&'static str> {
+    Some(match op {
+        BinOp::Add => "lc_iadd",
+        BinOp::Sub => "lc_isub",
+        BinOp::Mul => "lc_imul",
+        BinOp::Div => "lc_idiv",
+        BinOp::Rem => "lc_irem",
+        BinOp::Shl => "lc_ishl",
+        BinOp::Shr => "lc_ishr",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Pow => return None,
+    })
+}
+
+fn cmp_op(op: CmpOp) -> Option<&'static str> {
+    Some(match op {
+        CmpOp::Eq => "==",
+        CmpOp::Ne => "!=",
+        CmpOp::Lt => "<",
+        CmpOp::Le => "<=",
+        CmpOp::Gt => ">",
+        CmpOp::Ge => ">=",
+        CmpOp::In | CmpOp::NotIn => return None,
+    })
+}
+
 #[derive(Clone)]
 struct Cx {
     /// Deepest `Up` reference, for the frame pointers a lambda sets up.
     max_up: u32,
+    /// How each slot of the current frame is held. An unboxed slot `s` is
+    /// the C local `N{s}`; a boxed one is `S[s]`.
+    slots: Vec<Rep>,
+    /// How the current function returns its value: `RETURN` takes this.
+    ret: Rep,
+}
+
+impl Cx {
+    fn new(slots: Vec<Rep>) -> Cx {
+        Cx { max_up: 0, slots, ret: Rep::Boxed }
+    }
+}
+
+/// A named function's typed entry `FT{id}`: parameters and result held as
+/// the checker proved them, so direct calls skip boxing and argument arrays.
+#[derive(Clone)]
+struct Entry {
+    params: Vec<Rep>,
+    ret: Rep,
+}
+
+fn c_type(r: Rep) -> &'static str {
+    match r {
+        Rep::Boxed => "lc_v",
+        Rep::Int => "int64_t",
+        Rep::Bool => "bool",
+    }
+}
+
+fn box_c(r: Rep, v: &str) -> String {
+    match r {
+        Rep::Boxed => v.to_string(),
+        Rep::Int => format!("lc_int({v})"),
+        Rep::Bool => format!("lc_bool({v})"),
+    }
 }
 
 struct Gen<'p> {
     prog: &'p Program,
     src: &'p Source,
+    types: &'p Types,
+    /// The checker's types hold at run time, so values can be unboxed.
+    typed: bool,
     statics: String,
     funcs: String,
     init: String,
@@ -62,6 +150,7 @@ struct Gen<'p> {
     tys: HashMap<String, String>,
     groups: Vec<Rc<[FnId]>>,
     ctors: Vec<(u32, u32)>,
+    entries: Vec<Option<Entry>>,
     lambda_n: usize,
     tmp: usize,
     cx: Cx,
@@ -142,43 +231,149 @@ fn conv_index(to: ConvTo) -> usize {
 /// Does an expression contain a lambda anywhere inside it?
 fn has_lambda(e: &Ex) -> bool {
     let mut found = false;
-    walk_ex(e, &mut |x| {
-        if matches!(x, Ex::Lambda(_)) {
+    walk_ex(e, 0, &mut |n, _| {
+        if let Node::Ex(Ex::Lambda(_)) = n {
             found = true;
         }
     });
     found
 }
 
-fn walk_stmts(ss: &[St], f: &mut dyn FnMut(&Ex)) {
+/// What the walk visits: expressions, and places with how they are used.
+enum Node<'a> {
+    Ex(&'a Ex),
+    /// A place, and whether a builtin method changes it in place.
+    Place(&'a Place, bool),
+}
+
+/// Visits every expression and place under `e`. `d` counts the lambdas
+/// entered on the way, so `Ex::Up(d, _)` at depth `d` names a slot of the
+/// frame the walk started in.
+fn walk_ex(e: &Ex, d: u32, f: &mut dyn FnMut(Node, u32)) {
+    f(Node::Ex(e), d);
+    match e {
+        Ex::Str(ps, _) => {
+            for p in ps {
+                if let StrPiece::Expr(x, _, args) = p {
+                    walk_ex(x, d, f);
+                    for a in args {
+                        walk_ex(a, d, f);
+                    }
+                }
+            }
+        }
+        Ex::List(xs, _) | Ex::Set(xs, _) | Ex::Tuple(xs, _) => xs.iter().for_each(|x| walk_ex(x, d, f)),
+        Ex::Map(ps, _) => ps.iter().for_each(|(k, v)| {
+            walk_ex(k, d, f);
+            walk_ex(v, d, f);
+        }),
+        Ex::Struct { fields, .. } => fields.iter().flatten().for_each(|x| walk_ex(x, d, f)),
+        Ex::Variant { args, .. } | Ex::CallBuiltin { args, .. } => args.iter().for_each(|x| walk_ex(x, d, f)),
+        Ex::CallFn { args, places, .. } => {
+            args.iter().for_each(|x| walk_ex(x, d, f));
+            for p in places.iter().flatten() {
+                walk_place(p, false, d, f);
+            }
+        }
+        Ex::Field { obj, .. } => walk_ex(obj, d, f),
+        Ex::Index { obj, index, .. } => {
+            walk_ex(obj, d, f);
+            walk_ex(index, d, f);
+        }
+        Ex::Slice { obj, start, end, .. } => {
+            walk_ex(obj, d, f);
+            for x in [start, end].into_iter().flatten() {
+                walk_ex(x, d, f);
+            }
+        }
+        Ex::CallValue { f: callee, args, .. } => {
+            walk_ex(callee, d, f);
+            args.iter().for_each(|x| walk_ex(x, d, f));
+        }
+        Ex::Method { recv, args, name, .. } => {
+            match recv {
+                Recv::Place(p) => walk_place(p, is_mutator(name), d, f),
+                Recv::Value(x) => walk_ex(x, d, f),
+            }
+            args.iter().for_each(|x| walk_ex(x, d, f));
+        }
+        Ex::Unary { e, .. } | Ex::Try { e, .. } | Ex::Cast { e, .. } => walk_ex(e, d, f),
+        Ex::Binary { l, r, .. } | Ex::AssertEq { l, r, .. } => {
+            walk_ex(l, d, f);
+            walk_ex(r, d, f);
+            if let Ex::AssertEq { msg: Some(m), .. } = e {
+                walk_ex(m, d, f);
+            }
+        }
+        Ex::And(a, b, _) | Ex::Or(a, b, _) | Ex::Coalesce(a, b, _) => {
+            walk_ex(a, d, f);
+            walk_ex(b, d, f);
+        }
+        Ex::Compare { first, rest, .. } => {
+            walk_ex(first, d, f);
+            rest.iter().for_each(|(_, x, _)| walk_ex(x, d, f));
+        }
+        Ex::Range { start, end, .. } => {
+            for x in [start, end].into_iter().flatten() {
+                walk_ex(x, d, f);
+            }
+        }
+        Ex::Lambda(def) => walk_ex(&def.body, d + 1, f),
+        Ex::If { cond, then, els, .. } => {
+            walk_ex(cond, d, f);
+            walk_ex(then, d, f);
+            if let Some(x) = els {
+                walk_ex(x, d, f);
+            }
+        }
+        Ex::Match { scrut, arms, .. } => {
+            walk_ex(scrut, d, f);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    walk_ex(g, d, f);
+                }
+                walk_ex(&a.body, d, f);
+            }
+        }
+        Ex::Block(stmts, tail) => {
+            walk_stmts(stmts, d, f);
+            if let Some(t) = tail {
+                walk_ex(t, d, f);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn walk_stmts(ss: &[St], d: u32, f: &mut dyn FnMut(Node, u32)) {
     for s in ss {
         match s {
-            St::Expr(e, _) | St::Fail(e, _) | St::Bind(_, e, _, _) => walk_ex(e, f),
+            St::Expr(e, _) | St::Fail(e, _) | St::Bind(_, e, _, _) => walk_ex(e, d, f),
             St::Assign { place, value, .. } => {
-                walk_place(place, f);
-                walk_ex(value, f);
+                walk_place(place, false, d, f);
+                walk_ex(value, d, f);
             }
             St::AssignMulti { targets, value, .. } => {
                 for t in targets {
                     if let Target::Place(p) = t {
-                        walk_place(p, f);
+                        walk_place(p, false, d, f);
                     }
                 }
-                walk_ex(value, f);
+                walk_ex(value, d, f);
             }
             St::For { iter, body, .. } => {
-                walk_ex(iter, f);
-                walk_stmts(body, f);
+                walk_ex(iter, d, f);
+                walk_stmts(body, d, f);
             }
             St::While { cond, body, .. } => {
-                walk_ex(cond, f);
-                walk_stmts(body, f);
+                walk_ex(cond, d, f);
+                walk_stmts(body, d, f);
             }
-            St::Return(Some(e), _) => walk_ex(e, f),
+            St::Return(Some(e), _) => walk_ex(e, d, f),
             St::Assert { cond, msg, .. } => {
-                walk_ex(cond, f);
+                walk_ex(cond, d, f);
                 if let Some(m) = msg {
-                    walk_ex(m, f);
+                    walk_ex(m, d, f);
                 }
             }
             _ => {}
@@ -186,109 +381,62 @@ fn walk_stmts(ss: &[St], f: &mut dyn FnMut(&Ex)) {
     }
 }
 
-fn walk_place(p: &Place, f: &mut dyn FnMut(&Ex)) {
+fn walk_place(p: &Place, mutated: bool, d: u32, f: &mut dyn FnMut(Node, u32)) {
+    f(Node::Place(p, mutated), d);
     for s in &p.path {
         if let Seg::Index(e, _) = s {
-            walk_ex(e, f);
+            walk_ex(e, d, f);
         }
     }
 }
 
-fn walk_ex(e: &Ex, f: &mut dyn FnMut(&Ex)) {
-    f(e);
-    match e {
-        Ex::Str(ps, _) => {
-            for p in ps {
-                if let StrPiece::Expr(x, _, args) = p {
-                    walk_ex(x, f);
-                    for a in args {
-                        walk_ex(a, f);
+/// Slots of the frame whose body is `body` that must stay boxed whatever
+/// their type: those a nested lambda uses, which live in the heap frame,
+/// and those used as the root of a longer place or changed in place by a
+/// method or a `mut` argument, which the runtime reaches by pointer.
+fn pinned_slots(prog: &Program, body: &Ex) -> std::collections::HashSet<u32> {
+    let mut out = std::collections::HashSet::new();
+    let mut_param = |id: FnId, i: usize| prog.fns[id as usize].params.get(i).is_some_and(|p| p.mode == Mode::Mut);
+    walk_ex(body, 0, &mut |n, d| match n {
+        Node::Ex(Ex::Up(k, s, _)) if *k == d => {
+            out.insert(*s);
+        }
+        Node::Ex(Ex::CallFn { fns, places, .. }) if d == 0 => {
+            for (i, p) in places.iter().enumerate() {
+                if let Some(Place { root: Root::Local(s), .. }) = p {
+                    if fns.iter().any(|&id| mut_param(id, i)) {
+                        out.insert(*s);
                     }
                 }
             }
         }
-        Ex::List(xs, _) | Ex::Set(xs, _) | Ex::Tuple(xs, _) => xs.iter().for_each(|x| walk_ex(x, f)),
-        Ex::Map(ps, _) => ps.iter().for_each(|(k, v)| {
-            walk_ex(k, f);
-            walk_ex(v, f);
-        }),
-        Ex::Struct { fields, .. } => fields.iter().flatten().for_each(|x| walk_ex(x, f)),
-        Ex::Variant { args, .. } | Ex::CallFn { args, .. } | Ex::CallBuiltin { args, .. } => args.iter().for_each(|x| walk_ex(x, f)),
-        Ex::Field { obj, .. } => walk_ex(obj, f),
-        Ex::Index { obj, index, .. } => {
-            walk_ex(obj, f);
-            walk_ex(index, f);
-        }
-        Ex::Slice { obj, start, end, .. } => {
-            walk_ex(obj, f);
-            for x in [start, end].into_iter().flatten() {
-                walk_ex(x, f);
+        Node::Ex(Ex::Method { recv: Recv::Place(Place { root: Root::Local(s), .. }), user: Some(ids), .. }) if d == 0 => {
+            if ids.iter().any(|&id| mut_param(id, 0)) {
+                out.insert(*s);
             }
         }
-        Ex::CallValue { f: callee, args, .. } => {
-            walk_ex(callee, f);
-            args.iter().for_each(|x| walk_ex(x, f));
-        }
-        Ex::Method { recv, args, .. } => {
-            match recv {
-                Recv::Place(p) => walk_place(p, f),
-                Recv::Value(x) => walk_ex(x, f),
+        Node::Place(p, mutated) => match p.root {
+            Root::Up(k, s) if k == d => {
+                out.insert(s);
             }
-            args.iter().for_each(|x| walk_ex(x, f));
-        }
-        Ex::Unary { e, .. } | Ex::Try { e, .. } | Ex::Cast { e, .. } => walk_ex(e, f),
-        Ex::Binary { l, r, .. } | Ex::AssertEq { l, r, .. } => {
-            walk_ex(l, f);
-            walk_ex(r, f);
-            if let Ex::AssertEq { msg: Some(m), .. } = e {
-                walk_ex(m, f);
+            Root::Local(s) if d == 0 && (!p.path.is_empty() || mutated) => {
+                out.insert(s);
             }
-        }
-        Ex::And(a, b, _) | Ex::Or(a, b, _) | Ex::Coalesce(a, b, _) => {
-            walk_ex(a, f);
-            walk_ex(b, f);
-        }
-        Ex::Compare { first, rest, .. } => {
-            walk_ex(first, f);
-            rest.iter().for_each(|(_, x, _)| walk_ex(x, f));
-        }
-        Ex::Range { start, end, .. } => {
-            for x in [start, end].into_iter().flatten() {
-                walk_ex(x, f);
-            }
-        }
-        Ex::Lambda(def) => walk_ex(&def.body, f),
-        Ex::If { cond, then, els, .. } => {
-            walk_ex(cond, f);
-            walk_ex(then, f);
-            if let Some(x) = els {
-                walk_ex(x, f);
-            }
-        }
-        Ex::Match { scrut, arms, .. } => {
-            walk_ex(scrut, f);
-            for a in arms {
-                if let Some(g) = &a.guard {
-                    walk_ex(g, f);
-                }
-                walk_ex(&a.body, f);
-            }
-        }
-        Ex::Block(stmts, tail) => {
-            walk_stmts(stmts, f);
-            if let Some(t) = tail {
-                walk_ex(t, f);
-            }
-        }
+            _ => {}
+        },
         _ => {}
-    }
+    });
+    out
 }
 
 impl<'p> Gen<'p> {
-    fn new(prog: &'p Program, src: &'p Source) -> Gen<'p> {
+    fn new(prog: &'p Program, src: &'p Source, types: &'p Types) -> Gen<'p> {
         Gen {
             prog,
             src,
+            types,
+            // `LACON_BOXED=1` keeps every value boxed, to measure the difference.
+            typed: types.sound && std::env::var_os("LACON_BOXED").is_none(),
             statics: String::new(),
             funcs: String::new(),
             init: String::new(),
@@ -299,9 +447,69 @@ impl<'p> Gen<'p> {
             tys: HashMap::new(),
             groups: Vec::new(),
             ctors: Vec::new(),
+            entries: Vec::new(),
             lambda_n: 0,
             tmp: 0,
-            cx: Cx { max_up: 0 },
+            cx: Cx::new(vec![]),
+        }
+    }
+
+    // ----- representations -----
+
+    fn rep(&self, e: &Ex) -> Rep {
+        if !self.typed {
+            return Rep::Boxed;
+        }
+        self.types.of(e).map_or(Rep::Boxed, rep_of_type)
+    }
+
+    fn slot_rep(&self, s: u32) -> Rep {
+        self.cx.slots.get(s as usize).copied().unwrap_or(Rep::Boxed)
+    }
+
+    /// How each slot of a frame is held: unboxed where the checker proved it
+    /// an int or a bool, unless something reaches it by pointer. `boxed`
+    /// slots stay boxed regardless.
+    fn frame_reps(&self, body: &Ex, nslots: u32, boxed: &[u32]) -> Vec<Rep> {
+        let mut reps = vec![Rep::Boxed; nslots as usize];
+        if !self.typed {
+            return reps;
+        }
+        let Some(ts) = self.types.frame(body) else { return reps };
+        let pinned = pinned_slots(self.prog, body);
+        for (i, t) in ts.iter().enumerate().take(nslots as usize) {
+            let s = i as u32;
+            if !pinned.contains(&s) && !boxed.contains(&s) {
+                reps[i] = rep_of_type(t);
+            }
+        }
+        reps
+    }
+
+    /// Declarations of the current frame's unboxed slots.
+    fn native_decls(&self) -> String {
+        let mut out = String::new();
+        for (i, r) in self.cx.slots.iter().enumerate() {
+            match r {
+                Rep::Int => {
+                    let _ = writeln!(out, "    int64_t N{i} = 0;");
+                }
+                Rep::Bool => {
+                    let _ = writeln!(out, "    bool N{i} = 0;");
+                }
+                Rep::Boxed => {}
+            }
+        }
+        out
+    }
+
+    /// Stores the C value `v` (an owned `lc_v`) into slot `s`, unboxing it
+    /// when the slot is unboxed.
+    fn store(&mut self, s: u32, v: &str, site: &str) -> String {
+        match self.slot_rep(s) {
+            Rep::Int => format!("N{s} = lc_unbox_int({v}, {site}); "),
+            Rep::Bool => format!("N{s} = lc_unbox_bool({v}, {site}); "),
+            Rep::Boxed => format!("lc_set(&S[{s}], {v}); "),
         }
     }
 
@@ -434,8 +642,14 @@ impl<'p> Gen<'p> {
             self.funcs.push_str(&body);
             let _ = writeln!(self.init, "    K{i} = KI{i}();");
         }
+        self.entries = (0..prog.fns.len()).map(|id| self.entry_of(id as FnId)).collect();
         for (id, fd) in prog.fns.iter().enumerate() {
             let _ = writeln!(self.statics, "static lc_v F{id}(lc_v *a);");
+            if let Some(en) = &self.entries[id] {
+                let ps: Vec<String> = en.params.iter().map(|r| c_type(*r).to_string()).collect();
+                let ps = if ps.is_empty() { "void".to_string() } else { ps.join(", ") };
+                let _ = writeln!(self.statics, "static {} FT{id}({ps});", c_type(en.ret));
+            }
             for (i, p) in fd.params.iter().enumerate() {
                 if let Some(d) = &p.default {
                     let _ = writeln!(self.statics, "static lc_v D{id}_{i}(void);");
@@ -536,22 +750,212 @@ impl<'p> Gen<'p> {
     /// A function of no arguments that computes a value: a constant or a
     /// default.
     fn thunk_fn(&mut self, name: &str, body: &Ex, nslots: u32) -> String {
-        let saved = std::mem::replace(&mut self.cx, Cx { max_up: 0 });
+        let reps = self.frame_reps(body, nslots, &[]);
+        let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
         let heap = has_lambda(body);
         let e = self.expr(body);
+        let natives = self.native_decls();
         self.cx = saved;
         let (setup, teardown) = Self::frame_setup(nslots, heap, "NULL");
         let mut f = String::new();
         f.push_str(Self::macros(Kind::Nested));
-        let _ = writeln!(f, "static lc_v {name}(void) {{\n    lc_v ret = LC_UNIT;\n{setup}    ret = {e};\n    goto out;\nout:\n{teardown}    return ret;\n}}\n");
+        let _ = writeln!(f, "static lc_v {name}(void) {{\n    lc_v ret = LC_UNIT;\n{setup}{natives}    ret = {e};\n    goto out;\nout:\n{teardown}    return ret;\n}}\n");
         f
     }
 
-    fn named_fn(&mut self, id: FnId) -> String {
+    /// The typed entry of function `id`, if it gets one: any function but
+    /// `main` without generics, `mut` parameters, defaults or lambdas.
+    fn entry_of(&self, id: FnId) -> Option<Entry> {
         let fd = &self.prog.fns[id as usize];
-        let saved = std::mem::replace(&mut self.cx, Cx { max_up: 0 });
+        if !self.typed || self.prog.main == Some(id) || !fd.generics.is_empty() || has_lambda(&fd.body) {
+            return None;
+        }
+        if fd.params.iter().any(|p| p.mode == Mode::Mut || p.default.is_some()) {
+            return None;
+        }
+        let reps = self.frame_reps(&fd.body, fd.nslots, &[]);
+        let ret = match &fd.ret {
+            Some(Ty::Int { .. }) => Rep::Int,
+            Some(Ty::Bool) => Rep::Bool,
+            _ => Rep::Boxed,
+        };
+        Some(Entry { params: reps[..fd.params.len()].to_vec(), ret })
+    }
+
+    /// Checks parameter `i` of `fd`, given the C value `v` (an `lc_v` when
+    /// `boxed`, else of the parameter's rep), as the runtime checks
+    /// arguments; gives the value to pass, of the parameter's rep.
+    fn check_param(&mut self, fd: &FnDef, i: usize, r: Rep, v: &str, boxed: bool, site: &str) -> String {
+        let p = &fd.params[i];
+        let fname = cstr(&fd.name);
+        if !boxed {
+            // Unboxed into an unboxed parameter: only a sized int's range.
+            if let Ty::Int { min, max, .. } = p.ty {
+                if min != i64::MIN || max != i64::MAX {
+                    let ty = self.ty(&p.ty);
+                    return format!(
+                        "({{ if ({v} < {min}LL || {v} > {max}LL) lc_coerce_arg(lc_int({v}), {ty}, {}, {fname}, {site}); {v}; }})",
+                        cstr(&p.name)
+                    );
+                }
+            }
+            return v.to_string();
+        }
+        let checked = if matches!(p.ty, Ty::Any | Ty::Param(_)) {
+            v.to_string()
+        } else {
+            let ty = self.ty(&p.ty);
+            let slow = format!("lc_coerce_arg({v}, {ty}, {}, {fname}, {site})", cstr(&p.name));
+            match exact_tag(&p.ty, v) {
+                Some(check) => format!("({check} ? {v} : {slow})"),
+                None => slow,
+            }
+        };
+        match r {
+            Rep::Int => format!("({checked}).u.i"),
+            Rep::Bool => format!("(({checked}).u.i != 0)"),
+            Rep::Boxed => checked,
+        }
+    }
+
+    /// `FT{id}`, and `F{id}` as a wrapper that checks boxed arguments and
+    /// calls it.
+    fn typed_fn(&mut self, id: FnId, en: &Entry) -> String {
+        let fd = &self.prog.fns[id as usize];
+        let mut cx = Cx::new(self.frame_reps(&fd.body, fd.nslots, &[]));
+        cx.ret = en.ret;
+        let saved = std::mem::replace(&mut self.cx, cx);
+        let body = match en.ret {
+            Rep::Int => self.int(&fd.body),
+            Rep::Bool => self.boolean(&fd.body),
+            Rep::Boxed => self.expr(&fd.body),
+        };
+        let natives = self.native_decls();
+        self.cx = saved;
+        let (setup, teardown) = Self::frame_setup(fd.nslots, false, "NULL");
+        let fname = cstr(&fd.name);
+        let fsite = self.site(fd.span);
+        let rt = c_type(en.ret);
+        let mut f = String::new();
+        // `return` and `?` inside a lambda called from here end this
+        // function with a boxed value, checked like any return value.
+        let _ = writeln!(f, "#undef RETURN\n#undef UNWIND\n#define RETURN(v) {{ ret = (v); goto out; }}");
+        let _ = writeln!(f, "#define UNWIND {{ unw = lc_unwind_val; unwound = true; lc_unwinding = 0; goto out; }}");
+        let ps: Vec<String> = en.params.iter().enumerate().map(|(i, r)| format!("{} P{i}", c_type(*r))).collect();
+        let ps = if ps.is_empty() { "void".to_string() } else { ps.join(", ") };
+        let zero = if en.ret == Rep::Boxed { "LC_UNIT" } else { "0" };
+        let _ = writeln!(f, "static {rt} FT{id}({ps}) {{\n    {rt} ret = {zero};\n    lc_v unw = LC_UNIT;\n    bool unwound = false;\n    (void)unw; (void)unwound;");
+        f.push_str(&setup);
+        f.push_str(&natives);
+        for (i, r) in en.params.iter().enumerate() {
+            match r {
+                Rep::Boxed => {
+                    let _ = writeln!(f, "    S[{i}] = P{i};");
+                }
+                _ => {
+                    let _ = writeln!(f, "    N{i} = P{i};");
+                }
+            }
+        }
+        let _ = writeln!(f, "    lc_enter({id});\n    ret = {body};\n    goto out;\nout:\n    lc_leave();");
+        match (&fd.ret, en.ret) {
+            (Some(t), Rep::Boxed) => {
+                let ty = self.ty(t);
+                let _ = writeln!(f, "    if (unwound) ret = unw;");
+                match exact_tag(t, "ret") {
+                    Some(check) => {
+                        let _ = writeln!(f, "    if (!{check}) ret = lc_coerce_ret(ret, {ty}, {fname}, {fsite});");
+                    }
+                    None => {
+                        let _ = writeln!(f, "    ret = lc_coerce_ret(ret, {ty}, {fname}, {fsite});");
+                    }
+                }
+            }
+            (Some(t), r) => {
+                let ty = self.ty(t);
+                let unbox = if r == Rep::Int { "u.i" } else { "u.i != 0" };
+                let _ = writeln!(f, "    if (unwound) ret = lc_coerce_ret(unw, {ty}, {fname}, {fsite}).{unbox};");
+                if let Ty::Int { min, max, .. } = t {
+                    if *min != i64::MIN || *max != i64::MAX {
+                        let _ = writeln!(f, "    if (ret < {min}LL || ret > {max}LL) lc_coerce_ret(lc_int(ret), {ty}, {fname}, {fsite});");
+                    }
+                }
+            }
+            (None, _) => {
+                let _ = writeln!(f, "    if (unwound) ret = unw;");
+            }
+        }
+        f.push_str(&teardown);
+        f.push_str("    return ret;\n}\n\n");
+        // The boxed entry, for calls through values and overloads.
+        let _ = writeln!(f, "static lc_v F{id}(lc_v *a) {{\n    const char *cs = lc_callsite ? lc_callsite : \"\";\n    (void)cs;");
+        let mut args = Vec::new();
+        for (i, r) in en.params.iter().enumerate() {
+            let v = self.check_param(fd, i, *r, &format!("a[{i}]"), true, "cs");
+            let _ = writeln!(f, "    {} Q{i} = {v};", c_type(*r));
+            args.push(format!("Q{i}"));
+        }
+        let call = box_c(en.ret, &format!("FT{id}({})", args.join(", ")));
+        let _ = writeln!(f, "    return {call};\n}}\n");
+        f
+    }
+
+    /// A direct call to `fns` that can go to a typed entry.
+    fn direct_entry(&self, fns: &Rc<[FnId]>, args: &[Ex]) -> Option<Entry> {
+        if fns.len() != 1 {
+            return None;
+        }
+        let en = self.entries.get(fns[0] as usize)?.clone()?;
+        (en.params.len() == args.len()).then_some(en)
+    }
+
+    /// A call to typed entry `FT{id}`, giving a value of `en.ret`'s rep.
+    fn typed_call(&mut self, id: FnId, en: &Entry, args: &[Ex], span: Span) -> String {
+        let site = self.site(span);
+        let fd = &self.prog.fns[id as usize];
+        let mut code = String::from("({ ");
+        // Arguments in order, then their checks in order, as `F` does.
+        let mut vals = Vec::new();
+        for (a, r) in args.iter().zip(&en.params) {
+            let t = self.t();
+            let native = *r != Rep::Boxed && self.rep(a) == *r;
+            let v = match (native, r) {
+                (true, Rep::Int) => self.int(a),
+                (true, _) => self.boolean(a),
+                (false, _) => self.expr(a),
+            };
+            let ty = if native { c_type(*r) } else { "lc_v" };
+            let _ = write!(code, "{ty} {t} = {v}; ");
+            vals.push((t, native));
+        }
+        let mut pass = Vec::new();
+        for (i, ((t, native), r)) in vals.iter().zip(&en.params).enumerate() {
+            let v = self.check_param(fd, i, *r, t, !native, &site);
+            if v == *t {
+                pass.push(t.clone());
+            } else {
+                let q = self.t();
+                let _ = write!(code, "{} {q} = {v}; ", c_type(*r));
+                pass.push(q);
+            }
+        }
+        let _ = write!(code, "lc_callsite = {site}; FT{id}({}); }})", pass.join(", "));
+        code
+    }
+
+    fn named_fn(&mut self, id: FnId) -> String {
+        if let Some(en) = self.entries[id as usize].clone() {
+            return self.typed_fn(id, &en);
+        }
+        let fd = &self.prog.fns[id as usize];
+        // `mut` parameters are copied back out of their slots.
+        let muts: Vec<u32> = fd.params.iter().enumerate().filter(|(_, p)| p.mode == Mode::Mut).map(|(i, _)| i as u32).collect();
+        let reps = self.frame_reps(&fd.body, fd.nslots, &muts);
+        let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
         let heap = has_lambda(&fd.body);
         let body = self.expr(&fd.body);
+        let natives = self.native_decls();
+        let param_reps: Vec<Rep> = (0..fd.params.len()).map(|i| self.slot_rep(i as u32)).collect();
         self.cx = saved;
         let (setup, teardown) = Self::frame_setup(fd.nslots, heap, "NULL");
         let fname = cstr(&fd.name);
@@ -561,19 +965,28 @@ impl<'p> Gen<'p> {
         let _ = writeln!(f, "static lc_v F{id}(lc_v *a) {{");
         let _ = writeln!(f, "    const char *cs = lc_callsite;\n    (void)cs;\n    lc_v ret = LC_UNIT;");
         f.push_str(&setup);
+        f.push_str(&natives);
         for (i, p) in fd.params.iter().enumerate() {
-            if matches!(p.ty, Ty::Any | Ty::Param(_)) {
-                let _ = writeln!(f, "    S[{i}] = a[{i}];");
+            let checked = if matches!(p.ty, Ty::Any | Ty::Param(_)) {
+                format!("a[{i}]")
             } else {
                 let ty = self.ty(&p.ty);
                 let slow = format!("lc_coerce_arg(a[{i}], {ty}, {}, {fname}, cs ? cs : \"\")", cstr(&p.name));
                 match exact_tag(&p.ty, &format!("a[{i}]")) {
-                    Some(check) => {
-                        let _ = writeln!(f, "    S[{i}] = {check} ? a[{i}] : {slow};");
-                    }
-                    None => {
-                        let _ = writeln!(f, "    S[{i}] = {slow};");
-                    }
+                    Some(check) => format!("{check} ? a[{i}] : {slow}"),
+                    None => slow,
+                }
+            };
+            // A checked int or bool parameter is unboxed as it is.
+            match param_reps[i] {
+                Rep::Int => {
+                    let _ = writeln!(f, "    N{i} = ({checked}).u.i;");
+                }
+                Rep::Bool => {
+                    let _ = writeln!(f, "    N{i} = ({checked}).u.i != 0;");
+                }
+                Rep::Boxed => {
+                    let _ = writeln!(f, "    S[{i}] = {checked};");
                 }
             }
         }
@@ -683,9 +1096,14 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// The boxed storage of a place's root. Never an unboxed slot: those
+    /// are never the root of a longer place or changed by pointer.
     fn root(&mut self, r: &Root) -> String {
         match r {
-            Root::Local(s) => self.slot(0, *s),
+            Root::Local(s) => {
+                debug_assert_eq!(self.slot_rep(*s), Rep::Boxed);
+                self.slot(0, *s)
+            }
             Root::Up(d, s) => self.slot(*d, *s),
         }
     }
@@ -747,6 +1165,13 @@ impl<'p> Gen<'p> {
 
     /// Reads a place: the root, then each field or element.
     fn read_place(&mut self, p: &Place) -> String {
+        if let (Root::Local(s), true) = (&p.root, p.path.is_empty()) {
+            match self.slot_rep(*s) {
+                Rep::Int => return format!("lc_int(N{s})"),
+                Rep::Bool => return format!("lc_bool(N{s})"),
+                Rep::Boxed => {}
+            }
+        }
         let root = self.root(&p.root);
         let cur = self.t();
         let mut code = format!("({{ lc_v {cur} = lc_retain({root}); ");
@@ -836,11 +1261,247 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// `e` as an owned `lc_v`.
     fn expr(&mut self, e: &Ex) -> String {
+        match self.rep(e) {
+            Rep::Int if self.int_native(e) => {
+                let c = self.int(e);
+                format!("lc_int({c})")
+            }
+            Rep::Bool if self.bool_native(e) => {
+                let c = self.boolean(e);
+                format!("lc_bool({c})")
+            }
+            _ => self.expr_boxed(e),
+        }
+    }
+
+    /// Can `int` compute `e` without going through a boxed value?
+    fn int_native(&self, e: &Ex) -> bool {
+        match e {
+            Ex::Lit(Value::Int(_), _) => true,
+            Ex::Local(s, _) => self.slot_rep(*s) == Rep::Int,
+            Ex::Binary { op, l, r, .. } => int_op(*op).is_some() && self.rep(l) == Rep::Int && self.rep(r) == Rep::Int,
+            Ex::Unary { op: UnOp::Neg | UnOp::Bang, e: x, .. } => self.rep(x) == Rep::Int,
+            Ex::If { els: Some(_), .. } | Ex::Block(_, Some(_)) | Ex::Match { .. } => true,
+            Ex::CallFn { fns, args, .. } => self.direct_entry(fns, args).is_some_and(|en| en.ret == Rep::Int),
+            _ => false,
+        }
+    }
+
+    /// Can `boolean` compute `e` without going through a boxed value?
+    fn bool_native(&self, e: &Ex) -> bool {
+        match e {
+            Ex::Lit(Value::Bool(_), _) => true,
+            Ex::Local(s, _) => self.slot_rep(*s) == Rep::Bool,
+            Ex::Compare { .. } | Ex::And(..) | Ex::Or(..) => true,
+            Ex::Unary { op: UnOp::Not | UnOp::Bang, e: x, .. } => self.rep(x) == Rep::Bool,
+            Ex::If { els: Some(_), .. } | Ex::Block(_, Some(_)) | Ex::Match { .. } => true,
+            Ex::CallFn { fns, args, .. } => self.direct_entry(fns, args).is_some_and(|en| en.ret == Rep::Bool),
+            _ => false,
+        }
+    }
+
+    /// An expression with no side effects that can't fail, so the order
+    /// it is evaluated in doesn't matter.
+    fn simple(&self, e: &Ex) -> bool {
+        match e {
+            Ex::Lit(Value::Int(_) | Value::Bool(_), _) => true,
+            Ex::Local(s, _) => self.slot_rep(*s) != Rep::Boxed,
+            _ => false,
+        }
+    }
+
+    /// `e`, typed int by the checker, as a C `int64_t`.
+    fn int(&mut self, e: &Ex) -> String {
+        match e {
+            Ex::Lit(Value::Int(n), _) => {
+                if *n == i64::MIN {
+                    "INT64_MIN".into()
+                } else {
+                    format!("{n}LL")
+                }
+            }
+            Ex::Local(s, _) if self.slot_rep(*s) == Rep::Int => format!("N{s}"),
+            Ex::Binary { op, l, r, span } if self.int_native(e) => {
+                let site = self.site(*span);
+                let f = int_op(*op).unwrap_or("+");
+                let (a, b) = (self.int(l), self.int(r));
+                let apply = |x: &str, y: &str| if f.len() == 1 { format!("({x} {f} {y})") } else { format!("{f}({x}, {y}, {site})") };
+                if self.simple(l) || self.simple(r) {
+                    apply(&a, &b)
+                } else {
+                    let (x, y) = (self.t(), self.t());
+                    format!("({{ int64_t {x} = {a}; int64_t {y} = {b}; {}; }})", apply(&x, &y))
+                }
+            }
+            Ex::Unary { op: UnOp::Neg, e: x, span } if self.int_native(e) => {
+                let site = self.site(*span);
+                let v = self.int(x);
+                format!("lc_ineg({v}, {site})")
+            }
+            Ex::Unary { op: UnOp::Bang, e: x, .. } if self.int_native(e) => {
+                let v = self.int(x);
+                format!("(~{v})")
+            }
+            Ex::If { cond, then, els: Some(els), span } => {
+                let site = self.site(if cond.span() == Span::default() { *span } else { cond.span() });
+                let c = self.cond_at(cond, &site);
+                let (t, f) = (self.int(then), self.int(els));
+                format!("({c} ? {t} : {f})")
+            }
+            Ex::Block(stmts, Some(tail)) => {
+                let mut code = String::from("({ ");
+                for s in stmts {
+                    code.push_str(&self.stmt(s));
+                }
+                let r = self.t();
+                let tv = self.int(tail);
+                let _ = write!(code, "int64_t {r} = {tv}; {r}; }})");
+                code
+            }
+            Ex::Match { scrut, arms, span } => self.match_native(scrut, arms, *span, Rep::Int),
+            Ex::CallFn { fns, args, span, .. } if self.int_native(e) => {
+                let en = self.direct_entry(fns, args).unwrap();
+                self.typed_call(fns[0], &en, args, *span)
+            }
+            _ => {
+                let site = self.site(e.span());
+                let v = self.expr(e);
+                format!("lc_unbox_int({v}, {site})")
+            }
+        }
+    }
+
+    /// `e`, typed bool by the checker, as a C `bool`.
+    fn boolean(&mut self, e: &Ex) -> String {
+        match e {
+            Ex::Lit(Value::Bool(b), _) => if *b { "true" } else { "false" }.into(),
+            Ex::Local(s, _) if self.slot_rep(*s) == Rep::Bool => format!("N{s}"),
+            Ex::Compare { first, rest, .. } => self.compare(first, rest),
+            Ex::And(a, b, span) | Ex::Or(a, b, span) => {
+                let site = self.site(*span);
+                let (x, y) = (self.cond_at(a, &site), self.cond_at(b, &site));
+                let op = if matches!(e, Ex::And(..)) { "&&" } else { "||" };
+                format!("({x} {op} {y})")
+            }
+            Ex::Unary { op: UnOp::Not | UnOp::Bang, e: x, .. } if self.bool_native(e) => {
+                let v = self.boolean(x);
+                format!("(!{v})")
+            }
+            Ex::If { cond, then, els: Some(els), span } => {
+                let site = self.site(if cond.span() == Span::default() { *span } else { cond.span() });
+                let c = self.cond_at(cond, &site);
+                let (t, f) = (self.boolean(then), self.boolean(els));
+                format!("({c} ? {t} : {f})")
+            }
+            Ex::Block(stmts, Some(tail)) => {
+                let mut code = String::from("({ ");
+                for s in stmts {
+                    code.push_str(&self.stmt(s));
+                }
+                let r = self.t();
+                let tv = self.boolean(tail);
+                let _ = write!(code, "bool {r} = {tv}; {r}; }})");
+                code
+            }
+            Ex::Match { scrut, arms, span } => self.match_native(scrut, arms, *span, Rep::Bool),
+            Ex::CallFn { fns, args, span, .. } if self.bool_native(e) => {
+                let en = self.direct_entry(fns, args).unwrap();
+                self.typed_call(fns[0], &en, args, *span)
+            }
+            _ => {
+                let site = self.site(e.span());
+                let v = self.expr(e);
+                format!("lc_unbox_bool({v}, {site})")
+            }
+        }
+    }
+
+    /// A condition as a C `bool`; a boxed one must be a bool at run time,
+    /// with errors reported at `site`.
+    fn cond_at(&mut self, e: &Ex, site: &str) -> String {
+        if self.rep(e) == Rep::Bool {
+            return self.boolean(e);
+        }
+        let (c, t) = (self.t(), self.t());
+        let v = self.expr(e);
+        format!("({{ lc_v {c} = {v}; bool {t} = lc_test({c}, {site}); lc_release({c}); {t}; }})")
+    }
+
+    /// A comparison chain `a < b <= c` as a C `bool`.
+    fn compare(&mut self, first: &Ex, rest: &[(CmpOp, Ex, Span)]) -> String {
+        let all_int = self.rep(first) == Rep::Int && rest.iter().all(|(op, x, _)| cmp_op(*op).is_some() && self.rep(x) == Rep::Int);
+        let bools = rest.len() == 1
+            && matches!(rest[0].0, CmpOp::Eq | CmpOp::Ne)
+            && self.rep(first) == Rep::Bool
+            && self.rep(&rest[0].1) == Rep::Bool;
+        if bools || (all_int && rest.len() == 1) {
+            let (op, x, _) = &rest[0];
+            let (a, b) = if bools { (self.boolean(first), self.boolean(x)) } else { (self.int(first), self.int(x)) };
+            let c = cmp_op(*op).unwrap_or("==");
+            if self.simple(first) || self.simple(x) {
+                return format!("({a} {c} {b})");
+            }
+            let ty = if bools { "bool" } else { "int64_t" };
+            let (p, n) = (self.t(), self.t());
+            return format!("({{ {ty} {p} = {a}; {ty} {n} = {b}; {p} {c} {n}; }})");
+        }
+        let ok = self.t();
+        let p = self.t();
+        if all_int {
+            let fv = self.int(first);
+            let mut code = format!("({{ int64_t {p} = {fv}; bool {ok} = true; ");
+            for (op, x, _) in rest {
+                let n = self.t();
+                let xv = self.int(x);
+                let _ = write!(code, "if ({ok}) {{ int64_t {n} = {xv}; {ok} = {p} {} {n}; {p} = {n}; }} ", cmp_op(*op).unwrap_or("=="));
+            }
+            let _ = write!(code, "{ok}; }})");
+            return code;
+        }
+        let fv = self.expr(first);
+        let mut code = format!("({{ lc_v {p} = {fv}; bool {ok} = true; ");
+        for (op, x, sp) in rest {
+            let site = self.site(*sp);
+            let n = self.t();
+            let xv = self.expr(x);
+            let _ = write!(code, "if ({ok}) {{ lc_v {n} = {xv}; {ok} = lc_cmp_fast({}, {p}, {n}, {site}); lc_release({p}); {p} = {n}; }} ", cmp_c(*op));
+        }
+        let _ = write!(code, "lc_release({p}); {ok}; }})");
+        code
+    }
+
+    /// A `match` whose arms give an unboxed value.
+    fn match_native(&mut self, scrut: &Ex, arms: &[Arm], span: Span, rep: Rep) -> String {
+        let site = self.site(span);
+        let (sv, r) = (self.t(), self.t());
+        let scv = self.expr(scrut);
+        let ty = if rep == Rep::Int { "int64_t" } else { "bool" };
+        let mut code = format!("({{ lc_v {sv} = {scv}; {ty} {r}; ");
+        for arm in arms {
+            let cond = self.pat(&arm.pat, &sv, &site);
+            let guard = match &arm.guard {
+                Some(g) => format!(" && {}", self.cond_at(g, &site)),
+                None => String::new(),
+            };
+            let body = if rep == Rep::Int { self.int(&arm.body) } else { self.boolean(&arm.body) };
+            let _ = write!(code, "if (({cond}){guard}) {r} = {body}; else ");
+        }
+        let _ = write!(code, "lc_no_arm({sv}, {site}); lc_release({sv}); {r}; }})");
+        code
+    }
+
+    /// `e` as an owned `lc_v`, computed boxed.
+    fn expr_boxed(&mut self, e: &Ex) -> String {
         match e {
             Ex::Lit(v, _) => self.lit(v),
             Ex::Str(pieces, _) => self.interp(pieces),
-            Ex::Local(s, _) => format!("lc_retain({})", self.slot(0, *s)),
+            Ex::Local(s, _) => match self.slot_rep(*s) {
+                Rep::Int => format!("lc_int(N{s})"),
+                Rep::Bool => format!("lc_bool(N{s})"),
+                Rep::Boxed => format!("lc_retain({})", self.slot(0, *s)),
+            },
             Ex::Up(d, s, _) => format!("lc_retain({})", self.slot(*d, *s)),
             Ex::Global(g, _) => format!("lc_retain(K{g})"),
             Ex::List(xs, _) | Ex::Tuple(xs, _) => {
@@ -994,34 +1655,14 @@ impl<'p> Gen<'p> {
                 let opc = binop_c(*op);
                 format!("({{ lc_v {a} = {lv}; lc_v {b} = {rv}; lc_v {res} = lc_arith_own({opc}, {a}, {b}, {site}); {res}; }})")
             }
-            Ex::And(a, b, span) | Ex::Or(a, b, span) => {
-                let site = self.site(*span);
-                let is_and = matches!(e, Ex::And(..));
-                let (x, y, t, r) = (self.t(), self.t(), self.t(), self.t());
-                let (av, bv) = (self.expr(a), self.expr(b));
-                let short = if is_and { format!("!{t}") } else { t.clone() };
-                let short_val = if is_and { "LC_FALSE" } else { "LC_TRUE" };
-                format!(
-                    "({{ lc_v {x} = {av}; bool {t} = lc_test({x}, {site}); lc_release({x}); lc_v {r}; if ({short}) {r} = {short_val}; else {{ lc_v {y} = {bv}; {r} = lc_bool(lc_test({y}, {site})); lc_release({y}); }} {r}; }})"
-                )
+            Ex::And(..) | Ex::Or(..) | Ex::Compare { .. } => {
+                let c = self.boolean(e);
+                format!("lc_bool({c})")
             }
             Ex::Coalesce(a, b, _) => {
                 let (x, r) = (self.t(), self.t());
                 let (av, bv) = (self.expr(a), self.expr(b));
                 format!("({{ lc_v {x} = {av}; lc_v {r}; if ({x}.tag == T_NONE || {x}.tag == T_ERR) {{ lc_release({x}); {r} = {bv}; }} else {r} = {x}; {r}; }})")
-            }
-            Ex::Compare { first, rest, .. } => {
-                let (p, ok) = (self.t(), self.t());
-                let fv = self.expr(first);
-                let mut code = format!("({{ lc_v {p} = {fv}; bool {ok} = true; ");
-                for (op, x, sp) in rest {
-                    let site = self.site(*sp);
-                    let n = self.t();
-                    let xv = self.expr(x);
-                    let _ = write!(code, "if ({ok}) {{ lc_v {n} = {xv}; {ok} = lc_cmp_fast({}, {p}, {n}, {site}); lc_release({p}); {p} = {n}; }} ", cmp_c(*op));
-                }
-                let _ = write!(code, "lc_release({p}); lc_bool({ok}); }})");
-                code
             }
             Ex::Range { start, end, inclusive, span } => {
                 let site = self.site(*span);
@@ -1045,11 +1686,11 @@ impl<'p> Gen<'p> {
             Ex::Lambda(def) => self.lambda(def),
             Ex::If { cond, then, els, span } => {
                 let site = self.site(if cond.span() == Span::default() { *span } else { cond.span() });
-                let (c, t, r) = (self.t(), self.t(), self.t());
-                let cv = self.expr(cond);
+                let r = self.t();
+                let c = self.cond_at(cond, &site);
                 let tv = self.expr(then);
                 let ev = els.as_ref().map_or("LC_UNIT".to_string(), |x| self.expr(x));
-                format!("({{ lc_v {c} = {cv}; bool {t} = lc_test({c}, {site}); lc_release({c}); lc_v {r}; if ({t}) {r} = {tv}; else {r} = {ev}; {r}; }})")
+                format!("({{ lc_v {r}; if ({c}) {r} = {tv}; else {r} = {ev}; {r}; }})")
             }
             Ex::Match { scrut, arms, span } => {
                 let site = self.site(*span);
@@ -1057,13 +1698,9 @@ impl<'p> Gen<'p> {
                 let scv = self.expr(scrut);
                 let mut code = format!("({{ lc_v {sv} = {scv}; lc_v {r}; ");
                 for arm in arms {
-                    let cond = self.pat(&arm.pat, &sv);
+                    let cond = self.pat(&arm.pat, &sv, &site);
                     let guard = match &arm.guard {
-                        Some(g) => {
-                            let (gt, gb) = (self.t(), self.t());
-                            let gv = self.expr(g);
-                            format!(" && ({{ lc_v {gt} = {gv}; bool {gb} = lc_test({gt}, {site}); lc_release({gt}); {gb}; }})")
-                        }
+                        Some(g) => format!(" && {}", self.cond_at(g, &site)),
                         None => String::new(),
                     };
                     let body = self.expr(&arm.body);
@@ -1209,6 +1846,10 @@ impl<'p> Gen<'p> {
     }
 
     fn call_fn(&mut self, fns: &Rc<[FnId]>, args: &[Ex], places: &[Option<Place>], span: Span) -> String {
+        if let Some(en) = self.direct_entry(fns, args) {
+            let c = self.typed_call(fns[0], &en, args, span);
+            return box_c(en.ret, &c);
+        }
         let site = self.site(span);
         let arr = self.t();
         let r = self.t();
@@ -1451,10 +2092,14 @@ impl<'p> Gen<'p> {
     fn lambda(&mut self, def: &LambdaDef) -> String {
         self.lambda_n += 1;
         let n = self.lambda_n;
-        let saved = std::mem::replace(&mut self.cx, Cx { max_up: 0 });
+        let reps = self.frame_reps(&def.body, def.nslots, &[]);
+        let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
         let heap = has_lambda(&def.body);
         let body = self.expr(&def.body);
         let max_up = self.cx.max_up.max(1);
+        let natives = self.native_decls();
+        let lsite = self.site(def.span);
+        let params: Vec<String> = def.params.iter().enumerate().map(|(i, &s)| self.store(s, &format!("lc_retain(args[{i}])"), &lsite)).collect();
         self.cx = saved;
         let mut f = String::new();
         f.push_str(Self::macros(Kind::Nested));
@@ -1466,8 +2111,9 @@ impl<'p> Gen<'p> {
         let (setup, teardown) = Self::frame_setup(def.nslots, heap, "P1");
         let _ = writeln!(f, "    lc_v ret = LC_UNIT;");
         f.push_str(&setup);
-        for (i, s) in def.params.iter().enumerate() {
-            let _ = writeln!(f, "    S[{s}] = lc_retain(args[{i}]);");
+        f.push_str(&natives);
+        for p in params {
+            let _ = writeln!(f, "    {p}");
         }
         let _ = writeln!(f, "    ret = {body};\n    goto out;\nout:");
         f.push_str(&teardown);
@@ -1481,13 +2127,14 @@ impl<'p> Gen<'p> {
     // ----- patterns -----
 
     /// A C condition that matches pattern `p` against the value `v` (a C
-    /// expression without side effects) and binds slots as it goes.
-    fn pat(&mut self, p: &PatIr, v: &str) -> String {
+    /// expression without side effects) and binds slots as it goes. `site`
+    /// is where an unboxed binding reports a value of the wrong type.
+    fn pat(&mut self, p: &PatIr, v: &str, site: &str) -> String {
         match p {
             PatIr::Wild => "1".into(),
             PatIr::Bind(s) => {
-                let slot = self.slot(0, *s);
-                format!("(lc_set(&{slot}, lc_retain({v})), 1)")
+                let st = self.store(*s, &format!("lc_retain({v})"), site);
+                format!("({{ {st}1; }})")
             }
             PatIr::Lit(l) => {
                 let lv = self.lit(l);
@@ -1501,7 +2148,7 @@ impl<'p> Gen<'p> {
             PatIr::Tuple(ps) => {
                 let mut c = format!("(({v}.tag == T_TUPLE || {v}.tag == T_LIST) && VEC({v})->len == {}", ps.len());
                 for (i, sp) in ps.iter().enumerate() {
-                    let sub = self.pat(sp, &format!("VEC({v})->items[{i}]"));
+                    let sub = self.pat(sp, &format!("VEC({v})->items[{i}]"), site);
                     let _ = write!(c, " && {sub}");
                 }
                 c.push(')');
@@ -1511,7 +2158,7 @@ impl<'p> Gen<'p> {
                 let len = if rest.is_some() { format!("VEC({v})->len >= {}", items.len()) } else { format!("VEC({v})->len == {}", items.len()) };
                 let mut c = format!("(({v}.tag == T_LIST || {v}.tag == T_TUPLE) && {len}");
                 for (i, sp) in items.iter().enumerate() {
-                    let sub = self.pat(sp, &format!("VEC({v})->items[{i}]"));
+                    let sub = self.pat(sp, &format!("VEC({v})->items[{i}]"), site);
                     let _ = write!(c, " && {sub}");
                 }
                 if let Some(Some(slot)) = rest {
@@ -1524,7 +2171,7 @@ impl<'p> Gen<'p> {
             PatIr::Variant { id, tag, args } => {
                 let mut c = format!("({v}.tag == T_VARIANT && REC({v})->ty == {id} && REC({v})->tag == {tag}");
                 for (i, sp) in args.iter().enumerate() {
-                    let sub = self.pat(sp, &format!("REC({v})->f[{i}]"));
+                    let sub = self.pat(sp, &format!("REC({v})->f[{i}]"), site);
                     let _ = write!(c, " && {sub}");
                 }
                 c.push(')');
@@ -1533,27 +2180,27 @@ impl<'p> Gen<'p> {
             PatIr::Struct { id, fields } => {
                 let mut c = format!("({v}.tag == T_STRUCT && REC({v})->ty == {id}");
                 for (i, sp) in fields {
-                    let sub = self.pat(sp, &format!("REC({v})->f[{i}]"));
+                    let sub = self.pat(sp, &format!("REC({v})->f[{i}]"), site);
                     let _ = write!(c, " && {sub}");
                 }
                 c.push(')');
                 c
             }
             PatIr::Or(ps) => {
-                let subs: Vec<String> = ps.iter().map(|sp| self.pat(sp, v)).collect();
+                let subs: Vec<String> = ps.iter().map(|sp| self.pat(sp, v, site)).collect();
                 format!("({})", subs.join(" || "))
             }
             PatIr::None => format!("({v}.tag == T_NONE)"),
             PatIr::Err(sp) => {
-                let sub = self.pat(sp, &format!("ERRV({v})->payload"));
+                let sub = self.pat(sp, &format!("ERRV({v})->payload"), site);
                 format!("({v}.tag == T_ERR && {sub})")
             }
             PatIr::Ok(sp) => {
-                let sub = self.pat(sp, v);
+                let sub = self.pat(sp, v, site);
                 format!("({v}.tag != T_ERR && {sub})")
             }
             PatIr::Some(sp) => {
-                let sub = self.pat(sp, v);
+                let sub = self.pat(sp, v, site);
                 format!("({v}.tag != T_NONE && {sub})")
             }
         }
@@ -1564,22 +2211,59 @@ impl<'p> Gen<'p> {
     fn stmt(&mut self, s: &St) -> String {
         match s {
             St::Expr(e, span) => {
+                match self.rep(e) {
+                    Rep::Int if self.int_native(e) => return format!("(void)({}); ", self.int(e)),
+                    Rep::Bool if self.bool_native(e) => return format!("(void)({}); ", self.boolean(e)),
+                    _ => {}
+                }
                 let site = self.site(*span);
                 let t = self.t();
                 let v = self.expr(e);
                 format!("{{ lc_v {t} = {v}; lc_check_ignored({t}, {site}); lc_release({t}); }} ")
             }
-            St::Bind(PatIr::Bind(slot), e, _, _) => {
-                let v = self.expr(e);
-                let s = self.slot(0, *slot);
-                format!("lc_set(&{s}, {v}); ")
-            }
+            St::Bind(PatIr::Bind(slot), e, _, _) => match self.slot_rep(*slot) {
+                Rep::Int => format!("N{slot} = {}; ", self.int(e)),
+                Rep::Bool => format!("N{slot} = {}; ", self.boolean(e)),
+                Rep::Boxed => {
+                    let v = self.expr(e);
+                    let s = self.slot(0, *slot);
+                    format!("lc_set(&{s}, {v}); ")
+                }
+            },
             St::Bind(pat, e, _, span) => {
                 let site = self.site(*span);
                 let t = self.t();
                 let v = self.expr(e);
-                let cond = self.pat(pat, &t);
+                let cond = self.pat(pat, &t, &site);
                 format!("{{ lc_v {t} = {v}; if (!({cond})) lc_bad_unpack({t}, -1, false, {site}); lc_release({t}); }} ")
+            }
+            St::Assign { place: Place { root: Root::Local(s), path, .. }, op, value, span }
+                if path.is_empty() && self.slot_rep(*s) != Rep::Boxed =>
+            {
+                let s = *s;
+                let site = self.site(*span);
+                let r = self.slot_rep(s);
+                match op {
+                    None if r == Rep::Int => format!("N{s} = {}; ", self.int(value)),
+                    None => format!("N{s} = {}; ", self.boolean(value)),
+                    Some(op) if r == Rep::Int && self.rep(value) == Rep::Int && int_op(*op).is_some() => {
+                        let f = int_op(*op).unwrap_or("+");
+                        let v = self.int(value);
+                        if f.len() == 1 {
+                            format!("N{s} = N{s} {f} ({v}); ")
+                        } else {
+                            let t = self.t();
+                            format!("{{ int64_t {t} = {v}; N{s} = {f}(N{s}, {t}, {site}); }} ")
+                        }
+                    }
+                    Some(op) => {
+                        // Bools under `&=` and the like: as the runtime does it.
+                        let (t, old) = (self.t(), if r == Rep::Int { format!("lc_int(N{s})") } else { format!("lc_bool(N{s})") });
+                        let v = self.expr(value);
+                        let st = self.store(s, &format!("lc_arith_own({}, {old}, {t}, {site})", binop_c(*op)), &site);
+                        format!("{{ lc_v {t} = {v}; {st}}} ")
+                    }
+                }
             }
             St::Assign { place, op, value, span } => {
                 let site = self.site(*span);
@@ -1614,8 +2298,12 @@ impl<'p> Gen<'p> {
                 for (i, tg) in targets.iter().enumerate() {
                     match tg {
                         Target::Bind(slot) => {
-                            let s = self.slot(0, *slot);
-                            let _ = write!(code, "lc_set(&{s}, lc_retain(VEC({t})->items[{i}])); ");
+                            let st = self.store(*slot, &format!("lc_retain(VEC({t})->items[{i}])"), &site);
+                            code.push_str(&st);
+                        }
+                        Target::Place(Place { root: Root::Local(slot), path, .. }) if path.is_empty() && self.slot_rep(*slot) != Rep::Boxed => {
+                            let st = self.store(*slot, &format!("lc_retain(VEC({t})->items[{i}])"), &site);
+                            code.push_str(&st);
                         }
                         Target::Place(p) => {
                             let (kc, keys) = self.place_keys(p);
@@ -1629,19 +2317,52 @@ impl<'p> Gen<'p> {
                 let _ = write!(code, "lc_release({t}); }} ");
                 code
             }
+            St::For { pat: pat @ (PatIr::Bind(_) | PatIr::Wild), iter: Ex::Range { start, end: Some(end), inclusive, span: rspan }, body, .. } => {
+                // A range written in the loop: a C loop over its ints.
+                let rsite = self.site(*rspan);
+                let (a, b, i) = (self.t(), self.t(), self.t());
+                let mut code = String::from("{ ");
+                let start_int = start.as_ref().map_or(true, |x| self.rep(x) == Rep::Int);
+                if start_int && self.rep(end) == Rep::Int {
+                    let sv = start.as_ref().map_or("0".to_string(), |x| self.int(x));
+                    let ev = self.int(end);
+                    let _ = write!(code, "int64_t {a} = {sv}; int64_t {b} = {ev}; ");
+                } else {
+                    let (ta, tb) = (self.t(), self.t());
+                    let sv = start.as_ref().map_or("lc_int(0)".to_string(), |x| self.expr(x));
+                    let ev = self.expr(end);
+                    let _ = write!(
+                        code,
+                        "lc_v {ta} = {sv}; lc_v {tb} = {ev}; int64_t {a} = lc_int_of({ta}, {rsite}); lc_release({ta}); int64_t {b} = lc_int_of({tb}, {rsite}); lc_release({tb}); "
+                    );
+                }
+                if *inclusive {
+                    let _ = write!(code, "{b} = (int64_t)((uint64_t){b} + 1); ");
+                }
+                let bind = match pat {
+                    PatIr::Bind(slot) => match self.slot_rep(*slot) {
+                        Rep::Int => format!("N{slot} = {i}; "),
+                        _ => format!("lc_set(&{}, lc_int({i})); ", self.slot(0, *slot)),
+                    },
+                    _ => String::new(),
+                };
+                let mut bd = String::new();
+                for s in body {
+                    bd.push_str(&self.stmt(s));
+                }
+                let _ = write!(code, "for (int64_t {i} = {a}; {i} < {b}; {i}++) {{ {bind}{bd}}} }} ");
+                code
+            }
             St::For { pat, iter, body, span } => {
                 let site = self.site(*span);
                 let (iv, it, x) = (self.t(), self.t(), self.t());
                 let ive = self.expr(iter);
                 let keys_only = matches!(pat, PatIr::Bind(_) | PatIr::Wild);
                 let bind = match pat {
-                    PatIr::Bind(slot) => {
-                        let s = self.slot(0, *slot);
-                        format!("lc_set(&{s}, {x}); ")
-                    }
+                    PatIr::Bind(slot) => self.store(*slot, &x, &site),
                     PatIr::Wild => format!("lc_release({x}); "),
                     _ => {
-                        let cond = self.pat(pat, &x);
+                        let cond = self.pat(pat, &x, &site);
                         format!("if (!({cond})) lc_bad_unpack({x}, -1, true, {site}); lc_release({x}); ")
                     }
                 };
@@ -1655,18 +2376,22 @@ impl<'p> Gen<'p> {
             }
             St::While { cond, body, .. } => {
                 let site = self.site(cond.span());
-                let (c, t) = (self.t(), self.t());
-                let cv = self.expr(cond);
+                let c = self.cond_at(cond, &site);
                 let mut b = String::new();
                 for s in body {
                     b.push_str(&self.stmt(s));
                 }
-                format!("while (1) {{ lc_v {c} = {cv}; bool {t} = lc_test({c}, {site}); lc_release({c}); if (!{t}) break; {b}}} ")
+                format!("while (1) {{ if (!{c}) break; {b}}} ")
             }
             St::Break(_) => "break; ".into(),
             St::Continue(_) => "continue; ".into(),
             St::Return(e, _) => {
-                let v = e.as_ref().map_or("LC_UNIT".to_string(), |x| self.expr(x));
+                let v = match (e, self.cx.ret) {
+                    (Some(x), Rep::Int) => self.int(x),
+                    (Some(x), Rep::Bool) => self.boolean(x),
+                    (Some(x), Rep::Boxed) => self.expr(x),
+                    (None, _) => "LC_UNIT".to_string(),
+                };
                 format!("RETURN({v}) ")
             }
             St::Fail(e, _) => {
@@ -1676,8 +2401,8 @@ impl<'p> Gen<'p> {
             }
             St::Assert { cond, msg, span } => {
                 let site = self.site(*span);
-                let (c, t) = (self.t(), self.t());
-                let cv = self.expr(cond);
+                let t = self.t();
+                let cv = self.cond_at(cond, &site);
                 let fail = match msg {
                     Some(m) => {
                         let mt = self.t();
@@ -1686,7 +2411,7 @@ impl<'p> Gen<'p> {
                     }
                     None => format!("lc_assert_fail(LC_UNIT, false, {site});"),
                 };
-                format!("{{ lc_v {c} = {cv}; bool {t} = lc_test({c}, {site}); lc_release({c}); if (!{t}) {fail} }} ")
+                format!("{{ bool {t} = {cv}; if (!{t}) {fail} }} ")
             }
         }
     }

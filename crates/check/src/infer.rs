@@ -161,6 +161,15 @@ pub struct Checker<'p> {
     /// `s.parse()` calls with a declared type to parse to, for
     /// `Program::parse_to`.
     pub parse_to: Vec<(Span, ConvTo)>,
+    /// The type of every expression checked, by node address, in order;
+    /// a later entry for the same node wins.
+    pub ex_log: Vec<(usize, T)>,
+    /// The slot types of every function, lambda and default body, by the
+    /// address of the body.
+    pub frame_log: Vec<(usize, Vec<T>)>,
+    /// What `s.parse()` without a declared type gives: whichever number the
+    /// text is, whatever type use gives it.
+    loose_parses: Vec<T>,
 }
 
 impl<'p> Checker<'p> {
@@ -179,6 +188,9 @@ impl<'p> Checker<'p> {
             widen_hit: false,
             loops: Vec::new(),
             parse_to: Vec::new(),
+            ex_log: Vec::new(),
+            frame_log: Vec::new(),
+            loose_parses: Vec::new(),
         }
     }
 
@@ -192,6 +204,7 @@ impl<'p> Checker<'p> {
             let t = self.expr(&c.value, None);
             self.solve(true);
             self.consts[i] = self.s.zonk(&t);
+            self.log_frame(&c.value);
         }
         for sd in &prog.structs {
             let subst: Vec<(Rc<str>, T)> = sd.generics.iter().map(|g| (g.as_str().into(), T::Unknown)).collect();
@@ -205,12 +218,33 @@ impl<'p> Checker<'p> {
         for id in 0..prog.fns.len() {
             self.check_fn(id);
         }
+        // `"2.5".parse() ?? 0` is typed int by its use but reads a float.
+        for t in std::mem::take(&mut self.loose_parses) {
+            let t = match self.s.resolve(&t) {
+                T::Res(x) => self.s.resolve(&x),
+                t => t,
+            };
+            if matches!(t, T::Int(_)) {
+                self.s.leaks += 1;
+            }
+        }
+        // Tests run only in the interpreter, so what they let through
+        // unchecked can't reach compiled code.
+        let leaks = self.s.leaks;
         for t in &prog.tests {
             self.ctx = FnCtx { name: t.name.clone(), sig: String::new(), ret: None, kind: Kind::Test };
             self.frames = vec![Frame::new(t.nslots, &mut self.s)];
             self.deferred.clear();
             self.expr(&t.body, None);
             self.solve(true);
+            self.log_frame(&t.body);
+        }
+        self.s.leaks = leaks;
+    }
+
+    fn log_frame(&mut self, body: &Ex) {
+        if let Some(f) = self.frames.last() {
+            self.frame_log.push((body as *const Ex as usize, f.decl.clone()));
         }
     }
 
@@ -218,6 +252,7 @@ impl<'p> Checker<'p> {
     fn thunk(&mut self, d: &LambdaDef, want: &T, site: Site) {
         let saved = std::mem::replace(&mut self.frames, vec![Frame::new(d.nslots, &mut self.s)]);
         self.check(&d.body, want, site);
+        self.log_frame(&d.body);
         self.frames = saved;
     }
 
@@ -227,6 +262,7 @@ impl<'p> Checker<'p> {
             let snap = self.s.snapshot();
             let nd = self.diags.len();
             let np = self.parse_to.len();
+            let (ne, nf, nl) = (self.ex_log.len(), self.frame_log.len(), self.loose_parses.len());
             self.widen_hit = false;
             self.fn_once(id);
             if !self.widen_hit {
@@ -235,6 +271,9 @@ impl<'p> Checker<'p> {
             self.s = snap;
             self.diags.truncate(nd);
             self.parse_to.truncate(np);
+            self.ex_log.truncate(ne);
+            self.frame_log.truncate(nf);
+            self.loose_parses.truncate(nl);
         }
     }
 
@@ -296,6 +335,7 @@ impl<'p> Checker<'p> {
             }
         }
         self.solve(true);
+        self.log_frame(body);
     }
 
     // ----- diagnostics -----
@@ -646,6 +686,11 @@ impl<'p> Checker<'p> {
             }
         }
         if last {
+            // Operations that never learned their receiver's type went
+            // unchecked, and their results may have been typed by use.
+            if !self.deferred.is_empty() {
+                self.s.leaks += 1;
+            }
             self.deferred.clear();
         }
     }
@@ -661,13 +706,16 @@ impl<'p> Checker<'p> {
                 },
                 DKind::Index { idx, write: true } => Some(T::map(idx.clone(), self.s.fresh())),
                 DKind::Arith { l, r, .. } => {
+                    // A guess, not a proof: `l` is whatever `r` is.
                     let (l, r) = (l.clone(), r.clone());
                     if self.s.is_var(&l) && !self.s.is_var(&r) {
                         self.s.unify(&l, &r);
+                        self.s.leaks += 1;
                         return true;
                     }
                     if self.s.is_var(&r) && !self.s.is_var(&l) {
                         self.s.unify(&r, &l);
+                        self.s.leaks += 1;
                         return true;
                     }
                     None
@@ -749,7 +797,15 @@ impl<'p> Checker<'p> {
         }
     }
 
+    /// Infers the type of `e`, guided by the type expected of it, and
+    /// records it for the backend.
     pub(crate) fn expr(&mut self, e: &Ex, exp: Option<&T>) -> T {
+        let t = self.expr_inner(e, exp);
+        self.ex_log.push((e as *const Ex as usize, t.clone()));
+        t
+    }
+
+    fn expr_inner(&mut self, e: &Ex, exp: Option<&T>) -> T {
         match e {
             Ex::Lit(v, span) => self.lit(v, exp, *span),
             Ex::Str(pieces, _) => {
@@ -827,13 +883,20 @@ impl<'p> Checker<'p> {
                     Recv::Place(p) => (self.place_type(p, false), p.span),
                     Recv::Value(e) => (self.infer(e), e.span()),
                 };
+                let mut loose = false;
                 if &**name == "parse" && args.is_empty() {
-                    if let Some(to) = exp.and_then(|t| self.parse_target(t)) {
-                        self.parse_to.push((*span, to));
+                    match exp.and_then(|t| self.parse_target(t)) {
+                        Some(to) => self.parse_to.push((*span, to)),
+                        None => loose = true,
                     }
                 }
+                let n = args.len();
                 let args: Vec<Arg> = args.iter().map(Arg::Ex).collect();
-                self.method_on(t, rspan, name, user.as_ref(), &args, *span)
+                let r = self.method_on(t.clone(), rspan, name, user.as_ref(), &args, *span);
+                if loose && n == 0 && matches!(self.s.resolve(&t), T::Str | T::Var(_)) {
+                    self.loose_parses.push(r.clone());
+                }
+                r
             }
             Ex::Unary { op, e: x, span } => {
                 let t = self.infer(x);
@@ -850,7 +913,11 @@ impl<'p> Checker<'p> {
                         }
                     }
                 }
-                self.binop_types(*op, &lt, &rt, l.span(), r.span(), *span)
+                let t = self.binop_types(*op, &lt, &rt, l.span(), r.span(), *span);
+                if *op == BinOp::Pow {
+                    self.int_pow(&t, Some(r));
+                }
+                t
             }
             Ex::And(a, b, _) | Ex::Or(a, b, _) => {
                 self.cond(a);
@@ -931,6 +998,16 @@ impl<'p> Checker<'p> {
                 T::Bool
             }
             Ex::Poison(_) => T::Unknown,
+        }
+    }
+
+    /// An int raised to a power is typed int, but a negative exponent
+    /// gives a float at run time, so unless the exponent is a literal the
+    /// type is a guess.
+    fn int_pow(&mut self, t: &T, exp: Option<&Ex>) {
+        let lit = matches!(exp, Some(Ex::Lit(Value::Int(n), _)) if *n >= 0);
+        if matches!(self.s.resolve(t), T::Int(_)) && !lit {
+            self.s.leaks += 1;
         }
     }
 
@@ -1557,6 +1634,9 @@ impl<'p> Checker<'p> {
                 ret = T::Float;
             }
         }
+        if name == "pow" {
+            self.int_pow(&ret, args.first().and_then(|a| if let Arg::Ex(e) = a { Some(*e) } else { None }));
+        }
         if let Some((c, x)) = sig.elems_of {
             let el = match self.s.resolve(&c) {
                 T::Var(_) => self.defer(c, DKind::Iter { keys_only: false }, span),
@@ -1640,6 +1720,7 @@ impl<'p> Checker<'p> {
             None => self.expr(&def.body, None),
         };
         self.loops = saved_loops;
+        self.log_frame(&def.body);
         self.frames.pop();
         T::func(outer.unwrap_or(ptys), body)
     }
@@ -2381,7 +2462,11 @@ impl<'p> Checker<'p> {
                     self.s.unify(&want, &vt);
                 }
                 let cur = if place.path.is_empty() { self.place_type(place, false) } else { want.clone() };
-                self.binop_types(op, &cur, &vt, place.span, value.span(), span)
+                let t = self.binop_types(op, &cur, &vt, place.span, value.span(), span);
+                if op == BinOp::Pow {
+                    self.int_pow(&t, Some(value));
+                }
+                t
             }
         };
         if !self.s.coerce(&got, &want) {
