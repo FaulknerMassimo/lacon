@@ -21,6 +21,9 @@ pub struct Program {
     pub consts: Vec<ConstDef>,
     pub fn_names: HashMap<String, Rc<[FnId]>>,
     pub main: Option<FnId>,
+    /// `s.parse()` calls whose type the checker knows from a declared type
+    /// (`n int = s.parse()?`), by span: they parse to that type or fail.
+    pub parse_to: HashMap<Span, ConvTo>,
 }
 
 pub struct FnDef {

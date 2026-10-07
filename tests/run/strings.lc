@@ -6,3 +6,5 @@ fn main() =
   print("{x}{x} {x:>3}|{'q'} {[1, 2].map(it + x)}")
   (a, b) = (1, 2)
   print(a + b)
+  # With an argument, `trim` removes those characters, as Python's `strip` does.
+  print("[{'a\r\n'.trim_end('\r\n')}] [{'xxhixy'.trim('xy')}] [{'--a--'.trim_start('-')}] [{'ééaé'.trim_end('é')}]")

@@ -1,0 +1,35 @@
+# Declared types on bindings, and as the type `parse()` reads.
+type Rec {path str, size u32}
+
+fn num(t str) int! = t.parse()
+
+fn ratio(t str) f64! = t.parse()
+
+# The program's own `parse` is called `parse(line)`; `s.parse()` stays the builtin.
+fn parse(line str) Rec! =
+  p = line.split()
+  Rec{p[0], p[1].parse()?}
+
+fn show(n int) str = "n={n}"
+
+fn main()! =
+  n int = "5".parse()?
+  v: f64 = "7".parse()?
+  b bool = "true".parse()?
+  var xs: [int] = []
+  xs.push(n)
+  m {str: int} = {}
+  print(n, v, b, xs, m)
+  print(num("12") ?? -1, num("1.5") ?? -1, num("x") ?? -1, ratio("3") ?? -1.0)
+  big u8 = "300".parse() ?? 0
+  k int = "2.5".parse() ?? -1
+  print(big, k, show("8".parse()?))
+  print(parse("/a 120")?, (parse("/b 1.5") ?? Rec{"bad", 0}).path)
+  sz = "42"
+  print(sz.parse() ?? 0)
+  # Without a declared type, `parse()` reads whichever number the text is.
+  loose = "2.5".parse() ?? 0
+  print(loose)
+  match num("9.0")
+    err(e): print(e)
+    x: print(x)

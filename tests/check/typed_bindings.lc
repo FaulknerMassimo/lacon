@@ -1,0 +1,5 @@
+fn main() =
+  n int = 3
+  n += 1
+  s str = 5
+  print(n, s)

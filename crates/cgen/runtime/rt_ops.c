@@ -680,6 +680,27 @@ lc_v lc_convert(lc_v v, int to, const char *name, int64_t lo, int64_t hi, const 
     }
 }
 
+lc_v lc_parse_as(lc_v v, int to, const char *name, int64_t lo, int64_t hi, const char *site) {
+    lc_v r = lc_method(M_parse, v, 0, NULL, site);
+    if (v.tag != T_STR || lc_unwinding) return r;
+    switch (to) {
+    case CONV_INT:
+        if (r.tag == T_INT && r.u.i >= lo && r.u.i <= hi) return r;
+        break;
+    case CONV_FLOAT:
+        if (r.tag == T_FLOAT) return r;
+        if (r.tag == T_INT) return lc_float((double)r.u.i);
+        break;
+    case CONV_BOOL:
+        if (r.tag == T_BOOL) return r;
+        break;
+    default:
+        return r;
+    }
+    lc_release(r);
+    return parse_err(STR(v), name);
+}
+
 /* ----- declared types ----- */
 
 const char *lc_ty_name(const lc_ty *t, char *buf, size_t len) {

@@ -18,7 +18,7 @@ const ENTRIES: &[(&str, &str)] = &[
     ("E0132", "There are no references or pointers. Values have value semantics; parameters are borrowed by default, `mut p T` lets a function change the caller's variable in place."),
     ("E0133", "There are no comprehensions. Use methods with `it`: `xs.filter(it > 0).map(it * 2)`."),
     ("E0134", "There are no imports (the standard library is always in scope) and no top-level statements. Put code in `fn main() =`, which runs automatically."),
-    ("E0135", "Bindings are not annotated. Write `x = value`; when the type matters for an empty collection, `var x [int] = []`."),
+    ("E0135", "A binding needs a value. Write `x = value`; to declare its type, `x T = value` (or `var x T = value` for a mutable one): `n int = s.parse()?`, `var seen {str} = set()`."),
     ("E0136", "There are no impl blocks, traits or `self`. A method is a plain function whose first parameter is the receiver: `fn area(s Shape) f64 = ...` is called as `s.area()` or `area(s)`."),
     ("E0138", "There are no named arguments; pass arguments by position. Parameters may have defaults: `fn f(x int, step int = 1)`. For Python's keyword arguments: print without a newline with `io.write(s)`, sort descending with `xs.sort_by(-it)`, sort by a key with `xs.sort_by(it.age)`."),
     ("E0140", "Every parameter needs a type: `fn f(x int, name str)`."),

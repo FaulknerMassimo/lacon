@@ -13,9 +13,12 @@ use lacon_syntax::Diag;
 pub use infer::Checker;
 
 /// Type-checks a resolved program. `src` is its source text, used for the
-/// snippets in messages and fixes.
-pub fn check(prog: &Program, src: &str) -> Vec<Diag> {
+/// snippets in messages and fixes. Records in `prog.parse_to` the type each
+/// `s.parse()` with a declared type reads.
+pub fn check(prog: &mut Program, src: &str) -> Vec<Diag> {
     let mut c = Checker::new(prog, src);
     c.run();
-    c.diags
+    let (diags, parse_to) = (c.diags, c.parse_to);
+    prog.parse_to = parse_to.into_iter().collect();
+    diags
 }

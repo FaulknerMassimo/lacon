@@ -35,6 +35,17 @@ pub const METHODS: &[&str] = &[
     "push", "pop", "insert", "remove", "clear", "extend", "add", "swap", "truncate", "retain",
 ];
 
+/// The methods of `str` (not counting those every value or iterable has).
+const STR_METHODS: &[&str] = &[
+    "len", "is_empty", "chars", "bytes", "lines", "words", "split", "split_once", "trim", "trim_start", "trim_end", "upper", "lower",
+    "capitalize", "starts_with", "ends_with", "contains", "find", "rfind", "replace", "repeat", "parse", "count", "is_digit", "is_alpha",
+    "is_alnum", "is_space", "is_upper", "is_lower", "ord", "strip_prefix", "strip_suffix", "pad_left", "pad_right",
+];
+
+pub fn is_str_method(n: &str) -> bool {
+    STR_METHODS.contains(&n)
+}
+
 pub const MUTATORS: &[&str] = &["push", "pop", "insert", "remove", "clear", "extend", "add", "swap", "truncate", "retain"];
 
 pub fn is_method(n: &str) -> bool {
@@ -306,6 +317,32 @@ pub fn parse_number(s: &str) -> Option<Value> {
         }
     }
     None
+}
+
+/// `s.parse()` where the checker knows the type wanted (`n int =
+/// s.parse()?`): a number of the other kind, or one out of range, is an
+/// error, as with Rust's `s.parse::<T>()`.
+pub fn parse_as(s: &str, to: ConvTo) -> Value {
+    match (to, parse_value(s).unwrap_or(Value::Unit)) {
+        (ConvTo::Int(_, lo, hi), Value::Int(n)) if lo <= n && n <= hi => Value::Int(n),
+        (ConvTo::Float, Value::Int(n)) => Value::Float(n as f64),
+        (ConvTo::Float, Value::Float(f)) => Value::Float(f),
+        (ConvTo::Bool, Value::Bool(b)) => Value::Bool(b),
+        (ConvTo::Int(name, ..), _) => parse_err(s, name),
+        (ConvTo::Float, _) => parse_err(s, "f64"),
+        (ConvTo::Bool, _) => parse_err(s, "bool"),
+        (ConvTo::Str, _) => Value::str(s),
+    }
+}
+
+/// What `s.parse()` reads without a declared type: a number, or `true` or
+/// `false`.
+fn parse_value(s: &str) -> Option<Value> {
+    parse_number(s).or_else(|| match s.trim() {
+        "true" => Some(Value::Bool(true)),
+        "false" => Some(Value::Bool(false)),
+        _ => None,
+    })
 }
 
 fn parse_err(s: &str, what: &str) -> Value {
@@ -904,6 +941,16 @@ fn str_method(it: &Interp, s: &Rc<String>, name: &str, args: &[Value], span: Spa
             let sep = sarg(it, args, 0, name, span)?;
             opt(s.split_once(sep).map(|(a, b)| Value::tuple(vec![Value::str(a), Value::str(b)])))
         }
+        // With an argument, the characters to remove, as in Python's `strip`.
+        "trim" | "trim_start" | "trim_end" if !args.is_empty() => {
+            let set = sarg(it, args, 0, name, span)?;
+            let drop = |c: char| set.contains(c);
+            Value::str(match name {
+                "trim" => s.trim_matches(drop),
+                "trim_start" => s.trim_start_matches(drop),
+                _ => s.trim_end_matches(drop),
+            })
+        }
         "trim" => Value::str(s.trim()),
         "trim_start" => Value::str(s.trim_start()),
         "trim_end" => Value::str(s.trim_end()),
@@ -932,14 +979,7 @@ fn str_method(it: &Interp, s: &Rc<String>, name: &str, args: &[Value], span: Spa
             }
         }
         "repeat" => Value::str(s.repeat(int_arg(it, args, 0, name, span)?.max(0) as usize)),
-        "parse" => match parse_number(s) {
-            Some(v) => v,
-            None => match s.trim() {
-                "true" => Value::Bool(true),
-                "false" => Value::Bool(false),
-                _ => parse_err(s, "a number"),
-            },
-        },
+        "parse" => parse_value(s).unwrap_or_else(|| parse_err(s, "a number")),
         "rev" => Value::str(s.chars().rev().collect::<String>()),
         "sort" => {
             let mut cs: Vec<char> = s.chars().collect();
@@ -1010,6 +1050,14 @@ fn list_method(it: &Interp, xs: &Rc<Vec<Value>>, name: &str, args: &[Value], spa
             opt(xs.iter().position(|y| value::eq(y, x).unwrap_or(false)).map(|i| Value::Int(i as i64)))
         }
         "to_list" => Value::List(xs.clone()),
+        "repeat" => {
+            let n = int_arg(it, args, 0, name, span)?.max(0) as usize;
+            let mut out = Vec::with_capacity(xs.len() * n);
+            for _ in 0..n {
+                out.extend(xs.iter().cloned());
+            }
+            Value::list(out)
+        }
         _ => return Ok(None),
     }))
 }

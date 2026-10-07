@@ -1,6 +1,8 @@
 //! Signatures of the builtin methods, by receiver type. They mirror what
 //! `lacon_interp::builtins` implements.
 
+use lacon_interp::builtins::is_str_method;
+
 use crate::infer::Checker;
 use crate::types::{T, INT};
 
@@ -47,16 +49,6 @@ pub enum NoSig {
     Missing(String),
     /// A mutator called on a string.
     Immutable,
-}
-
-const STR_METHODS: &[&str] = &[
-    "len", "is_empty", "chars", "bytes", "lines", "words", "split", "split_once", "trim", "trim_start", "trim_end", "upper", "lower",
-    "capitalize", "starts_with", "ends_with", "contains", "find", "rfind", "replace", "repeat", "parse", "count", "is_digit", "is_alpha",
-    "is_alnum", "is_space", "is_upper", "is_lower", "ord", "strip_prefix", "strip_suffix", "pad_left", "pad_right",
-];
-
-pub fn is_str_method(n: &str) -> bool {
-    STR_METHODS.contains(&n)
 }
 
 const FLOAT_FNS: &[&str] = &["sqrt", "cbrt", "exp", "ln", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "fract"];
@@ -134,6 +126,7 @@ impl Checker<'_> {
                     "swap" => Some(Sig::new(vec![INT, INT], T::Unit)),
                     "truncate" => Some(Sig::new(vec![INT], T::Unit)),
                     "retain" => Some(Sig::new(vec![T::func(vec![e.clone()], T::Bool)], T::Unit)),
+                    "repeat" => Some(Sig::new(vec![INT], T::list(e.clone()))),
                     "add" => return Err(missing(self, ": lists use `push`")),
                     _ => None,
                 };
@@ -273,7 +266,8 @@ impl Checker<'_> {
             "bytes" => Sig::new(vec![], T::list(INT)),
             "split" => Sig::opt(vec![T::Str], 0, strs()),
             "split_once" => Sig::new(vec![T::Str], T::opt(T::Tuple(vec![T::Str, T::Str]))),
-            "trim" | "trim_start" | "trim_end" | "upper" | "lower" | "capitalize" | "rev" | "sort" => Sig::new(vec![], T::Str),
+            "trim" | "trim_start" | "trim_end" => Sig::opt(vec![T::Str], 0, T::Str),
+            "upper" | "lower" | "capitalize" | "rev" | "sort" => Sig::new(vec![], T::Str),
             "starts_with" | "ends_with" | "contains" => Sig::new(vec![T::Str], T::Bool),
             "find" | "index" if !first_is_fn => Sig::new(vec![T::Str], T::opt(INT)),
             "rfind" => Sig::new(vec![T::Str], T::opt(INT)),

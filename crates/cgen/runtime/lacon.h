@@ -239,6 +239,9 @@ enum { CONV_INT, CONV_FLOAT, CONV_STR, CONV_BOOL };
 typedef struct { const char *name; int to; int64_t lo, hi; } lc_conv_info;
 extern const lc_conv_info lc_convs[];
 lc_v lc_convert(lc_v v, int to, const char *name, int64_t lo, int64_t hi, const char *site);
+/* `s.parse()` where the checker knows the type wanted (`n int = s.parse()?`):
+ * a number of the other kind, or one out of range, is an error. */
+lc_v lc_parse_as(lc_v v, int to, const char *name, int64_t lo, int64_t hi, const char *site);
 
 bool lc_ty_matches(lc_v v, const lc_ty *t);
 /* Checks an owned value against a declared type; on mismatch returns false

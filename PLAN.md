@@ -274,9 +274,12 @@ interpreter (`crates/`), the `lacon` CLI with `run`, `test`, `check`, `sig` and
 `explain`, golden tests over `tests/`, all 30 tasks with hidden tests, a Python
 reference and a Lacon solution each (`bench/tasks/`), and the harness that has
 Claude solve them (`bench/harness/`), through the API or through Claude Code
-(`claude -p`, no API key needed). Not done yet: a full run, and a Go
-toolchain on the benchmark machine. See §12 for the semantics the
-interpreter settled on and §13 for what writing the tasks taught.
+(`claude -p`, no API key needed). A pilot run, all 30 tasks in Lacon and
+Python, is in §13: every episode passed, but Lacon took 2.92x Python's tokens
+and 67% of its first attempts built. Not done yet: Rust and Go runs, several
+trials, and a Go toolchain on the benchmark machine. See §12 for the
+semantics the interpreter settled on and §13 for what writing the tasks and
+the runs taught.
 
 ### Phase 1 — MVP
 
@@ -451,6 +454,20 @@ overturn.
 - **`map(f, xs)`** and `filter(f, xs)` mean `xs.map(f)` and `xs.filter(f)` when
   `f` is clearly a function (a lambda, or the name of a function, conversion
   or variant). Python habit; same meaning, so accepted.
+- **Declared types on bindings.** `n int = v` (or `n: int = v`) binds an
+  immutable `n` of a declared type, as `var n int = v` does a mutable one.
+  It is how Python and Rust programmers tell `parse` what to read.
+- **`parse()` reads the declared type.** Where a declared type is expected
+  (a binding, return, parameter or field type, through one `?` or `??`),
+  `s.parse()` reads that type or fails, like Rust's `s.parse::<T>()`:
+  `n int = "1.5".parse()?` is an error, and so is `"300"` for a `u8`.
+  Elsewhere it reads whichever number the text is, so `t += s.parse()?`
+  still sums floats. Types inferred from use don't count: `s.parse() ?? 0`
+  would otherwise turn `"2.5"` into `0` without a word.
+- **String methods win in method syntax.** A program's own
+  `fn parse(line str) Rec!` is called `parse(line)`; `s.parse()` stays the
+  builtin, and so does every other string method name. Other functions are
+  methods of their first parameter's type as before.
 
 ---
 
@@ -538,6 +555,64 @@ The tasks themselves split into parsing (`calc`, `json-format`, `ini-query`,
 `column-align`, `line-diff`, `kv-store`, `path-normalize`) and algorithms
 (`dijkstra`, `topo-order`, `edit-distance`, `knapsack`, `life`, `big-arith`,
 `grid-path`, `merge-intervals`). Lacon solutions average 26 lines.
+
+### Pilot run
+
+All 30 tasks in Lacon and Python through Claude Code, `claude-opus-5-5`, one
+trial each, with the cut primer and the type checker
+(`bench/results/20261006-234906-claude-opus-5-5`, not committed).
+
+| | Lacon | Python |
+|---|---|---|
+| Passed | 30/30 | 30/30 |
+| First attempt builds | 67% | 100% |
+| Median tokens-to-green | 31,692 | 9,597 |
+| Mean API calls | 4.1 | 2.3 |
+| Mean output tokens | 1,382 | 1,087 |
+| Mean cost | $0.055 | $0.040 |
+
+Lacon took 2.92x Python's tokens (geometric mean of the per-task ratios).
+Most of the gap is not failed builds: the 20 Lacon episodes whose first
+attempt built still had a median of 29.4k.
+
+- **The primer is paid on every call.** Each Lacon call reads about 3.5k more
+  cached tokens than a Python call, which is the primer. A Python episode
+  writes about 1.1k output tokens in all, so on tasks this small no syntax
+  can win back the primer: Lacon at zero output tokens would still be behind.
+  §6's target of tokens-to-green at or below Python's needs larger tasks, or
+  a model that knows Lacon (Phase 4).
+- **Lacon takes more calls when nothing goes wrong.** In Python the model
+  runs and submits in one command (`./run && ./submit`); in Lacon it runs,
+  reads the output, then submits. Caution in an unknown language costs a
+  call per episode.
+- **The programs aren't shorter.** Lacon solutions averaged 39 lines against
+  Python's 37, and output tokens were 27% higher.
+
+The ten first attempts that didn't build:
+
+- **A declared type on a binding**, so that `parse` knows what to read, in six:
+  `n int = s.parse()?`, `v: int = ...`, `v f64 = ...`. The parser said
+  "expected end of line, found `int`". Now accepted (§12).
+- **`parse` ignored the declared type.** `fn num(t str) int! = t.parse()`
+  returned a float for `"1.5"` and failed the return check instead of
+  returning an error; `rpn` wrote its own digit parser around it. `parse`
+  now reads the type expected of it (§12).
+- **A program's `fn parse(line str) Rec!` took over `s.parse()`**, even inside
+  its own body, and the error said only "mixes Rec and int". `log-summary`
+  spent seven calls and 71k tokens on it, the worst episode of the run.
+  String methods now win in method syntax (§12).
+- **`[0].repeat(n)`** in two: the primer lists `repeat(n)` among the string
+  methods, and it is valid Rust. Lists have `repeat` now.
+- **`trim_end("\r")`** in one. `trim`, `trim_start` and `trim_end` now take the
+  characters to remove, as Python's `strip` does.
+- **`"{}"`** for an empty JSON object in one, which stays an error (above); the
+  hint fixed it in one step.
+
+With these changes 29 of the 30 first attempts build and match every hidden
+test unchanged, `rpn` and `log-summary` included; `json-format` is the
+exception. That would have taken first-build success from 67% to 97%, but it
+removes the smaller part of the gap: the primer and the extra calls remain.
+Next: Rust and Go, which is the comparison Phase 0's done-when names.
 
 ---
 

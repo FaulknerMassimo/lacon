@@ -1,0 +1,8 @@
+5 7.0 true [5] {}
+12 -1 -1 3.0
+0 -1 n=8
+Rec{path: "/a", size: 120} bad
+42
+2.5
+cannot parse "9.0" as int
+[exit 0]

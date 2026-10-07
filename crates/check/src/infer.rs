@@ -158,6 +158,9 @@ pub struct Checker<'p> {
     widen_hit: bool,
     /// Per enclosing loop: whether it has a `break`.
     loops: Vec<bool>,
+    /// `s.parse()` calls with a declared type to parse to, for
+    /// `Program::parse_to`.
+    pub parse_to: Vec<(Span, ConvTo)>,
 }
 
 impl<'p> Checker<'p> {
@@ -175,6 +178,7 @@ impl<'p> Checker<'p> {
             widen: HashSet::new(),
             widen_hit: false,
             loops: Vec::new(),
+            parse_to: Vec::new(),
         }
     }
 
@@ -222,6 +226,7 @@ impl<'p> Checker<'p> {
         for _ in 0..4 {
             let snap = self.s.snapshot();
             let nd = self.diags.len();
+            let np = self.parse_to.len();
             self.widen_hit = false;
             self.fn_once(id);
             if !self.widen_hit {
@@ -229,6 +234,7 @@ impl<'p> Checker<'p> {
             }
             self.s = snap;
             self.diags.truncate(nd);
+            self.parse_to.truncate(np);
         }
     }
 
@@ -798,6 +804,11 @@ impl<'p> Checker<'p> {
                     Recv::Place(p) => (self.place_type(p, false), p.span),
                     Recv::Value(e) => (self.infer(e), e.span()),
                 };
+                if &**name == "parse" && args.is_empty() {
+                    if let Some(to) = exp.and_then(|t| self.parse_target(t)) {
+                        self.parse_to.push((*span, to));
+                    }
+                }
                 let args: Vec<Arg> = args.iter().map(Arg::Ex).collect();
                 self.method_on(t, rspan, name, user.as_ref(), &args, *span)
             }
@@ -828,7 +839,8 @@ impl<'p> Checker<'p> {
                 T::Bool
             }
             Ex::Coalesce(a, b, _) => {
-                let at = self.infer(a);
+                let want = exp.map(|t| T::opt(t.clone()));
+                let at = self.expr(a, want.as_ref());
                 let inner = match self.s.resolve(&at) {
                     T::Opt(x) | T::Res(x) => *x,
                     t => t,
@@ -858,7 +870,8 @@ impl<'p> Checker<'p> {
                 T::Range
             }
             Ex::Try { e: x, span, .. } => {
-                let t = self.infer(x);
+                let want = exp.map(|t| T::res(t.clone()));
+                let t = self.expr(x, want.as_ref());
                 self.try_type(&t, *span)
             }
             Ex::Lambda(def) => self.lambda(def, exp, None),
@@ -926,6 +939,17 @@ impl<'p> Checker<'p> {
                 }
                 acc
             }
+        }
+    }
+
+    /// The type `s.parse()` reads when `exp` is expected of it: a declared
+    /// int, float or bool, under at most one `?` or `T!`.
+    fn parse_target(&self, exp: &T) -> Option<ConvTo> {
+        match self.s.resolve(&strip(&self.s.resolve(exp))) {
+            T::Int(name) => lacon_interp::resolve::conv_for(name),
+            T::Float => Some(ConvTo::Float),
+            T::Bool => Some(ConvTo::Bool),
+            _ => None,
         }
     }
 

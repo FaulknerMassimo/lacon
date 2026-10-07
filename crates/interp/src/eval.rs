@@ -810,6 +810,9 @@ impl<'p> Interp<'p> {
             (None, Recv::Value(e)) => self.eval(e, f)?,
             (None, Recv::Place(p)) => self.read_place(p, f)?,
         };
+        if let (Value::Str(s), true, Some(to)) = (&rv, name == "parse", self.prog.parse_to.get(&span)) {
+            return Ok(builtins::parse_as(s, *to));
+        }
         let mut argv = Vec::with_capacity(args.len());
         for a in args {
             argv.push(self.eval(a, f)?);

@@ -866,7 +866,7 @@ impl<'a> Parser<'a> {
                 let ty = if self.at(&Tok::Assign) { None } else { Some(self.ty()?) };
                 self.expect(&Tok::Assign, "`=` and an initial value")?;
                 let value = self.rhs()?;
-                Ok(Stmt::Var { name, ty, value })
+                Ok(Stmt::Var { name, ty, value, mutable: true })
             }
             Tok::Fn if matches!(self.peek_at(1), Tok::Ident(_)) => {
                 self.hint("E0121", start, "no nested functions; move it to the top level, or bind a lambda: `add = |a, b| a + b`", None);
@@ -944,10 +944,42 @@ impl<'a> Parser<'a> {
                         self.hint("E0148", start, "no `del`: remove a map entry with `m.remove(k)`, a list item with `xs.remove(i)`", fix);
                         Err(())
                     }
+                    _ if self.typed_binding_ahead() => {
+                        let name = self.ident("a variable name")?;
+                        self.eat(&Tok::Colon);
+                        let ty = self.ty()?;
+                        self.expect(&Tok::Assign, "`=` and a value")?;
+                        let value = self.rhs()?;
+                        Ok(Stmt::Var { name, ty: Some(ty), value, mutable: false })
+                    }
                     _ => self.simple_stmt(),
                 }
             }
             _ => self.simple_stmt(),
+        }
+    }
+
+    /// `n int = v` or `xs: [int] = []`: a name, a type and `=`. Without the
+    /// colon the type can't start with `[` or `(`, since `x [i] = 1` and
+    /// `x (y) = 1` mean something else.
+    fn typed_binding_ahead(&self) -> bool {
+        let colon = matches!(self.peek_at(1), Tok::Colon);
+        if !colon && !matches!(self.peek_at(1), Tok::Ident(_) | Tok::LBrace) {
+            return false;
+        }
+        let start = if colon { 2 } else { 1 };
+        let mut depth = 0;
+        let mut i = start;
+        loop {
+            match self.peek_at(i) {
+                Tok::Assign => return depth == 0 && i > start,
+                Tok::Ident(_) | Tok::Question | Tok::Bang | Tok::Fn | Tok::Arrow => {}
+                Tok::LBracket | Tok::LBrace | Tok::LParen => depth += 1,
+                Tok::RBracket | Tok::RBrace | Tok::RParen if depth > 0 => depth -= 1,
+                Tok::Comma | Tok::Colon if depth > 0 => {}
+                _ => return false,
+            }
+            i += 1;
         }
     }
 
@@ -984,7 +1016,7 @@ impl<'a> Parser<'a> {
                 return Err(());
             }
             Tok::Colon if targets.len() == 1 && matches!(targets[0].kind, ExprKind::Name(_)) => {
-                self.hint("E0135", self.span(), "bindings are not annotated; write `x = value`, or `var x T = value` when the type is needed", None);
+                self.hint("E0135", self.span(), "a binding needs a value: `x = value`, or `x T = value` to declare its type", None);
                 return Err(());
             }
             _ => {

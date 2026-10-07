@@ -6,7 +6,7 @@ fn main() =
   for (i = 0; i < 3; i++):
     print(i)
   w = [x * 2 for x in xs]
-  s: int = 4
+  s: int
   print(x)  // comment
   r = String::new()
   if x > 3 {

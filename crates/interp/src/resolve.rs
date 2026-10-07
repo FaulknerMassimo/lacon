@@ -10,7 +10,7 @@ use lacon_syntax::ast::*;
 use lacon_syntax::fmtspec::FmtSpec;
 use lacon_syntax::{Diag, Span};
 
-use crate::builtins::{hof_arg, is_method, is_mutator};
+use crate::builtins::{hof_arg, is_method, is_mutator, is_str_method};
 use crate::ir::{self, Arm, Builtin, ConvTo, Ex, FnId, LambdaDef, PatIr, Place, Program, Recv, Root, Seg, St, StrPiece, Target, Ty};
 use crate::value::{Func, Value};
 
@@ -736,11 +736,11 @@ impl<'a> Resolver<'a> {
                 self.check_unused(e);
                 St::Expr(self.expr(e), e.span)
             }
-            Stmt::Var { name, ty, value } => {
+            Stmt::Var { name, ty, value, mutable } => {
                 let v = self.expr(value);
                 let gens = self.cur_generics();
                 let ty = ty.as_ref().map(|t| self.ty(t, &gens));
-                let slot = self.declare(&name.name, true);
+                let slot = self.declare(&name.name, *mutable);
                 St::Bind(PatIr::Bind(slot), v, ty, name.span)
             }
             Stmt::Assign { targets, op, value, span } => return self.assign(targets, *op, value, *span),
@@ -1656,7 +1656,7 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
-        let user = self.fn_ids.get(n).cloned();
+        let user = self.method_fns(n);
         if let Some(ids) = &user {
             self.note_call(ids);
             self.check_arity(n, ids, args.len(), span, 1);
@@ -1691,6 +1691,19 @@ impl<'a> Resolver<'a> {
         });
         let args = args.collect();
         Ex::Method { recv, name: n.into(), user: user.map(|u| u.into()), args, span }
+    }
+
+    /// The user functions `x.name()` can call. A function whose first
+    /// parameter is a `str` and whose name is a string method is left out:
+    /// `s.parse()` stays the builtin when the program has its own
+    /// `fn parse(line str)`, which is called `parse(line)`.
+    fn method_fns(&self, name: &str) -> Option<Vec<FnId>> {
+        let ids = self.fn_ids.get(name)?;
+        if !is_str_method(name) {
+            return Some(ids.clone());
+        }
+        let kept: Vec<FnId> = ids.iter().copied().filter(|&id| !matches!(self.prog.fns[id as usize].params.first(), Some(p) if matches!(p.ty, Ty::Str))).collect();
+        (!kept.is_empty()).then_some(kept)
     }
 
     fn match_expr(&mut self, scrutinee: &Expr, arms: &[MatchArm], span: Span) -> Ex {

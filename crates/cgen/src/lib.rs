@@ -84,6 +84,19 @@ fn cstr(s: &str) -> String {
     out
 }
 
+/// The `to, name, lo, hi` arguments of `lc_convert` and `lc_parse_as`.
+fn conv_args(to: ConvTo) -> String {
+    let (code, name, lo, hi) = match to {
+        ConvTo::Int(n, lo, hi) => ("CONV_INT", n, lo, hi),
+        ConvTo::Float => ("CONV_FLOAT", "f64", 0, 0),
+        ConvTo::Str => ("CONV_STR", "str", 0, 0),
+        ConvTo::Bool => ("CONV_BOOL", "bool", 0, 0),
+    };
+    let lo = if lo == i64::MIN { "INT64_MIN".to_string() } else { format!("{lo}LL") };
+    let hi = if hi == i64::MAX { "INT64_MAX".to_string() } else { format!("{hi}LL") };
+    format!("{code}, {}, {lo}, {hi}", cstr(name))
+}
+
 fn binop_c(op: BinOp) -> &'static str {
     match op {
         BinOp::Add => "OP_ADD",
@@ -1100,15 +1113,7 @@ impl<'p> Gen<'p> {
     }
 
     fn conv(&mut self, to: ConvTo, v: &str, site: &str) -> String {
-        let (code, name, lo, hi) = match to {
-            ConvTo::Int(n, lo, hi) => ("CONV_INT", n, lo, hi),
-            ConvTo::Float => ("CONV_FLOAT", "f64", 0, 0),
-            ConvTo::Str => ("CONV_STR", "str", 0, 0),
-            ConvTo::Bool => ("CONV_BOOL", "bool", 0, 0),
-        };
-        let lo = if lo == i64::MIN { "INT64_MIN".to_string() } else { format!("{lo}LL") };
-        let hi = if hi == i64::MAX { "INT64_MAX".to_string() } else { format!("{hi}LL") };
-        format!("lc_convert({v}, {code}, {}, {lo}, {hi}, {site})", cstr(name))
+        format!("lc_convert({v}, {}, {site})", conv_args(to))
     }
 
     fn interp(&mut self, pieces: &[StrPiece]) -> String {
@@ -1375,6 +1380,9 @@ impl<'p> Gen<'p> {
                         cstr(name)
                     ),
                 };
+            }
+            if let (true, Some(&to)) = (name == "parse", g.prog.parse_to.get(&span)) {
+                return format!("{r} = lc_parse_as({rv}, {}, {site}); if (lc_unwinding) UNWIND; ", conv_args(to));
             }
             let arr = g.t();
             let a = g.args_into(&arr, args);

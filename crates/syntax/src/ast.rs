@@ -200,8 +200,9 @@ pub struct Block {
 #[derive(Debug)]
 pub enum Stmt {
     Expr(Expr),
-    /// `var x [T] = e`
-    Var { name: Ident, ty: Option<TypeExpr>, value: Expr },
+    /// `var x [T] = e`, or `x T = e` (also `x: T = e`): an immutable binding
+    /// with a declared type.
+    Var { name: Ident, ty: Option<TypeExpr>, value: Expr, mutable: bool },
     /// `x = e`, `a.b[i] += e`, `a, b = e`. Whether `x = e` binds or assigns
     /// is decided during name resolution.
     Assign { targets: Vec<Expr>, op: Option<BinOp>, value: Expr, span: Span },

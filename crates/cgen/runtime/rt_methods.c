@@ -400,7 +400,25 @@ static bool str_method(int m, lc_str *s, int argc, lc_v *args, const char *site,
     case M_trim_end: {
         const char *p = s->data;
         int64_t n = s->len;
-        if (m == M_trim) {
+        if (argc > 0) {
+            /* The characters to remove, as in Python's `strip`. */
+            lc_str *set = sarg(argc, args, 0, m, site);
+            if (m != M_trim_end) {
+                while (n > 0) {
+                    lc_utf8_decode(p, n, &l);
+                    if (!find_sub(set->data, set->len, p, l)) break;
+                    p += l, n -= l;
+                }
+            }
+            if (m != M_trim_start) {
+                while (n > 0) {
+                    int64_t i = n - 1;
+                    while (i > 0 && ((unsigned char)p[i] & 0xC0) == 0x80) i--;
+                    if (!find_sub(set->data, set->len, p + i, n - i)) break;
+                    n = i;
+                }
+            }
+        } else if (m == M_trim) {
             trim_ws(&p, &n);
         } else if (m == M_trim_start) {
             while (n > 0 && lc_is_ws(lc_utf8_decode(p, n, &l))) p += l, n -= l;
@@ -1230,6 +1248,7 @@ lc_v lc_method(int m, lc_v recv, int argc, lc_v *args, const char *site) {
             return LC_NONE;
         }
         case M_to_list: return lc_retain(recv);
+        case M_repeat: return lc_binop(OP_MUL, recv, lc_int(int_arg(argc, args, 0, m, site)), site);
         }
         break;
     }

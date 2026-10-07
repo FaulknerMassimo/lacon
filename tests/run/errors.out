@@ -1,6 +1,6 @@
 User{name: "ann", age: 30} ann 30
 User{name: "default", age: 0}
-failed: cannot parse "x" as a number
+failed: cannot parse "x" as u32
 2 2 none
 true
 5 -1
