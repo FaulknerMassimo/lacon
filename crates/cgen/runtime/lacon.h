@@ -30,8 +30,19 @@ typedef struct lc_v {
 } lc_v;
 
 typedef struct lc_str { int64_t rc; int64_t len; int64_t nchars; int64_t cap; char data[]; } lc_str;
-/* Lists, tuples and heaps. */
-typedef struct lc_vec { int64_t rc; int64_t len, cap; lc_v *items; } lc_vec;
+/* Lists, tuples and heaps. A list holds its elements packed, as raw ints,
+ * floats or bools, while every element is one of that kind, else boxed:
+ * `lc_vec_push` gives an empty list the kind of its first element, and a
+ * list that gets a value of another kind is boxed in place (only ever a
+ * list nothing else holds). Tuples and heaps are always boxed. `lc_vget`
+ * reads an element of any kind. */
+enum { K_BOXED, K_INT, K_FLOAT, K_BOOL };
+typedef struct lc_vec {
+    int64_t rc;
+    int64_t len, cap;
+    union { lc_v *boxed; int64_t *ints; double *floats; bool *bools; void *data; };
+    int kind;
+} lc_vec;
 typedef struct lc_entry { lc_v k, v; uint64_t h; } lc_entry;
 /* Insertion-ordered maps and sets (sets leave `v` unit). */
 typedef struct lc_map { int64_t rc; int64_t len, cap; lc_entry *e; int32_t *idx; int64_t icap; } lc_map;
@@ -145,7 +156,31 @@ const char *lc_kind(lc_v v, char *buf);
 
 lc_v lc_list_new(int64_t cap);
 lc_v lc_tuple_new(int64_t cap);
+/* An empty vec with room for `cap` elements of kind `kind`. */
+lc_v lc_vec_alloc(uint32_t tag, int kind, int64_t cap);
+/* Appends an owned value; the vec must be one nothing else holds. */
 void lc_vec_push(lc_v vec, lc_v item);
+/* The size of an element of kind `k`. */
+static inline __attribute__((always_inline)) size_t lc_ksize(int k) {
+    return k == K_BOXED ? sizeof(lc_v) : k == K_BOOL ? sizeof(bool) : sizeof(int64_t);
+}
+/* Element `i` of a vec of any kind, borrowed. */
+static inline __attribute__((always_inline)) lc_v lc_vget(const lc_vec *x, int64_t i) {
+    switch (x->kind) {
+    case K_INT: return lc_int(x->ints[i]);
+    case K_FLOAT: return lc_float(x->floats[i]);
+    case K_BOOL: return lc_bool(x->bools[i]);
+    default: return x->boxed[i];
+    }
+}
+/* Stores an owned value at `i`, boxing a packed list for a value of
+ * another kind; the vec must be one nothing else holds. */
+void lc_vset(lc_vec *x, int64_t i, lc_v v);
+/* A packed vec's elements as boxed values, in place. */
+void lc_vec_box(lc_vec *x);
+/* Elements `a..b` of `src` as a new vec of tag `tag`; a list keeps a packed
+ * kind. */
+lc_v lc_vec_slice(lc_v src, uint32_t tag, int64_t a, int64_t b);
 lc_v lc_list_of(int n, lc_v *items);
 lc_v lc_tuple_of(int n, lc_v *items);
 lc_v lc_map_new(void);
@@ -379,7 +414,7 @@ static inline __attribute__((always_inline)) lc_v lc_arith_own(int op, lc_v a, l
 static inline __attribute__((always_inline)) bool lc_iter_next_fast(lc_iter *it, lc_v *out) {
     if (it->kind == IT_VEC) {
         if (it->i >= it->n) return false;
-        *out = lc_retain(VEC(it->src)->items[it->i++]);
+        *out = lc_retain(lc_vget(VEC(it->src), it->i++));
         return true;
     }
     return lc_iter_next(it, out);
@@ -389,7 +424,7 @@ static inline __attribute__((always_inline)) lc_v lc_index_int(lc_v o, int64_t i
     if (o.tag == T_LIST || o.tag == T_TUPLE) {
         lc_vec *v = VEC(o);
         int64_t k = i < 0 ? v->len + i : i;
-        if (k >= 0 && k < v->len) return lc_retain(v->items[k]);
+        if (k >= 0 && k < v->len) return lc_retain(lc_vget(v, k));
     }
     return lc_index(o, lc_int(i), site);
 }
@@ -405,18 +440,24 @@ static inline __attribute__((always_inline)) lc_v lc_index_fast(lc_v o, lc_v i, 
     if ((o.tag == T_LIST || o.tag == T_TUPLE) && i.tag == T_INT) {
         lc_vec *v = VEC(o);
         int64_t k = i.u.i < 0 ? v->len + i.u.i : i.u.i;
-        if (k >= 0 && k < v->len) return lc_retain(v->items[k]);
+        if (k >= 0 && k < v->len) return lc_retain(lc_vget(v, k));
     }
     return lc_index(o, i, site);
 }
+/* A pointer to an element; a packed list is boxed first. */
 static inline __attribute__((always_inline)) lc_v *lc_place_index_fast(lc_v *p, lc_v key, int viv, lc_v zero, int method, const char *site) {
-    if (p->tag == T_LIST && key.tag == T_INT && p->u.o->rc == 1) {
+    if (p->tag == T_LIST && key.tag == T_INT && p->u.o->rc == 1 && VEC(*p)->kind == K_BOXED) {
         lc_vec *v = VEC(*p);
         int64_t k = key.u.i < 0 ? v->len + key.u.i : key.u.i;
-        if (k >= 0 && k < v->len) return &v->items[k];
+        if (k >= 0 && k < v->len) return &v->boxed[k];
     }
     return lc_place_index(p, key, viv, zero, method, site);
 }
+/* `place[key] = v` and `place[key] op= v` as the last step of a place:
+ * a packed list stays packed. Consume `v`; errors in the step are reported
+ * at `site`, and in the arithmetic at `op_site`. */
+void lc_store_index(lc_v *p, lc_v key, lc_v v, const char *site);
+void lc_update_index(lc_v *p, lc_v key, int op, lc_v v, const char *site, const char *op_site);
 static inline __attribute__((always_inline)) bool lc_test(lc_v c, const char *site) {
     if (c.tag == T_BOOL) return c.u.i != 0;
     return lc_truth(c, site);
@@ -499,6 +540,101 @@ static inline __attribute__((always_inline)) int64_t lc_ishr(int64_t a, int64_t 
 static inline __attribute__((always_inline)) int64_t lc_ineg(int64_t a, const char *site) {
     if (a == INT64_MIN) lc_panic("E0405", site, "integer overflow");
     return -a;
+}
+
+/* ----- packed lists -----
+ *
+ * Where the checker types an element int, bool or f64, generated code reads
+ * and writes a list's packed storage directly when the list has that kind
+ * at run time, and takes the general path when it hasn't. */
+
+/* `xs[i]` typed int or bool; borrows `o`. */
+static inline __attribute__((always_inline)) int64_t lc_get_int(lc_v o, int64_t i, const char *site) {
+    if (o.tag == T_LIST && VEC(o)->kind == K_INT) {
+        lc_vec *v = VEC(o);
+        int64_t k = i < 0 ? v->len + i : i;
+        if (k >= 0 && k < v->len) return v->ints[k];
+    }
+    return lc_unbox_int(lc_index_int(o, i, site), site);
+}
+static inline __attribute__((always_inline)) bool lc_get_bool(lc_v o, int64_t i, const char *site) {
+    if (o.tag == T_LIST && VEC(o)->kind == K_BOOL) {
+        lc_vec *v = VEC(o);
+        int64_t k = i < 0 ? v->len + i : i;
+        if (k >= 0 && k < v->len) return v->bools[k];
+    }
+    return lc_unbox_bool(lc_index_int(o, i, site), site);
+}
+/* `xs[i]` typed f64, as `lc_num` reads it; borrows `o`. */
+static inline __attribute__((always_inline)) double lc_get_num(lc_v o, int64_t i, const char *site) {
+    if (o.tag == T_LIST) {
+        lc_vec *v = VEC(o);
+        int64_t k = i < 0 ? v->len + i : i;
+        if (k >= 0 && k < v->len) {
+            if (v->kind == K_FLOAT) return v->floats[k];
+            if (v->kind == K_INT) return (double)v->ints[k];
+        }
+    }
+    return lc_num(lc_index_int(o, i, site), site);
+}
+
+/* The element `p[i]` of a list packed as `kind` that nothing else holds,
+ * or NULL. */
+#define LC_ELEM_AT(name, type, k, field)                                                         \
+    static inline __attribute__((always_inline)) type *name(lc_v *p, int64_t i) {              \
+        if (p->tag == T_LIST && VEC(*p)->kind == k && p->u.o->rc == 1) {                        \
+            lc_vec *v = VEC(*p);                                                                \
+            int64_t j = i < 0 ? v->len + i : i;                                                 \
+            if (j >= 0 && j < v->len) return &v->field[j];                                      \
+        }                                                                                       \
+        return NULL;                                                                            \
+    }
+LC_ELEM_AT(lc_int_at, int64_t, K_INT, ints)
+LC_ELEM_AT(lc_bool_at, bool, K_BOOL, bools)
+LC_ELEM_AT(lc_float_at, double, K_FLOAT, floats)
+#undef LC_ELEM_AT
+
+/* `xs.push(x)` for an unboxed value: in place when the list is packed as
+ * that kind and has room, else the general case. */
+#define LC_PUSH(name, type, k, field, box)                                                      \
+    static inline __attribute__((always_inline)) void name(lc_v *p, type x, const char *site) { \
+        if (p->tag == T_LIST && p->u.o->rc == 1) {                                              \
+            lc_vec *v = VEC(*p);                                                                \
+            if (v->kind == k && v->len < v->cap) {                                              \
+                v->field[v->len++] = x;                                                         \
+                return;                                                                         \
+            }                                                                                   \
+        }                                                                                       \
+        lc_v a = box(x);                                                                        \
+        lc_mutate(M_push, p, 1, &a, site);                                                      \
+    }
+LC_PUSH(lc_push_int, int64_t, K_INT, ints, lc_int)
+LC_PUSH(lc_push_bool, bool, K_BOOL, bools, lc_bool)
+LC_PUSH(lc_push_float, double, K_FLOAT, floats, lc_float)
+#undef LC_PUSH
+
+/* The next element of a loop whose variable is an unboxed int or bool. */
+static inline __attribute__((always_inline)) bool lc_iter_next_int(lc_iter *it, int64_t *out, const char *site) {
+    if (it->kind == IT_VEC && VEC(it->src)->kind == K_INT) {
+        if (it->i >= it->n) return false;
+        *out = VEC(it->src)->ints[it->i++];
+        return true;
+    }
+    lc_v x;
+    if (!lc_iter_next_fast(it, &x)) return false;
+    *out = lc_unbox_int(x, site);
+    return true;
+}
+static inline __attribute__((always_inline)) bool lc_iter_next_bool(lc_iter *it, bool *out, const char *site) {
+    if (it->kind == IT_VEC && VEC(it->src)->kind == K_BOOL) {
+        if (it->i >= it->n) return false;
+        *out = VEC(it->src)->bools[it->i++];
+        return true;
+    }
+    lc_v x;
+    if (!lc_iter_next_fast(it, &x)) return false;
+    *out = lc_unbox_bool(x, site);
+    return true;
 }
 
 #endif

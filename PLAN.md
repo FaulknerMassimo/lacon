@@ -225,8 +225,9 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
 
 - **Now:** the parser, the resolver (to an IR of slots and explicit lambdas),
   the type checker, then either the interpreter or the C backend, which
-  unboxes the ints, bools and floats the checker proves (§16). Mode
-  checking, RC insertion and reuse analysis are not built yet.
+  unboxes the ints, bools and floats the checker proves (§16) and packs
+  lists of them (§17). Mode checking, RC insertion and reuse analysis are
+  not built yet.
 - **Backends, in order:**
   1. **C** first. That's how Koka, Nim and Lean work, and it's the fastest way
      to native speed and portability.
@@ -309,13 +310,15 @@ Mode checking, Perceus reference counting with reuse, `sig`, `fix`, `put`,
 **Done when** runtime is within 1.5× of Rust on the benchmarks and an agent
 finishes tasks using only Lacon's tools.
 
-**Status.** Started with representations (§16): in native code, the ints,
-bools and floats the checker proves are C scalars, and functions get typed
-entries. On the seven programs in `bench/perf/`, native code takes 1.3-7.6x
-Rust's time (geometric mean 3.0x, from 9.7x); wordfreq is within the 1.5x
-bar and mandel close to it.
-Next: typed lists, then allocation (Perceus reuse). Mode checking, `fix`,
-`put` and `q` aren't started.
+**Status.** Started with representations. In native code, the ints, bools
+and floats the checker proves are C scalars, and functions get typed entries
+(§16); on the seven programs in `bench/perf/`, native code took 1.3-7.6x
+Rust's time (geometric mean 3.0x, from 9.7x). Lists of ints, floats and bools
+are now packed (§17): sieve went from 4.5x Rust to 1.8x and knapsack from
+3.9x to 2.5x, a geometric mean of 2.1x from 2.5x on the machine §17 used.
+wordfreq is within the 1.5x bar.
+Next: allocation (a small-object allocator, then Perceus reuse). Mode
+checking, `fix`, `put` and `q` aren't started.
 
 ### Phase 3 — Speed and scale
 
@@ -1013,7 +1016,7 @@ What's left:
 
 - **sieve** is memory-bound: a list of 5,000,000 bools takes 16 bytes an
   element against Rust's one. Typed lists, from the checker's element types
-  (`[int]` as `int64_t`, `[bool]` as bytes), are next.
+  (`[int]` as `int64_t`, `[bool]` as bytes), are next; §17 does this.
 - **records** and **wordfreq** allocate: each string, struct and list is its
   own `malloc`. A small-object allocator and Perceus-style reuse (§3.3) would
   remove most of it.
@@ -1022,3 +1025,81 @@ What's left:
 
 Typed C is also smaller and builds faster: `json-format`'s C went from 81.5
 KB to 75.7 KB and its build from 1.5 s to 1.3 s.
+
+---
+
+## 17. Phase 2: packed lists
+
+§16 left every list element a 16-byte `lc_v`. Now a list holds its elements
+packed, as raw `int64_t`s, `double`s or `bool`s, while every element is one
+of that kind.
+
+**The kind is the list's, at run time.** Each list carries a kind: boxed,
+int, float or bool. An empty list takes the kind of the first element pushed,
+and a list that gets a value of another kind is boxed in place, once. The
+checker's element types aren't trusted for this, because an `[f64]` can hold
+ints (§16): `[0.5] * 3` is packed as floats, and `f[0] = 7` boxes it, since
+the 7 must still print as `7`. Only a list nothing else holds is ever boxed in
+place, so no reader sees its storage change. Tuples and heaps stay boxed.
+
+**The runtime reads every kind.** Its 120-odd uses of a list's storage go
+through `lc_vget`, which boxes a packed element on the way out; copies,
+slices and `[x] * n` copy packed storage a block at a time; `insert`, `pop`,
+`remove` and `swap` move raw elements. A method called on a list no longer
+copies it first (`lc_items` did, for every `filter`, `map` and `sort_by`),
+`sum` adds packed ints in a loop, and `sort` sorts packed ints directly.
+
+**Generated code uses the checker's types to pick fast paths**, which check
+the list's kind and fall back to the general case:
+
+- `xs[i]` typed int or bool reads the packed element, and one typed `f64` is
+  read as a `double` where a number is wanted.
+- `xs[i] = v` and `xs[i] op= v` with an unboxed index and value write the
+  packed element in place, if nothing else holds the list. An int added to a
+  list of floats is done in place too, since the result is a float.
+- `xs.push(v)` with an unboxed value appends in place when there's room.
+- `for x in xs` with an unboxed int or bool `x` reads packed elements straight
+  into it.
+
+The rest of a place is walked as before, but the walk now stops at the last
+index, which stores into the container (`lc_store_index`,
+`lc_update_index`). `grid[r][c] = v` and `bag.xs[0] += 1` keep the inner list
+packed, and a list a shared row starts from is copied on write
+(`[[0] * 3] * 2`).
+
+Verified as before: every golden program, task input and benchmark program
+gives the same stdout, stderr and exit code from the interpreter and from
+native code (139 runs), typed and with `LACON_BOXED=1`, each also under
+AddressSanitizer and UndefinedBehaviorSanitizer. `packed_lists.lc` covers
+each operation and change of kind, and `packed_update.lc` an overflow in an
+element update, reported at the statement as the interpreter reports it.
+Generated C is the same size as before, and builds as fast.
+
+**Results**, on a different machine from §16's: an Intel Core Ultra 7 155H,
+best of eleven runs, each pinned to one performance core with `taskset`.
+Unpinned, a run moved by up to 40% as the scheduler picked the kind of core.
+Before is §16's compiler on the same machine:
+
+| Program | Before | After |
+|---|---|---|
+| collatz | 1.9x | 1.9x |
+| fib | 3.9x | 3.9x |
+| knapsack | 3.9x | 2.5x |
+| mandel | 1.9x | 1.9x |
+| records | 2.7x | 2.6x |
+| sieve | 4.5x | 1.8x |
+| wordfreq | 1.1x | 1.1x |
+| geometric mean | 2.5x | 2.1x |
+
+(Native time as a multiple of Rust's, `rustc -O`.) A program that builds,
+sorts, sums, filters and maps 2,000,000 ints takes 0.18 s, from 0.29 s.
+
+What's left:
+
+- **sieve** and **knapsack** pay, on every element they touch, the checks
+  that make the fast paths safe: the list's tag and kind, that nothing else
+  holds it, the bounds, and overflow on the arithmetic around it. The C
+  compiler can't move them out of the loop. Checking a list once before a
+  loop that can't change its length would remove most of them.
+- **records** and **wordfreq** allocate, and **fib** keeps call records, as
+  §16 says. Allocation is next.

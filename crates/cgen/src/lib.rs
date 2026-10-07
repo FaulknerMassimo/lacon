@@ -1293,9 +1293,14 @@ impl<'p> Gen<'p> {
     /// Evaluates the index keys of a place, in order. Returns the statements
     /// and the key temporaries.
     fn place_keys(&mut self, p: &Place) -> (String, Vec<String>) {
+        self.place_keys_to(p, p.path.len())
+    }
+
+    /// `place_keys` for the steps before `upto`.
+    fn place_keys_to(&mut self, p: &Place, upto: usize) -> (String, Vec<String>) {
         let mut code = String::new();
         let mut keys = Vec::new();
-        for seg in &p.path {
+        for seg in p.path.iter().take(upto) {
             if let Seg::Index(e, _) = seg {
                 let k = self.t();
                 let v = self.expr(e);
@@ -1309,11 +1314,18 @@ impl<'p> Gen<'p> {
     /// Statements that point `ptr` at a place, creating missing map entries
     /// as `viv` says for the last step (`zero` and `method` go with it).
     fn place_walk(&mut self, p: &Place, keys: &[String], ptr: &str, viv: &str, zero: &str, method: usize) -> String {
+        self.place_walk_to(p, keys, ptr, viv, zero, method, p.path.len())
+    }
+
+    /// `place_walk` that stops before step `upto`, pointing `ptr` at what
+    /// that step goes into.
+    #[allow(clippy::too_many_arguments)]
+    fn place_walk_to(&mut self, p: &Place, keys: &[String], ptr: &str, viv: &str, zero: &str, method: usize, upto: usize) -> String {
         let root = self.root(&p.root);
         let mut code = format!("lc_v *{ptr} = &{root}; ");
         let mut ki = 0;
         let n = p.path.len();
-        for (i, seg) in p.path.iter().enumerate() {
+        for (i, seg) in p.path.iter().enumerate().take(upto) {
             match seg {
                 Seg::Field(name, sp) => {
                     let fid = self.field_id(name);
@@ -1339,6 +1351,102 @@ impl<'p> Gen<'p> {
             }
         }
         code
+    }
+
+    /// Statements that store the owned `lc_v` named `v` into place `p`,
+    /// evaluating its keys. A last index step stores into the container,
+    /// so a packed list stays packed.
+    fn store_place(&mut self, p: &Place, v: &str) -> String {
+        let (kc, keys) = self.place_keys(p);
+        let ptr = self.t();
+        let rk = Self::release_all(&keys);
+        if let Some(Seg::Index(_, sp)) = p.path.last() {
+            let lsite = self.site(*sp);
+            let walk = self.place_walk_to(p, &keys, &ptr, "VIV_INSERT", "LC_UNIT", 0, p.path.len() - 1);
+            return format!("{{ {kc}{walk}lc_store_index({ptr}, {}, {v}, {lsite}); {rk}}} ", keys[keys.len() - 1]);
+        }
+        let walk = self.place_walk(p, &keys, &ptr, "VIV_INSERT", "LC_UNIT", 0);
+        format!("{{ {kc}{walk}lc_set({ptr}, {v}); {rk}}} ")
+    }
+
+    /// Statements for `p op= v`, consuming the owned `lc_v` named `v`, with
+    /// arithmetic errors reported at `site`; as `store_place` for the steps.
+    fn update_place(&mut self, p: &Place, op: BinOp, v: &str, site: &str) -> String {
+        let (kc, keys) = self.place_keys(p);
+        let ptr = self.t();
+        let rk = Self::release_all(&keys);
+        let opc = binop_c(op);
+        if let Some(Seg::Index(_, sp)) = p.path.last() {
+            let lsite = self.site(*sp);
+            let walk = self.place_walk_to(p, &keys, &ptr, "VIV_ZERO_OF", "LC_UNIT", 0, p.path.len() - 1);
+            return format!("{{ {kc}{walk}lc_update_index({ptr}, {}, {opc}, {v}, {lsite}, {site}); {rk}}} ", keys[keys.len() - 1]);
+        }
+        let walk = self.place_walk(p, &keys, &ptr, "VIV_ZERO_OF", v, 0);
+        let old = self.t();
+        format!("{{ {kc}{walk}lc_v {old} = lc_take({ptr}); *{ptr} = lc_arith_own({opc}, {old}, {v}, {site}); {rk}}} ")
+    }
+
+    /// `xs[i] = v` and `xs[i] op= v` with an unboxed index and value: done
+    /// in place when the list is packed as the element's kind, else as
+    /// `store_place` and `update_place` do. `None` when the place or the
+    /// value doesn't suit.
+    fn assign_elem(&mut self, place: &Place, op: Option<BinOp>, value: &Ex, site: &str) -> Option<String> {
+        let Some(Seg::Index(last, lsp)) = place.path.last() else { return None };
+        if !self.typed || self.rep(last) != Rep::Int {
+            return None;
+        }
+        let vrep = self.rep(value);
+        let fop = |op: BinOp, x: &str, y: &str| -> Option<String> {
+            Some(match op {
+                BinOp::Add => format!("{x} + {y}"),
+                BinOp::Sub => format!("{x} - {y}"),
+                BinOp::Mul => format!("{x} * {y}"),
+                BinOp::Div => format!("{x} / {y}"),
+                BinOp::Rem => format!("fmod({x}, {y})"),
+                BinOp::Pow => format!("pow({x}, {y})"),
+                _ => return None,
+            })
+        };
+        let (v, k, ptr, e, f) = (self.t(), self.t(), self.t(), self.t(), self.t());
+        // The element's new value from its old one `*e` and the value `v`,
+        // then a second try for an int into a list of floats.
+        let (at, new, also) = match (op, vrep) {
+            (None, Rep::Int) => ("lc_int_at", v.clone(), None),
+            (None, Rep::Bool) => ("lc_bool_at", v.clone(), None),
+            (None, Rep::Float) => ("lc_float_at", v.clone(), None),
+            (Some(op), Rep::Int) => {
+                let iop = int_op(op)?;
+                let new = if iop.len() == 1 { format!("*{e} {iop} {v}") } else { format!("{iop}(*{e}, {v}, {site})") };
+                ("lc_int_at", new, fop(op, &format!("*{f}"), &format!("(double){v}")))
+            }
+            (Some(op), Rep::Float) => ("lc_float_at", fop(op, &format!("*{e}"), &v)?, None),
+            _ => return None,
+        };
+        let n = place.path.len();
+        let lsite = self.site(*lsp);
+        let vv = match vrep {
+            Rep::Int => self.int(value),
+            Rep::Bool => self.boolean(value),
+            _ => self.float(value),
+        };
+        let (kc, keys) = self.place_keys_to(place, n - 1);
+        let kv = self.int(last);
+        let viv = if op.is_none() { "VIV_INSERT" } else { "VIV_ZERO_OF" };
+        let walk = self.place_walk_to(place, &keys, &ptr, viv, "LC_UNIT", 0, n - 1);
+        let rk = Self::release_all(&keys);
+        let ct = c_type(vrep);
+        let boxed = box_c(vrep, &v);
+        let slow = match op {
+            None => format!("lc_store_index({ptr}, lc_int({k}), {boxed}, {lsite})"),
+            Some(op) => format!("lc_update_index({ptr}, lc_int({k}), {}, {boxed}, {lsite}, {site})", binop_c(op)),
+        };
+        let (fdecl, also) = match also {
+            Some(x) => (format!("double *{f}; "), format!("else if (({f} = lc_float_at({ptr}, {k})) != NULL) *{f} = {x}; ")),
+            None => (String::new(), String::new()),
+        };
+        Some(format!(
+            "{{ {ct} {v} = {vv}; {kc}int64_t {k} = {kv}; {walk}{ct} *{e} = {at}({ptr}, {k}); {fdecl}if ({e}) *{e} = {new}; {also}else {slow}; {rk}}} "
+        ))
     }
 
     fn release_all(names: &[String]) -> String {
@@ -1545,9 +1653,10 @@ impl<'p> Gen<'p> {
     /// `e`, typed int or `f64`, as a C `double`, as the runtime's float
     /// operators convert their operands.
     fn num(&mut self, e: &Ex) -> String {
-        match self.rep(e) {
-            Rep::Float => self.float(e),
-            Rep::Int => format!("((double){})", self.int(e)),
+        match (self.rep(e), e) {
+            (Rep::Float, _) => self.float(e),
+            (Rep::Int, _) => format!("((double){})", self.int(e)),
+            (_, Ex::Index { obj, index, span }) if self.numeric(e) && self.rep(index) == Rep::Int => self.elem(obj, index, *span, Rep::Float),
             _ => {
                 let site = self.site(e.span());
                 let v = self.expr(e);
@@ -1566,6 +1675,7 @@ impl<'p> Gen<'p> {
             Ex::If { els: Some(_), .. } | Ex::Block(_, Some(_)) | Ex::Match { .. } => true,
             Ex::CallFn { fns, args, .. } => self.direct_entry(fns, args).is_some_and(|en| en.ret == Rep::Int),
             Ex::Field { .. } | Ex::Method { .. } => self.is_len(e),
+            Ex::Index { index, .. } => self.rep(index) == Rep::Int,
             _ => false,
         }
     }
@@ -1579,6 +1689,7 @@ impl<'p> Gen<'p> {
             Ex::Unary { op: UnOp::Not | UnOp::Bang, e: x, .. } => self.rep(x) == Rep::Bool,
             Ex::If { els: Some(_), .. } | Ex::Block(_, Some(_)) | Ex::Match { .. } => true,
             Ex::CallFn { fns, args, .. } => self.direct_entry(fns, args).is_some_and(|en| en.ret == Rep::Bool),
+            Ex::Index { index, .. } => self.rep(index) == Rep::Int,
             _ => false,
         }
     }
@@ -1720,6 +1831,28 @@ impl<'p> Gen<'p> {
         Some(format!("({{ lc_v {o} = {ov}; int64_t {n} = lc_len({o}, {fid}, {site}); lc_release({o}); {n}; }})"))
     }
 
+    /// `obj[index]` with an unboxed index, its element typed int, bool or
+    /// `f64` (`rep` Float: a number read as a double): read from a packed
+    /// list without boxing.
+    fn elem(&mut self, obj: &Ex, index: &Ex, span: Span, rep: Rep) -> String {
+        let site = self.site(span);
+        let get = match rep {
+            Rep::Int => "lc_get_int",
+            Rep::Bool => "lc_get_bool",
+            _ => "lc_get_num",
+        };
+        if self.pure(index) {
+            if let Some(o) = self.borrowed(obj) {
+                let i = self.int(index);
+                return format!("{get}({o}, {i}, {site})");
+            }
+        }
+        let (o, r) = (self.t(), self.t());
+        let ov = self.expr(obj);
+        let i = self.int(index);
+        format!("({{ lc_v {o} = {ov}; {} {r} = {get}({o}, {i}, {site}); lc_release({o}); {r}; }})", c_type(rep))
+    }
+
     /// `e`, typed int by the checker, as a C `int64_t`.
     fn int(&mut self, e: &Ex) -> String {
         if let Some(c) = self.len_fast(e) {
@@ -1776,6 +1909,7 @@ impl<'p> Gen<'p> {
                 let en = self.direct_entry(fns, args).unwrap();
                 self.typed_call(fns[0], &en, args, *span)
             }
+            Ex::Index { obj, index, span } if self.int_native(e) => self.elem(obj, index, *span, Rep::Int),
             _ => {
                 let site = self.site(e.span());
                 let v = self.expr(e);
@@ -1821,6 +1955,7 @@ impl<'p> Gen<'p> {
                 let en = self.direct_entry(fns, args).unwrap();
                 self.typed_call(fns[0], &en, args, *span)
             }
+            Ex::Index { obj, index, span } if self.bool_native(e) => self.elem(obj, index, *span, Rep::Bool),
             _ => {
                 let site = self.site(e.span());
                 let v = self.expr(e);
@@ -2469,6 +2604,27 @@ impl<'p> Gen<'p> {
         // the place.
         if user.is_none() && is_mutator(name) {
             let m = m.unwrap_or(0);
+            if let (Recv::Place(p), "push", [x]) = (recv, name, args) {
+                if let Some(push) = match self.rep(x) {
+                    Rep::Int => Some("lc_push_int"),
+                    Rep::Bool => Some("lc_push_bool"),
+                    Rep::Float => Some("lc_push_float"),
+                    Rep::Boxed => None,
+                } {
+                    // An unboxed value: straight into a list packed as its kind.
+                    let t = self.t();
+                    let v = match self.rep(x) {
+                        Rep::Int => self.int(x),
+                        Rep::Bool => self.boolean(x),
+                        _ => self.float(x),
+                    };
+                    let (kc, keys) = self.place_keys(p);
+                    let ptr = self.t();
+                    let walk = self.place_walk(p, &keys, &ptr, "VIV_METHOD", "LC_UNIT", m);
+                    let rk = Self::release_all(&keys);
+                    return format!("({{ {} {t} = {v}; {kc}{walk}{push}({ptr}, {t}, {site}); {rk}LC_UNIT; }})", c_type(self.rep(x)));
+                }
+            }
             let arr = self.t();
             let a = self.args_into(&arr, args);
             let rel = Self::release_arr(&arr, args.len());
@@ -2643,7 +2799,7 @@ impl<'p> Gen<'p> {
             PatIr::Tuple(ps) => {
                 let mut c = format!("(({v}.tag == T_TUPLE || {v}.tag == T_LIST) && VEC({v})->len == {}", ps.len());
                 for (i, sp) in ps.iter().enumerate() {
-                    let sub = self.pat(sp, &format!("VEC({v})->items[{i}]"), site);
+                    let sub = self.pat(sp, &format!("lc_vget(VEC({v}), {i})"), site);
                     let _ = write!(c, " && {sub}");
                 }
                 c.push(')');
@@ -2653,7 +2809,7 @@ impl<'p> Gen<'p> {
                 let len = if rest.is_some() { format!("VEC({v})->len >= {}", items.len()) } else { format!("VEC({v})->len == {}", items.len()) };
                 let mut c = format!("(({v}.tag == T_LIST || {v}.tag == T_TUPLE) && {len}");
                 for (i, sp) in items.iter().enumerate() {
-                    let sub = self.pat(sp, &format!("VEC({v})->items[{i}]"), site);
+                    let sub = self.pat(sp, &format!("lc_vget(VEC({v}), {i})"), site);
                     let _ = write!(c, " && {sub}");
                 }
                 if let Some(Some(slot)) = rest {
@@ -2782,25 +2938,16 @@ impl<'p> Gen<'p> {
             }
             St::Assign { place, op, value, span } => {
                 let site = self.site(*span);
+                if let Some(c) = self.assign_elem(place, *op, value, &site) {
+                    return c;
+                }
                 let v = self.t();
                 let vv = self.expr(value);
-                let (kc, keys) = self.place_keys(place);
-                let ptr = self.t();
-                let rk = Self::release_all(&keys);
-                match op {
-                    None => {
-                        let walk = self.place_walk(place, &keys, &ptr, "VIV_INSERT", "LC_UNIT", 0);
-                        format!("{{ lc_v {v} = {vv}; {kc}{walk}lc_set({ptr}, {v}); {rk}}} ")
-                    }
-                    Some(op) => {
-                        let walk = self.place_walk(place, &keys, &ptr, "VIV_ZERO_OF", &v, 0);
-                        let old = self.t();
-                        format!(
-                            "{{ lc_v {v} = {vv}; {kc}{walk}lc_v {old} = lc_take({ptr}); *{ptr} = lc_arith_own({}, {old}, {v}, {site}); {rk}}} ",
-                            binop_c(*op)
-                        )
-                    }
-                }
+                let st = match op {
+                    None => self.store_place(place, &v),
+                    Some(op) => self.update_place(place, *op, &v, &site),
+                };
+                format!("{{ lc_v {v} = {vv}; {st}}} ")
             }
             St::AssignMulti { targets, value, span } => {
                 let site = self.site(*span);
@@ -2813,19 +2960,17 @@ impl<'p> Gen<'p> {
                 for (i, tg) in targets.iter().enumerate() {
                     match tg {
                         Target::Bind(slot) => {
-                            let st = self.store(*slot, &format!("lc_retain(VEC({t})->items[{i}])"), &site);
+                            let st = self.store(*slot, &format!("lc_retain(lc_vget(VEC({t}), {i}))"), &site);
                             code.push_str(&st);
                         }
                         Target::Place(Place { root: Root::Local(slot), path, .. }) if path.is_empty() && self.slot_rep(*slot) != Rep::Boxed => {
-                            let st = self.store(*slot, &format!("lc_retain(VEC({t})->items[{i}])"), &site);
+                            let st = self.store(*slot, &format!("lc_retain(lc_vget(VEC({t}), {i}))"), &site);
                             code.push_str(&st);
                         }
                         Target::Place(p) => {
-                            let (kc, keys) = self.place_keys(p);
-                            let ptr = self.t();
-                            let walk = self.place_walk(p, &keys, &ptr, "VIV_INSERT", "LC_UNIT", 0);
-                            let rk = Self::release_all(&keys);
-                            let _ = write!(code, "{{ {kc}{walk}lc_set({ptr}, lc_retain(VEC({t})->items[{i}])); {rk}}} ");
+                            let x = self.t();
+                            let st = self.store_place(p, &x);
+                            let _ = write!(code, "{{ lc_v {x} = lc_retain(lc_vget(VEC({t}), {i})); {st}}} ");
                         }
                     }
                 }
@@ -2873,6 +3018,22 @@ impl<'p> Gen<'p> {
                 let (iv, it, x) = (self.t(), self.t(), self.t());
                 let ive = self.expr(iter);
                 let keys_only = matches!(pat, PatIr::Bind(_) | PatIr::Wild);
+                if let PatIr::Bind(slot) = pat {
+                    if let Some(next) = match self.slot_rep(*slot) {
+                        Rep::Int => Some("lc_iter_next_int"),
+                        Rep::Bool => Some("lc_iter_next_bool"),
+                        _ => None,
+                    } {
+                        // An unboxed loop variable: packed elements go straight into it.
+                        let mut b = String::new();
+                        for s in body {
+                            b.push_str(&self.stmt(s));
+                        }
+                        return format!(
+                            "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, true, {site}); lc_release({iv}); while ({next}(&{it}, &N{slot}, {site})) {{ {b}}} lc_iter_done(&{it}); }} "
+                        );
+                    }
+                }
                 let bind = match pat {
                     PatIr::Bind(slot) => self.store(*slot, &x, &site),
                     PatIr::Wild => format!("lc_release({x}); "),

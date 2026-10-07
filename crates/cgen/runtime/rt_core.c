@@ -45,8 +45,9 @@ void lc_free(lc_v v) {
     case T_TUPLE:
     case T_HEAP: {
         lc_vec *x = VEC(v);
-        for (int64_t i = 0; i < x->len; i++) lc_release(x->items[i]);
-        free(x->items);
+        if (x->kind == K_BOXED)
+            for (int64_t i = 0; i < x->len; i++) lc_release(x->boxed[i]);
+        free(x->data);
         free(x);
         break;
     }
@@ -200,26 +201,82 @@ lc_v lc_buf_finish(lc_buf *b) {
 
 /* ----- collections ----- */
 
-static lc_v vec_new(uint32_t tag, int64_t cap) {
+static int kind_of(lc_v v) {
+    switch (v.tag) {
+    case T_INT: return K_INT;
+    case T_FLOAT: return K_FLOAT;
+    case T_BOOL: return K_BOOL;
+    }
+    return K_BOXED;
+}
+
+lc_v lc_vec_alloc(uint32_t tag, int kind, int64_t cap) {
     lc_vec *x = xmalloc(sizeof(lc_vec));
     x->rc = 1;
     x->len = 0;
     x->cap = cap;
-    x->items = cap ? xmalloc(sizeof(lc_v) * cap) : NULL;
+    x->kind = kind;
+    x->data = cap ? xmalloc(lc_ksize(kind) * cap) : NULL;
     return lc_obj_v(tag, x);
 }
 
-lc_v lc_list_new(int64_t cap) { return vec_new(T_LIST, cap); }
-lc_v lc_tuple_new(int64_t cap) { return vec_new(T_TUPLE, cap); }
-lc_v lc_heap_new(void) { return vec_new(T_HEAP, 0); }
+lc_v lc_list_new(int64_t cap) { return lc_vec_alloc(T_LIST, K_BOXED, cap); }
+lc_v lc_tuple_new(int64_t cap) { return lc_vec_alloc(T_TUPLE, K_BOXED, cap); }
+lc_v lc_heap_new(void) { return lc_vec_alloc(T_HEAP, K_BOXED, 0); }
+
+void lc_vec_box(lc_vec *x) {
+    if (x->kind == K_BOXED) return;
+    lc_v *b = xmalloc(sizeof(lc_v) * (x->cap ? x->cap : 1));
+    for (int64_t i = 0; i < x->len; i++) b[i] = lc_vget(x, i);
+    free(x->data);
+    x->boxed = b;
+    x->kind = K_BOXED;
+}
 
 void lc_vec_push(lc_v vec, lc_v item) {
     lc_vec *x = VEC(vec);
+    int k = kind_of(item);
+    if (k != x->kind) {
+        if (x->len == 0 && vec.tag == T_LIST) {
+            if (x->cap) x->data = xrealloc(x->data, lc_ksize(k) * x->cap);
+            x->kind = k;
+        } else {
+            lc_vec_box(x);
+        }
+    }
     if (x->len == x->cap) {
         x->cap = x->cap ? x->cap * 2 : 4;
-        x->items = xrealloc(x->items, sizeof(lc_v) * x->cap);
+        x->data = xrealloc(x->data, lc_ksize(x->kind) * x->cap);
     }
-    x->items[x->len++] = item;
+    switch (x->kind) {
+    case K_INT: x->ints[x->len++] = item.u.i; break;
+    case K_FLOAT: x->floats[x->len++] = item.u.f; break;
+    case K_BOOL: x->bools[x->len++] = item.u.i != 0; break;
+    default: x->boxed[x->len++] = item;
+    }
+}
+
+void lc_vset(lc_vec *x, int64_t i, lc_v v) {
+    if (x->kind != K_BOXED && kind_of(v) != x->kind) lc_vec_box(x);
+    switch (x->kind) {
+    case K_INT: x->ints[i] = v.u.i; break;
+    case K_FLOAT: x->floats[i] = v.u.f; break;
+    case K_BOOL: x->bools[i] = v.u.i != 0; break;
+    default: lc_set(&x->boxed[i], v);
+    }
+}
+
+lc_v lc_vec_slice(lc_v src, uint32_t tag, int64_t a, int64_t b) {
+    lc_vec *x = VEC(src);
+    if (x->kind != K_BOXED && tag == T_LIST) {
+        lc_v out = lc_vec_alloc(T_LIST, x->kind, b - a);
+        if (b > a) memcpy(VEC(out)->data, (char *)x->data + lc_ksize(x->kind) * a, lc_ksize(x->kind) * (b - a));
+        VEC(out)->len = b - a;
+        return out;
+    }
+    lc_v out = lc_vec_alloc(tag, K_BOXED, b - a);
+    for (int64_t i = a; i < b; i++) lc_vec_push(out, lc_retain(lc_vget(x, i)));
+    return out;
 }
 
 lc_v lc_list_of(int n, lc_v *items) {
@@ -443,7 +500,7 @@ int lc_eq(lc_v a, lc_v b) {
             lc_vec *x = VEC(a), *y = VEC(b);
             if (x->len != y->len) return 0;
             for (int64_t i = 0; i < x->len; i++) {
-                int r = lc_eq(x->items[i], y->items[i]);
+                int r = lc_eq(lc_vget(x, i), lc_vget(y, i));
                 if (r != 1) return r;
             }
             return 1;
@@ -552,7 +609,7 @@ int lc_cmp(lc_v a, lc_v b, bool *ok) {
         if (b.tag == a.tag) {
             lc_vec *x = VEC(a), *y = VEC(b);
             for (int64_t i = 0; i < x->len && i < y->len; i++) {
-                int r = lc_cmp(x->items[i], y->items[i], ok);
+                int r = lc_cmp(lc_vget(x, i), lc_vget(y, i), ok);
                 if (!*ok) return 0;
                 if (r) return r;
             }
@@ -602,7 +659,7 @@ bool lc_key_eq(lc_v a, lc_v b) {
         lc_vec *x = VEC(a), *y = VEC(b);
         if (x->len != y->len) return false;
         for (int64_t i = 0; i < x->len; i++)
-            if (!lc_key_eq(x->items[i], y->items[i])) return false;
+            if (!lc_key_eq(lc_vget(x, i), lc_vget(y, i))) return false;
         return true;
     }
     case T_MAP: {
@@ -676,7 +733,7 @@ uint64_t lc_hash(lc_v v) {
     case T_TUPLE: {
         lc_vec *x = VEC(v);
         h = mix(h, (uint64_t)x->len);
-        for (int64_t i = 0; i < x->len; i++) h = mix(h, lc_hash(x->items[i]));
+        for (int64_t i = 0; i < x->len; i++) h = mix(h, lc_hash(lc_vget(x, i)));
         return h;
     }
     case T_MAP:
@@ -757,6 +814,37 @@ static void merge_sort_ints(lc_kv *xs, lc_kv *tmp, int64_t n) {
     memcpy(xs, tmp, sizeof(lc_kv) * n);
 }
 
+/* Sorts plain ints in place; equal ints are alike, so any order of them is
+ * the stable one. */
+static void sort_ints_with(int64_t *xs, int64_t *tmp, int64_t n) {
+    if (n <= 16) {
+        for (int64_t i = 1; i < n; i++) {
+            int64_t x = xs[i];
+            int64_t j = i;
+            while (j > 0 && x < xs[j - 1]) {
+                xs[j] = xs[j - 1];
+                j--;
+            }
+            xs[j] = x;
+        }
+        return;
+    }
+    int64_t m = n / 2;
+    sort_ints_with(xs, tmp, m);
+    sort_ints_with(xs + m, tmp, n - m);
+    int64_t i = 0, j = m, k = 0;
+    while (i < m && j < n) tmp[k++] = xs[j] < xs[i] ? xs[j++] : xs[i++];
+    while (i < m) tmp[k++] = xs[i++];
+    while (j < n) tmp[k++] = xs[j++];
+    memcpy(xs, tmp, sizeof(int64_t) * n);
+}
+
+void lc_sort_ints(int64_t *xs, int64_t n) {
+    int64_t *tmp = xmalloc(sizeof(int64_t) * (n ? n : 1));
+    sort_ints_with(xs, tmp, n);
+    free(tmp);
+}
+
 bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b) {
     lc_kv *tmp = xmalloc(sizeof(lc_kv) * (n ? n : 1));
     g_sort_ok = true;
@@ -779,7 +867,7 @@ bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b) {
 lc_v lc_heap_sorted(lc_v h) {
     lc_vec *x = VEC(h);
     lc_kv *kv = xmalloc(sizeof(lc_kv) * (x->len ? x->len : 1));
-    for (int64_t i = 0; i < x->len; i++) kv[i] = (lc_kv){x->items[i], x->items[i]};
+    for (int64_t i = 0; i < x->len; i++) kv[i] = (lc_kv){x->boxed[i], x->boxed[i]};
     char a[64], b[64];
     lc_sort_kv(kv, x->len, a, b);
     lc_v out = lc_list_new(x->len);
@@ -914,6 +1002,15 @@ static void seq(lc_buf *b, const char *open, const char *close, lc_v *items, int
     lc_buf_puts(b, close);
 }
 
+static void seq_vec(lc_buf *b, const char *open, const char *close, lc_vec *x) {
+    lc_buf_puts(b, open);
+    for (int64_t i = 0; i < x->len; i++) {
+        if (i) lc_buf_puts(b, ", ");
+        lc_buf_repr(b, lc_vget(x, i));
+    }
+    lc_buf_puts(b, close);
+}
+
 void lc_buf_repr(lc_buf *b, lc_v v) {
     char t[64];
     switch (v.tag) {
@@ -943,9 +1040,9 @@ void lc_buf_repr(lc_buf *b, lc_v v) {
         lc_buf_putc(b, '"');
         break;
     }
-    case T_LIST: seq(b, "[", "]", VEC(v)->items, VEC(v)->len); break;
+    case T_LIST: seq_vec(b, "[", "]", VEC(v)); break;
     case T_TUPLE:
-        seq(b, "(", "", VEC(v)->items, VEC(v)->len);
+        seq_vec(b, "(", "", VEC(v));
         if (VEC(v)->len == 1) lc_buf_putc(b, ',');
         lc_buf_putc(b, ')');
         break;
@@ -962,7 +1059,7 @@ void lc_buf_repr(lc_buf *b, lc_v v) {
     case T_HEAP: {
         lc_v s = lc_heap_sorted(v);
         lc_buf_puts(b, "heap(");
-        seq(b, "[", "]", VEC(s)->items, VEC(s)->len);
+        seq_vec(b, "[", "]", VEC(s));
         lc_buf_putc(b, ')');
         lc_release(s);
         break;

@@ -1,0 +1,103 @@
+# Native code packs lists of ints, floats and bools. Every way of reading
+# and changing one, and every change of kind, must match the interpreter.
+type Bag {xs [int], name str}
+
+fn total(xs [int]) int =
+  var t = 0
+  for x in xs: t += x
+  t
+
+fn bump(mut xs [int], i int) = xs[i] += 1
+
+fn with_seven(xs [int], i int) [int] =
+  var ys = xs
+  ys[i] = 7
+  ys
+
+fn poke(xs [int], i int) [int] =
+  var ys = xs
+  ys[i] = 1
+  ys
+
+fn main() =
+  var a = [3, 1, 2]
+  a.push(5)
+  a[0] = 10
+  a[-1] += 1
+  a[1] *= 4
+  a[2] -= 10
+  a[3] /= 4
+  print(a, a.len, a[0], a[-1], total(a), a.sum(), a.sort(), a.rev(), a.max())
+  # Copied on write: `b` keeps the old elements.
+  b = a
+  a[0] = 0
+  bump(a, 0)
+  print(a, b, a == b, with_seven(a, 1), a)
+  # Inserting, removing, swapping and the rest move packed elements.
+  var c = [1, 2, 3, 4, 5]
+  c.insert(2, 9)
+  c.insert(0, -1)
+  c.insert(c.len, 100)
+  x = c.remove(1)
+  y = c.pop() ?? 0
+  z = c.pop(0)
+  c.swap(0, -1)
+  print(c, x, y, z)
+  c.truncate(2)
+  c.extend([7, 8])
+  print(c, c[1..3], c[..2], c.take(3), c.skip(1), c.join("-"))
+  c.clear()
+  c.push(4)
+  print(c, c.is_empty(), [] == c, c == [4])
+  # Floats, and ints that stay ints in a list of floats.
+  var f = [0.5] * 3
+  f[1] = 2.25
+  f[0] += 1
+  f[2] *= 3.0
+  f.push(4.5)
+  print(f, f[1] * 2.0, f.sum(), f.sort(), f.max())
+  f[0] = 7
+  f.push(8)
+  print(f, f[0] + 0.5, f.len)
+  var g [f64] = [1, 2]
+  g[0] += 0.5
+  g.push(3)
+  print(g, g[1] * 1.5)
+  # Bools.
+  var flags = [false] * 6
+  flags[2] = true
+  flags[-1] = true
+  flags.push(true)
+  var on = 0
+  for fl in flags:
+    if fl: on += 1
+  print(flags, on, flags.count(it), flags.any(it), flags.all(it), !flags[0], flags[2] and flags[5])
+  # Lists of lists: the inner lists start out shared.
+  var grid = [[0] * 3] * 2
+  grid[1][2] = 5
+  grid[0][0] += 1
+  grid[1].push(9)
+  print(grid, grid[1][3], grid.map(it.sum()))
+  # Through fields and map entries.
+  var bag = Bag{[1, 2], "b"}
+  bag.xs[0] = 9
+  bag.xs.push(3)
+  bag.xs[-1] += 10
+  var m = {}
+  m["a"].push(1)
+  m["a"].push(2)
+  m["a"][0] += 5
+  print(bag, m)
+  # Patterns, unpacking, equality and hashing see the same elements.
+  p, q = [4, 5]
+  label = match a
+    [first, ..rest]: "first {first} rest {rest}"
+    []: "empty"
+  seen = {[1, 2], [1, 2], [2, 1]}
+  print(p, q, label, seen.len, [1, 2] in seen, [1, 2] == [1, 2], [1, 2] < [1, 3])
+  # Mixed lists are boxed.
+  print([1, 2] + ["x"], [true] + [1], [1.5] + [2])
+  # Methods that build new lists.
+  print(a.map(it * 2), a.filter(it > 2), a.enumerate(), a.zip(f), a.chunks(2), a.windows(3), a.unique())
+  print(a.sort_by(-it), a.min_by(it % 3), a.fold(0, |s, v| s + v), a.take_while(it > 0), a.flat_map([it, it]))
+  print(poke(a, 9))

@@ -172,8 +172,8 @@ lc_v lc_binop(int op, lc_v a, lc_v b, const char *site) {
     if (op == OP_ADD && a.tag == T_LIST && b.tag == T_LIST) {
         lc_vec *x = VEC(a), *y = VEC(b);
         lc_v out = lc_list_new(x->len + y->len);
-        for (int64_t i = 0; i < x->len; i++) lc_vec_push(out, lc_retain(x->items[i]));
-        for (int64_t i = 0; i < y->len; i++) lc_vec_push(out, lc_retain(y->items[i]));
+        for (int64_t i = 0; i < x->len; i++) lc_vec_push(out, lc_retain(lc_vget(x, i)));
+        for (int64_t i = 0; i < y->len; i++) lc_vec_push(out, lc_retain(lc_vget(y, i)));
         return out;
     }
     if (op == OP_ADD && a.tag == T_LIST && b.tag == T_RANGE) {
@@ -181,7 +181,7 @@ lc_v lc_binop(int op, lc_v a, lc_v b, const char *site) {
         lc_range *r = RANGE(b);
         int64_t n = lc_range_len(r);
         lc_v out = lc_list_new(x->len + n);
-        for (int64_t i = 0; i < x->len; i++) lc_vec_push(out, lc_retain(x->items[i]));
+        for (int64_t i = 0; i < x->len; i++) lc_vec_push(out, lc_retain(lc_vget(x, i)));
         for (int64_t i = 0; i < n; i++) lc_vec_push(out, lc_int(r->start + r->step * i));
         return out;
     }
@@ -189,9 +189,18 @@ lc_v lc_binop(int op, lc_v a, lc_v b, const char *site) {
         lc_vec *x = a.tag == T_LIST ? VEC(a) : VEC(b);
         int64_t n = a.tag == T_INT ? a.u.i : b.u.i;
         if (n < 0) n = 0;
+        if (x->kind != K_BOXED) {
+            /* Packed: copied a block at a time. */
+            lc_v out = lc_vec_alloc(T_LIST, x->kind, x->len * n);
+            size_t sz = (size_t)x->len * lc_ksize(x->kind);
+            if (sz)
+                for (int64_t k = 0; k < n; k++) memcpy((char *)VEC(out)->data + sz * k, x->data, sz);
+            VEC(out)->len = x->len * n;
+            return out;
+        }
         lc_v out = lc_list_new(x->len * n);
         for (int64_t k = 0; k < n; k++)
-            for (int64_t i = 0; i < x->len; i++) lc_vec_push(out, lc_retain(x->items[i]));
+            for (int64_t i = 0; i < x->len; i++) lc_vec_push(out, lc_retain(x->boxed[i]));
         return out;
     }
     if (a.tag == T_SET && b.tag == T_SET && (op == OP_BITOR || op == OP_BITAND || op == OP_SUB || op == OP_BITXOR)) return set_op(op, a, b);
@@ -218,7 +227,7 @@ lc_v lc_binop_own(int op, lc_v a, lc_v b, const char *site) {
         if (a.tag == T_LIST && b.tag == T_LIST) {
             lc_vec *y = VEC(b);
             int64_t n = y->len;
-            for (int64_t i = 0; i < n; i++) lc_vec_push(a, lc_retain(y->items[i]));
+            for (int64_t i = 0; i < n; i++) lc_vec_push(a, lc_retain(lc_vget(y, i)));
             return a;
         }
     }
@@ -242,10 +251,7 @@ bool lc_pat_range(lc_v v, bool has_lo, lc_v lo, bool has_hi, lc_v hi, bool inclu
 }
 
 lc_v lc_list_from(lc_v v, int64_t start) {
-    lc_vec *x = VEC(v);
-    lc_v out = lc_list_new(x->len - start);
-    for (int64_t i = start; i < x->len; i++) lc_vec_push(out, lc_retain(x->items[i]));
-    return out;
+    return lc_vec_slice(v, T_LIST, start, VEC(v)->len);
 }
 
 lc_v lc_unop(int op, lc_v v, const char *site) {
@@ -262,7 +268,7 @@ lc_v lc_unop(int op, lc_v v, const char *site) {
         lc_vec *x = VEC(v);
         lc_v out = lc_tuple_new(x->len);
         for (int64_t i = 0; i < x->len; i++) {
-            lc_v e = x->items[i];
+            lc_v e = x->boxed[i];
             if (e.tag == T_INT) {
                 lc_vec_push(out, lc_int(-e.u.i));
             } else if (e.tag == T_FLOAT) {
@@ -305,7 +311,7 @@ bool lc_contains(lc_v c, lc_v x, const char *site) {
     case T_HEAP: {
         lc_vec *v = VEC(c);
         for (int64_t i = 0; i < v->len; i++)
-            if (lc_eq(v->items[i], x) == 1) return true;
+            if (lc_eq(lc_vget(v, i), x) == 1) return true;
         return false;
     }
     case T_SET: {
@@ -418,7 +424,7 @@ lc_v lc_index(lc_v o, lc_v i, const char *site) {
     if ((o.tag == T_LIST || o.tag == T_TUPLE) && i.tag == T_INT) {
         lc_vec *v = VEC(o);
         if (!norm_index(i.u.i, v->len, &idx)) lc_panic("E0402", site, "index %lld out of range for length %lld", (long long)i.u.i, (long long)v->len);
-        return lc_retain(v->items[idx]);
+        return lc_retain(lc_vget(v, idx));
     }
     if (o.tag == T_STR && i.tag == T_INT) {
         lc_str *s = STR(o);
@@ -470,9 +476,7 @@ lc_v lc_slice(lc_v o, bool has_start, int64_t start, bool has_end, int64_t end, 
     switch (o.tag) {
     case T_LIST:
     case T_TUPLE: {
-        lc_v out = o.tag == T_LIST ? lc_list_new(b - a) : lc_tuple_new(b - a);
-        for (int64_t i = a; i < b; i++) lc_vec_push(out, lc_retain(VEC(o)->items[i]));
-        return out;
+        return lc_vec_slice(o, o.tag, a, b);
     }
     case T_STR: return str_chars(STR(o), a, b);
     default: {
@@ -506,7 +510,7 @@ lc_v lc_field(lc_v o, int field_id, const char *name, bool *found, const char *s
         lc_vec *v = VEC(o);
         if (i >= v->len) lc_panic("E0402", site, "tuple has no element %lld (length %lld)", (long long)i, (long long)v->len);
         *found = true;
-        return lc_retain(v->items[i]);
+        return lc_retain(v->boxed[i]);
     }
     return LC_UNIT;
 }
@@ -831,11 +835,11 @@ bool lc_coerce(lc_v *v, const lc_ty *t, char *got, size_t gotlen) {
         }
         break;
     case TY_LIST:
-        if (t->a->kind == TY_FLOAT && x.tag == T_LIST && VEC(x)->len > 0 && VEC(x)->items[0].tag == T_INT) {
+        if (t->a->kind == TY_FLOAT && x.tag == T_LIST && VEC(x)->len > 0 && lc_vget(VEC(x), 0).tag == T_INT) {
             lc_vec *xs = VEC(x);
             lc_v out = lc_list_new(xs->len);
             for (int64_t i = 0; i < xs->len; i++) {
-                lc_v e = xs->items[i];
+                lc_v e = lc_vget(xs, i);
                 lc_vec_push(out, e.tag == T_INT ? lc_float((double)e.u.i) : lc_retain(e));
             }
             lc_release(x);
@@ -932,7 +936,7 @@ static bool first_diff(lc_v a, lc_v b, lc_buf *path, lc_buf *x, lc_buf *y) {
             int64_t n = path->len;
             snprintf(t, sizeof t, a.tag == T_LIST ? "[%lld]" : ".%lld", (long long)i);
             lc_buf_puts(path, t);
-            if (first_diff(p->items[i], q->items[i], path, x, y)) return true;
+            if (first_diff(lc_vget(p, i), lc_vget(q, i), path, x, y)) return true;
             path->len = n;
             if (path->p) path->p[n] = 0;
         }
@@ -1023,10 +1027,7 @@ static lc_v clone_obj(lc_v v) {
     case T_LIST:
     case T_TUPLE:
     case T_HEAP: {
-        lc_vec *x = VEC(v);
-        lc_v out = v.tag == T_LIST ? lc_list_new(x->len) : v.tag == T_TUPLE ? lc_tuple_new(x->len) : lc_heap_new();
-        for (int64_t i = 0; i < x->len; i++) lc_vec_push(out, lc_retain(x->items[i]));
-        return out;
+        return lc_vec_slice(v, v.tag, 0, VEC(v)->len);
     }
     case T_MAP:
     case T_SET: {
@@ -1069,7 +1070,7 @@ lc_v *lc_place_field(lc_v *p, int field_id, const char *name, const char *site) 
             int64_t i = atoll(name);
             if (i < VEC(*p)->len) {
                 lc_make_unique(p);
-                return &VEC(*p)->items[i];
+                return &VEC(*p)->boxed[i];
             }
         }
         lc_panic("E0402", site, "tuple has no element %s", name);
@@ -1099,7 +1100,8 @@ lc_v *lc_place_index(lc_v *p, lc_v key, int viv, lc_v zero, int method, const ch
         int64_t idx, len = VEC(*p)->len;
         if (!norm_index(key.u.i, len, &idx)) lc_panic("E0402", site, "index %lld out of range for length %lld", (long long)key.u.i, (long long)len);
         lc_make_unique(p);
-        return &VEC(*p)->items[idx];
+        lc_vec_box(VEC(*p));
+        return &VEC(*p)->boxed[idx];
     }
     if (p->tag == T_MAP) {
         lc_make_unique(p);
@@ -1125,6 +1127,35 @@ lc_v *lc_place_index(lc_v *p, lc_v key, int viv, lc_v zero, int method, const ch
     }
     if (p->tag == T_STR) lc_panic("E0410", site, "strings are immutable; build a new string (e.g. with slices and `+`)");
     lc_panic("E0301", site, "cannot index into %s", lc_kind(*p, k));
+}
+
+void lc_store_index(lc_v *p, lc_v key, lc_v v, const char *site) {
+    int64_t idx;
+    if (p->tag == T_LIST && key.tag == T_INT && norm_index(key.u.i, VEC(*p)->len, &idx)) {
+        lc_make_unique(p);
+        lc_vset(VEC(*p), idx, v);
+        return;
+    }
+    lc_set(lc_place_index(p, key, VIV_INSERT, LC_UNIT, 0, site), v);
+}
+
+void lc_update_index(lc_v *p, lc_v key, int op, lc_v v, const char *site, const char *op_site) {
+    int64_t idx;
+    if (p->tag == T_LIST && key.tag == T_INT && norm_index(key.u.i, VEC(*p)->len, &idx)) {
+        lc_make_unique(p);
+        lc_vec *x = VEC(*p);
+        if (x->kind == K_BOXED) {
+            /* Taken out first, so a unique string or list grows in place. */
+            lc_v old = lc_take(&x->boxed[idx]);
+            x->boxed[idx] = lc_arith_own(op, old, v, op_site);
+        } else {
+            lc_vset(x, idx, lc_arith_own(op, lc_vget(x, idx), v, op_site));
+        }
+        return;
+    }
+    lc_v *e = lc_place_index(p, key, VIV_ZERO_OF, v, 0, site);
+    lc_v old = lc_take(e);
+    *e = lc_arith_own(op, old, v, op_site);
 }
 
 /* ----- iteration ----- */
@@ -1177,7 +1208,7 @@ bool lc_iter_next(lc_iter *it, lc_v *out) {
     if (it->i >= it->n) return false;
     switch (it->kind) {
     case IT_RANGE: *out = lc_int(it->start + it->step * it->i++); return true;
-    case IT_VEC: *out = lc_retain(VEC(it->src)->items[it->i++]); return true;
+    case IT_VEC: *out = lc_retain(lc_vget(VEC(it->src), it->i++)); return true;
     case IT_KEYS: *out = lc_retain(MAP(it->src)->e[it->i++].k); return true;
     case IT_PAIRS: {
         lc_entry *e = &MAP(it->src)->e[it->i++];
@@ -1201,13 +1232,8 @@ void lc_iter_done(lc_iter *it) { lc_release(it->src); }
 lc_v lc_items(lc_v v, const char *site) {
     char k[64];
     switch (v.tag) {
-    case T_LIST:
-    case T_TUPLE: {
-        lc_vec *x = VEC(v);
-        lc_v out = lc_list_new(x->len);
-        for (int64_t i = 0; i < x->len; i++) lc_vec_push(out, lc_retain(x->items[i]));
-        return out;
-    }
+    case T_LIST: return lc_retain(v);
+    case T_TUPLE: return lc_vec_slice(v, T_LIST, 0, VEC(v)->len);
     case T_HEAP: return lc_heap_sorted(v);
     case T_SET:
     case T_MAP:
@@ -1237,7 +1263,7 @@ lc_v lc_call(lc_v f, int argc, lc_v *args, const char *site) {
     case FN_CLOSURE: {
         int np = fn->nparams;
         if (np > 1 && argc == 1 && args[0].tag == T_TUPLE && VEC(args[0])->len == np) {
-            lc_v *spread = VEC(args[0])->items;
+            lc_v *spread = VEC(args[0])->boxed;
             lc_enter_lambda(site);
             lc_v r = fn->code(fn, np, spread, site);
             lc_depth--;
@@ -1573,7 +1599,7 @@ lc_v lc_collect(int kind, int argc, lc_v *args, const char *site) {
         lc_v s = lc_set_new();
         if (argc) {
             lc_v xs = lc_items(args[0], site);
-            for (int64_t i = 0; i < VEC(xs)->len; i++) lc_set_add(s, lc_retain(VEC(xs)->items[i]));
+            for (int64_t i = 0; i < VEC(xs)->len; i++) lc_set_add(s, lc_retain(lc_vget(VEC(xs), i)));
             lc_release(xs);
         }
         return s;
@@ -1582,7 +1608,7 @@ lc_v lc_collect(int kind, int argc, lc_v *args, const char *site) {
         lc_v h = lc_heap_new();
         if (argc) {
             lc_v xs = lc_items(args[0], site);
-            for (int64_t i = 0; i < VEC(xs)->len; i++) lc_heap_push(h, lc_retain(VEC(xs)->items[i]), site);
+            for (int64_t i = 0; i < VEC(xs)->len; i++) lc_heap_push(h, lc_retain(lc_vget(VEC(xs), i)), site);
             lc_release(xs);
         }
         return h;

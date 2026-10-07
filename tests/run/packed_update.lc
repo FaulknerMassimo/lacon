@@ -1,0 +1,13 @@
+# An element update that overflows is reported at the statement, with the
+# call that led there, as the interpreter reports it.
+fn grow(xs [int]) [int] =
+  var ys = xs
+  for i in 0..ys.len:
+    ys[i] *= 1000000
+  ys
+
+fn main() =
+  var xs = [1, 2]
+  for _ in 0..4:
+    xs = grow(xs)
+    print(xs)

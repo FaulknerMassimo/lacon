@@ -1,0 +1,6 @@
+[1000000, 2000000]
+[1000000000000, 2000000000000]
+[1000000000000000000, 2000000000000000000]
+E0405 packed_update.lc:6:5 integer overflow in `*`
+  in `grow`, called at packed_update.lc:12:10
+[exit 1]

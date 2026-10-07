@@ -7,6 +7,7 @@
 
 typedef struct { lc_v key, val; } lc_kv;
 bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b);
+void lc_sort_ints(int64_t *xs, int64_t n);
 lc_v lc_heap_sorted(lc_v h);
 lc_v lc_map_remove(lc_v map, lc_v k, bool *found);
 void lc_map_clear(lc_v map);
@@ -608,7 +609,7 @@ static bool str_method(int m, lc_str *s, int argc, lc_v *args, const char *site,
         lc_buf o = {0};
         for (int64_t i = 0; i < VEC(xs)->len; i++) {
             if (i) lc_buf_put(&o, s->data, s->len);
-            lc_buf_display(&o, VEC(xs)->items[i]);
+            lc_buf_display(&o, lc_vget(VEC(xs), i));
         }
         lc_release(xs);
         *out = o.p ? lc_buf_finish(&o) : str_from("", 0);
@@ -649,7 +650,7 @@ static bool str_method(int m, lc_str *s, int argc, lc_v *args, const char *site,
             return true;
         }
         lc_v cs = chars_of(s);
-        *out = lc_retain(VEC(cs)->items[idx]);
+        *out = lc_retain(lc_vget(VEC(cs), idx));
         lc_release(cs);
         return true;
     }
@@ -707,17 +708,17 @@ bool lc_heap_push(lc_v heap, lc_v x, const char *site) {
     while (i > 0) {
         int64_t parent = (i - 1) / 2;
         bool bad = false;
-        bool lt = heap_less(h->items[i], h->items[parent], &bad);
+        bool lt = heap_less(h->boxed[i], h->boxed[parent], &bad);
         if (bad) {
             char a[64], b[64];
-            lc_v item = h->items[i];
-            const char *ka = heap_kind(item, a), *kb = heap_kind(h->items[parent], b);
+            lc_v item = h->boxed[i];
+            const char *ka = heap_kind(item, a), *kb = heap_kind(h->boxed[parent], b);
             lc_panic("E0301", site, "heap items must be comparable, got %s and %s", ka, kb);
         }
         if (!lt) break;
-        lc_v t = h->items[i];
-        h->items[i] = h->items[parent];
-        h->items[parent] = t;
+        lc_v t = h->boxed[i];
+        h->boxed[i] = h->boxed[parent];
+        h->boxed[parent] = t;
         i = parent;
     }
     return true;
@@ -726,19 +727,19 @@ bool lc_heap_push(lc_v heap, lc_v x, const char *site) {
 static lc_v heap_pop(lc_v heap) {
     lc_vec *h = VEC(heap);
     if (h->len == 0) return LC_NONE;
-    lc_v top = h->items[0];
-    h->items[0] = h->items[h->len - 1];
+    lc_v top = h->boxed[0];
+    h->boxed[0] = h->boxed[h->len - 1];
     h->len--;
     int64_t i = 0;
     for (;;) {
         int64_t l = 2 * i + 1, r = 2 * i + 2, m = i;
         bool bad = false;
-        if (l < h->len && heap_less(h->items[l], h->items[m], &bad)) m = l;
-        if (r < h->len && heap_less(h->items[r], h->items[m], &bad)) m = r;
+        if (l < h->len && heap_less(h->boxed[l], h->boxed[m], &bad)) m = l;
+        if (r < h->len && heap_less(h->boxed[r], h->boxed[m], &bad)) m = r;
         if (m == i) break;
-        lc_v t = h->items[i];
-        h->items[i] = h->items[m];
-        h->items[m] = t;
+        lc_v t = h->boxed[i];
+        h->boxed[i] = h->boxed[m];
+        h->boxed[m] = t;
         i = m;
     }
     return top;
@@ -750,14 +751,14 @@ static void flatten_into(lc_v out, lc_v v) {
     switch (v.tag) {
     case T_LIST:
     case T_TUPLE:
-        for (int64_t i = 0; i < VEC(v)->len; i++) lc_vec_push(out, lc_retain(VEC(v)->items[i]));
+        for (int64_t i = 0; i < VEC(v)->len; i++) lc_vec_push(out, lc_retain(lc_vget(VEC(v), i)));
         break;
     case T_SET:
         for (int64_t i = 0; i < MAP(v)->len; i++) lc_vec_push(out, lc_retain(MAP(v)->e[i].k));
         break;
     case T_HEAP: {
         lc_v s = lc_heap_sorted(v);
-        for (int64_t i = 0; i < VEC(s)->len; i++) lc_vec_push(out, lc_retain(VEC(s)->items[i]));
+        for (int64_t i = 0; i < VEC(s)->len; i++) lc_vec_push(out, lc_retain(lc_vget(VEC(s), i)));
         lc_release(s);
         break;
     }
@@ -778,7 +779,7 @@ static lc_v ext_by(lc_v xs, lc_v *f, int want, const char *site) {
     bool have = false;
     lc_vec *v = VEC(xs);
     for (int64_t i = 0; i < v->len; i++) {
-        lc_v x = v->items[i];
+        lc_v x = lc_vget(v, i);
         lc_v key = f ? lc_call(*f, 1, &x, site) : lc_retain(x);
         if (lc_unwinding) {
             if (have) lc_release(bk);
@@ -821,16 +822,16 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
     switch (m) {
     case M_len: out = lc_int(v->len); break;
     case M_is_empty: out = lc_bool(v->len == 0); break;
-    case M_first: out = v->len ? lc_retain(v->items[0]) : LC_NONE; break;
-    case M_last: out = v->len ? lc_retain(v->items[v->len - 1]) : LC_NONE; break;
+    case M_first: out = v->len ? lc_retain(lc_vget(v, 0)) : LC_NONE; break;
+    case M_last: out = v->len ? lc_retain(lc_vget(v, v->len - 1)) : LC_NONE; break;
     case M_get: {
         int64_t i = int_arg(argc, args, 0, m, site), idx;
-        out = norm_index(i, v->len, &idx) ? lc_retain(v->items[idx]) : LC_NONE;
+        out = norm_index(i, v->len, &idx) ? lc_retain(lc_vget(v, idx)) : LC_NONE;
         break;
     }
     case M_contains: {
         bool found = false;
-        for (int64_t i = 0; i < v->len && !found; i++) found = lc_eq(v->items[i], arg(argc, args, 0, m, site)) == 1;
+        for (int64_t i = 0; i < v->len && !found; i++) found = lc_eq(lc_vget(v, i), arg(argc, args, 0, m, site)) == 1;
         out = lc_bool(found);
         break;
     }
@@ -838,7 +839,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         lc_v x = arg(argc, args, 0, m, site);
         out = LC_NONE;
         for (int64_t i = 0; i < v->len; i++)
-            if (lc_eq(v->items[i], x) == 1) {
+            if (lc_eq(lc_vget(v, i), x) == 1) {
                 out = lc_int(i);
                 break;
             }
@@ -847,15 +848,15 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
     case M_to_list: out = lc_retain(xs); break;
     case M_to_set: {
         out = lc_set_new();
-        for (int64_t i = 0; i < v->len; i++) lc_set_add(out, lc_retain(v->items[i]));
+        for (int64_t i = 0; i < v->len; i++) lc_set_add(out, lc_retain(lc_vget(v, i)));
         break;
     }
     case M_to_map: {
         out = lc_map_new();
         for (int64_t i = 0; i < v->len; i++) {
-            lc_v x = v->items[i];
+            lc_v x = lc_vget(v, i);
             if ((x.tag == T_TUPLE || x.tag == T_LIST) && VEC(x)->len == 2) {
-                lc_map_put(out, lc_retain(VEC(x)->items[0]), lc_retain(VEC(x)->items[1]));
+                lc_map_put(out, lc_retain(lc_vget(VEC(x), 0)), lc_retain(lc_vget(VEC(x), 1)));
             } else {
                 lc_v s = lc_short(x);
                 lc_panic("E0301", site, "`to_map` needs (key, value) pairs, got %s", STR(s)->data);
@@ -866,7 +867,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
     case M_map: {
         lc_v f = arg(argc, args, 0, m, site);
         out = lc_list_new(v->len);
-        for (int64_t i = 0; i < v->len; i++) lc_vec_push(out, CALL1(f, v->items[i]));
+        for (int64_t i = 0; i < v->len; i++) lc_vec_push(out, CALL1(f, lc_vget(v, i)));
         break;
     }
     case M_filter:
@@ -886,29 +887,28 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         int64_t i = 0;
         for (; i < v->len; i++) {
             bool stop = false;
-            bool p = pred(f, v->items[i], site, &stop);
+            bool p = pred(f, lc_vget(v, i), site, &stop);
             if (stop) {
                 lc_release(xs);
                 lc_release(out);
                 lc_release(no);
                 return LC_UNIT;
             }
-            if (m == M_filter && p) lc_vec_push(out, lc_retain(v->items[i]));
+            if (m == M_filter && p) lc_vec_push(out, lc_retain(lc_vget(v, i)));
             if (m == M_find && p) {
-                out = lc_retain(v->items[i]);
+                out = lc_retain(lc_vget(v, i));
                 break;
             }
             if (m == M_position && p) {
                 out = lc_int(i);
                 break;
             }
-            if (m == M_partition) lc_vec_push(p ? out : no, lc_retain(v->items[i]));
+            if (m == M_partition) lc_vec_push(p ? out : no, lc_retain(lc_vget(v, i)));
             if ((m == M_take_while || m == M_skip_while) && !p) break;
         }
         if (m == M_take_while || m == M_skip_while) {
             int64_t a = m == M_take_while ? 0 : i, b = m == M_take_while ? i : v->len;
-            out = lc_list_new(b - a);
-            for (int64_t j = a; j < b; j++) lc_vec_push(out, lc_retain(v->items[j]));
+            out = lc_vec_slice(xs, T_LIST, a, b);
         }
         if (m == M_partition) {
             lc_v pair[2] = {out, no};
@@ -924,13 +924,13 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
             bool b;
             if (argc > 0) {
                 bool stop = false;
-                b = pred(args[0], v->items[i], site, &stop);
+                b = pred(args[0], lc_vget(v, i), site, &stop);
                 if (stop) {
                     lc_release(xs);
                     return LC_UNIT;
                 }
             } else {
-                lc_v x = v->items[i];
+                lc_v x = lc_vget(v, i);
                 if (x.tag != T_BOOL) lc_panic("E0301", site, "`%s()` without a predicate needs bools, got %s", lc_method_names[m], lc_kind(x, k));
                 b = x.u.i != 0;
             }
@@ -948,7 +948,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         } else if (args[0].tag == T_FUNC) {
             for (int64_t i = 0; i < v->len; i++) {
                 bool stop = false;
-                if (pred(args[0], v->items[i], site, &stop)) c++;
+                if (pred(args[0], lc_vget(v, i), site, &stop)) c++;
                 if (stop) {
                     lc_release(xs);
                     return LC_UNIT;
@@ -956,7 +956,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
             }
         } else {
             for (int64_t i = 0; i < v->len; i++)
-                if (lc_eq(v->items[i], args[0]) == 1) c++;
+                if (lc_eq(lc_vget(v, i), args[0]) == 1) c++;
         }
         out = lc_int(c);
         break;
@@ -964,8 +964,17 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
     case M_sum:
     case M_product: {
         lc_v acc = lc_int(m == M_sum ? 0 : 1);
-        for (int64_t i = 0; i < v->len; i++) {
-            lc_v next = lc_binop(m == M_sum ? OP_ADD : OP_MUL, acc, v->items[i], site);
+        int64_t i = 0;
+        if (m == M_sum && v->kind == K_INT) {
+            /* Packed ints: summed until one would overflow, which the
+             * general case below then reports. */
+            int64_t total = 0;
+            for (; i < v->len; i++)
+                if (__builtin_add_overflow(total, v->ints[i], &total)) break;
+            acc = lc_int(total);
+        }
+        for (; i < v->len; i++) {
+            lc_v next = lc_binop(m == M_sum ? OP_ADD : OP_MUL, acc, lc_vget(v, i), site);
             lc_release(acc);
             acc = next;
         }
@@ -991,17 +1000,23 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
     }
     case M_sort:
     case M_sort_by: {
+        if (m == M_sort && v->kind == K_INT) {
+            out = lc_vec_slice(xs, T_LIST, 0, v->len);
+            lc_sort_ints(VEC(out)->ints, v->len);
+            break;
+        }
         lc_kv *kv = malloc(sizeof(lc_kv) * (v->len ? v->len : 1));
         lc_v f = m == M_sort_by ? arg(argc, args, 0, m, site) : LC_UNIT;
         for (int64_t i = 0; i < v->len; i++) {
-            lc_v key = m == M_sort_by ? lc_call(f, 1, &v->items[i], site) : lc_retain(v->items[i]);
+            lc_v x = lc_vget(v, i);
+            lc_v key = m == M_sort_by ? lc_call(f, 1, &x, site) : lc_retain(x);
             if (lc_unwinding) {
                 for (int64_t j = 0; j < i; j++) lc_release(kv[j].key);
                 free(kv);
                 lc_release(xs);
                 return LC_UNIT;
             }
-            kv[i] = (lc_kv){key, v->items[i]};
+            kv[i] = (lc_kv){key, x};
         }
         char a[64], b[64];
         if (!lc_sort_kv(kv, v->len, a, b)) {
@@ -1018,12 +1033,12 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
     }
     case M_rev: {
         out = lc_list_new(v->len);
-        for (int64_t i = v->len - 1; i >= 0; i--) lc_vec_push(out, lc_retain(v->items[i]));
+        for (int64_t i = v->len - 1; i >= 0; i--) lc_vec_push(out, lc_retain(lc_vget(v, i)));
         break;
     }
     case M_unique: {
         lc_v s = lc_set_new();
-        for (int64_t i = 0; i < v->len; i++) lc_set_add(s, lc_retain(v->items[i]));
+        for (int64_t i = 0; i < v->len; i++) lc_set_add(s, lc_retain(lc_vget(v, i)));
         out = lc_list_new(MAP(s)->len);
         for (int64_t i = 0; i < MAP(s)->len; i++) lc_vec_push(out, lc_retain(MAP(s)->e[i].k));
         lc_release(s);
@@ -1033,7 +1048,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         int64_t start = argc > 0 ? lc_int_of(args[0], site) : 0;
         out = lc_list_new(v->len);
         for (int64_t i = 0; i < v->len; i++) {
-            lc_v pair[2] = {lc_int(start + i), lc_retain(v->items[i])};
+            lc_v pair[2] = {lc_int(start + i), lc_retain(lc_vget(v, i))};
             lc_vec_push(out, lc_tuple_of(2, pair));
         }
         break;
@@ -1043,7 +1058,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         int64_t n = v->len < VEC(ys)->len ? v->len : VEC(ys)->len;
         out = lc_list_new(n);
         for (int64_t i = 0; i < n; i++) {
-            lc_v pair[2] = {lc_retain(v->items[i]), lc_retain(VEC(ys)->items[i])};
+            lc_v pair[2] = {lc_retain(lc_vget(v, i)), lc_retain(lc_vget(VEC(ys), i))};
             lc_vec_push(out, lc_tuple_of(2, pair));
         }
         lc_release(ys);
@@ -1053,7 +1068,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         lc_v f = arg(argc, args, 0, m, site);
         out = lc_list_new(0);
         for (int64_t i = 0; i < v->len; i++) {
-            lc_v r = CALL1(f, v->items[i]);
+            lc_v r = CALL1(f, lc_vget(v, i));
             flatten_into(out, r);
             lc_release(r);
         }
@@ -1061,7 +1076,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
     }
     case M_flatten: {
         out = lc_list_new(0);
-        for (int64_t i = 0; i < v->len; i++) flatten_into(out, v->items[i]);
+        for (int64_t i = 0; i < v->len; i++) flatten_into(out, lc_vget(v, i));
         break;
     }
     case M_take:
@@ -1069,15 +1084,14 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         int64_t n = int_arg(argc, args, 0, m, site);
         if (n < 0) n = 0;
         int64_t a = m == M_take ? 0 : (n < v->len ? n : v->len), b = m == M_take ? (n < v->len ? n : v->len) : v->len;
-        out = lc_list_new(b - a);
-        for (int64_t i = a; i < b; i++) lc_vec_push(out, lc_retain(v->items[i]));
+        out = lc_vec_slice(xs, T_LIST, a, b);
         break;
     }
     case M_step_by: {
         int64_t n = int_arg(argc, args, 0, m, site);
         if (n <= 0) lc_panic("E0301", site, "step_by needs a positive step");
         out = lc_list_new(0);
-        for (int64_t i = 0; i < v->len; i += n) lc_vec_push(out, lc_retain(v->items[i]));
+        for (int64_t i = 0; i < v->len; i += n) lc_vec_push(out, lc_retain(lc_vget(v, i)));
         break;
     }
     case M_chunks:
@@ -1088,15 +1102,11 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         if (m == M_chunks) {
             for (int64_t i = 0; i < v->len; i += n) {
                 int64_t e = i + n < v->len ? i + n : v->len;
-                lc_v c = lc_list_new(e - i);
-                for (int64_t j = i; j < e; j++) lc_vec_push(c, lc_retain(v->items[j]));
-                lc_vec_push(out, c);
+                lc_vec_push(out, lc_vec_slice(xs, T_LIST, i, e));
             }
         } else {
             for (int64_t i = 0; i + n <= v->len; i++) {
-                lc_v c = lc_list_new(n);
-                for (int64_t j = i; j < i + n; j++) lc_vec_push(c, lc_retain(v->items[j]));
-                lc_vec_push(out, c);
+                lc_vec_push(out, lc_vec_slice(xs, T_LIST, i, i + n));
             }
         }
         break;
@@ -1112,7 +1122,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         }
         for (int64_t i = 0; i < v->len; i++) {
             if (i) lc_buf_put(&o, sep, sl);
-            lc_buf_display(&o, v->items[i]);
+            lc_buf_display(&o, lc_vget(v, i));
         }
         out = o.p ? lc_buf_finish(&o) : lc_str_new("", 0);
         break;
@@ -1121,14 +1131,14 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         lc_v f = arg(argc, args, 0, m, site);
         out = lc_map_new();
         for (int64_t i = 0; i < v->len; i++) {
-            lc_v key = CALL1(f, v->items[i]);
+            lc_v key = CALL1(f, lc_vget(v, i));
             lc_entry *e = lc_map_find(MAP(out), key);
             if (e) {
-                lc_vec_push(e->v, lc_retain(v->items[i]));
+                lc_vec_push(e->v, lc_retain(lc_vget(v, i)));
                 lc_release(key);
             } else {
                 lc_v l = lc_list_new(1);
-                lc_vec_push(l, lc_retain(v->items[i]));
+                lc_vec_push(l, lc_retain(lc_vget(v, i)));
                 lc_map_put(out, key, l);
             }
         }
@@ -1138,7 +1148,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         lc_v acc = lc_retain(arg(argc, args, 0, m, site));
         lc_v f = arg(argc, args, 1, m, site);
         for (int64_t i = 0; i < v->len; i++) {
-            lc_v two[2] = {acc, v->items[i]};
+            lc_v two[2] = {acc, lc_vget(v, i)};
             lc_v next = lc_call(f, 2, two, site);
             lc_release(acc);
             if (lc_unwinding) {
@@ -1156,9 +1166,9 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
             out = LC_NONE;
             break;
         }
-        lc_v acc = lc_retain(v->items[0]);
+        lc_v acc = lc_retain(lc_vget(v, 0));
         for (int64_t i = 1; i < v->len; i++) {
-            lc_v two[2] = {acc, v->items[i]};
+            lc_v two[2] = {acc, lc_vget(v, i)};
             lc_v next = lc_call(f, 2, two, site);
             lc_release(acc);
             if (lc_unwinding) {
@@ -1172,7 +1182,7 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
     }
     case M_each: {
         lc_v f = arg(argc, args, 0, m, site);
-        for (int64_t i = 0; i < v->len; i++) lc_release(CALL1(f, v->items[i]));
+        for (int64_t i = 0; i < v->len; i++) lc_release(CALL1(f, lc_vget(v, i)));
         out = LC_UNIT;
         break;
     }
@@ -1231,20 +1241,20 @@ lc_v lc_method(int m, lc_v recv, int argc, lc_v *args, const char *site) {
         switch (m) {
         case M_len: return lc_int(v->len);
         case M_is_empty: return lc_bool(v->len == 0);
-        case M_first: return v->len ? lc_retain(v->items[0]) : LC_NONE;
-        case M_last: return v->len ? lc_retain(v->items[v->len - 1]) : LC_NONE;
+        case M_first: return v->len ? lc_retain(lc_vget(v, 0)) : LC_NONE;
+        case M_last: return v->len ? lc_retain(lc_vget(v, v->len - 1)) : LC_NONE;
         case M_get: {
             int64_t i = int_arg(argc, args, 0, m, site), idx;
-            return norm_index(i, v->len, &idx) ? lc_retain(v->items[idx]) : LC_NONE;
+            return norm_index(i, v->len, &idx) ? lc_retain(lc_vget(v, idx)) : LC_NONE;
         }
         case M_contains:
             for (int64_t i = 0; i < v->len; i++)
-                if (lc_eq(v->items[i], args[0]) == 1) return LC_TRUE;
+                if (lc_eq(lc_vget(v, i), args[0]) == 1) return LC_TRUE;
             return LC_FALSE;
         case M_index: {
             lc_v x = arg(argc, args, 0, m, site);
             for (int64_t i = 0; i < v->len; i++)
-                if (lc_eq(v->items[i], x) == 1) return lc_int(i);
+                if (lc_eq(lc_vget(v, i), x) == 1) return lc_int(i);
             return LC_NONE;
         }
         case M_to_list: return lc_retain(recv);
@@ -1311,7 +1321,7 @@ lc_v lc_method(int m, lc_v recv, int argc, lc_v *args, const char *site) {
         case M_first:
         case M_peek:
         case M_min:
-            if (argc == 0) return VEC(recv)->len ? lc_retain(VEC(recv)->items[0]) : LC_NONE;
+            if (argc == 0) return VEC(recv)->len ? lc_retain(VEC(recv)->boxed[0]) : LC_NONE;
             break;
         case M_contains: return lc_bool(lc_contains(recv, arg(argc, args, 0, m, site), site));
         }
@@ -1359,6 +1369,16 @@ static void need(int argc, int n, int m, const char *site) {
     if (argc < n) lc_panic("E0206", site, "`%s` needs %d argument(s)", lc_method_names[m], n);
 }
 
+/* Removes element `idx` of a list, giving it (owned). */
+static lc_v take_at(lc_vec *v, int64_t idx) {
+    lc_v x = lc_vget(v, idx);
+    size_t sz = lc_ksize(v->kind);
+    char *d = v->data;
+    memmove(d + sz * idx, d + sz * (idx + 1), sz * (v->len - idx - 1));
+    v->len--;
+    return x;
+}
+
 lc_v lc_mutate(int m, lc_v *slot, int argc, lc_v *args, const char *site) {
     char k[64];
     if (m == M_retain) {
@@ -1380,23 +1400,24 @@ lc_v lc_mutate(int m, lc_v *slot, int argc, lc_v *args, const char *site) {
         case M_pop:
             if (argc == 0) {
                 if (v->len == 0) return LC_NONE;
-                return v->items[--v->len];
+                return take_at(v, v->len - 1);
             } else {
                 int64_t i = lc_int_of(args[0], site), idx;
                 if (!norm_index(i, v->len, &idx)) lc_panic("E0402", site, "index %lld out of range for length %lld", (long long)i, (long long)v->len);
-                lc_v x = v->items[idx];
-                memmove(&v->items[idx], &v->items[idx + 1], sizeof(lc_v) * (v->len - idx - 1));
-                v->len--;
-                return x;
+                return take_at(v, idx);
             }
         case M_insert: {
             need(argc, 2, m, site);
             int64_t i = lc_int_of(args[0], site), len = v->len;
             int64_t idx = i < 0 ? len + i : i;
             if (idx < 0 || idx > len) lc_panic("E0402", site, "insert index %lld out of range for length %lld", (long long)i, (long long)len);
-            lc_vec_push(s, LC_UNIT);
-            memmove(&v->items[idx + 1], &v->items[idx], sizeof(lc_v) * (len - idx));
-            v->items[idx] = lc_retain(args[1]);
+            /* Pushed, which settles the kind, then moved into place. */
+            lc_vec_push(s, lc_retain(args[1]));
+            size_t sz = lc_ksize(v->kind);
+            char *d = v->data, last[sizeof(lc_v)];
+            memcpy(last, d + sz * len, sz);
+            memmove(d + sz * (idx + 1), d + sz * idx, sz * (len - idx));
+            memcpy(d + sz * idx, last, sz);
             return LC_UNIT;
         }
         case M_remove: {
@@ -1405,19 +1426,17 @@ lc_v lc_mutate(int m, lc_v *slot, int argc, lc_v *args, const char *site) {
                 lc_panic("E0301", site, "list `remove` takes an index, got %s; to remove a value use `xs.retain(it != x)`", lc_kind(args[0], k));
             int64_t i = args[0].u.i, idx;
             if (!norm_index(i, v->len, &idx)) lc_panic("E0402", site, "index %lld out of range for length %lld", (long long)i, (long long)v->len);
-            lc_v x = v->items[idx];
-            memmove(&v->items[idx], &v->items[idx + 1], sizeof(lc_v) * (v->len - idx - 1));
-            v->len--;
-            return x;
+            return take_at(v, idx);
         }
         case M_clear:
-            for (int64_t i = 0; i < v->len; i++) lc_release(v->items[i]);
+            if (v->kind == K_BOXED)
+                for (int64_t i = 0; i < v->len; i++) lc_release(v->boxed[i]);
             v->len = 0;
             return LC_UNIT;
         case M_extend: {
             need(argc, 1, m, site);
             lc_v ys = lc_items(args[0], site);
-            for (int64_t i = 0; i < VEC(ys)->len; i++) lc_vec_push(s, lc_retain(VEC(ys)->items[i]));
+            for (int64_t i = 0; i < VEC(ys)->len; i++) lc_vec_push(s, lc_retain(lc_vget(VEC(ys), i)));
             lc_release(ys);
             return LC_UNIT;
         }
@@ -1426,16 +1445,18 @@ lc_v lc_mutate(int m, lc_v *slot, int argc, lc_v *args, const char *site) {
             int64_t a = lc_int_of(args[0], site), b = lc_int_of(args[1], site), x, y;
             if (!norm_index(a, v->len, &x) || !norm_index(b, v->len, &y))
                 lc_panic("E0402", site, "swap index out of range for length %lld", (long long)v->len);
-            lc_v t = v->items[x];
-            v->items[x] = v->items[y];
-            v->items[y] = t;
+            size_t sz = lc_ksize(v->kind);
+            char *d = v->data, t[sizeof(lc_v)];
+            memcpy(t, d + sz * x, sz);
+            memmove(d + sz * x, d + sz * y, sz);
+            memcpy(d + sz * y, t, sz);
             return LC_UNIT;
         }
         case M_truncate: {
             need(argc, 1, m, site);
             int64_t n = lc_int_of(args[0], site);
             if (n < 0) n = 0;
-            while (v->len > n) lc_release(v->items[--v->len]);
+            while (v->len > n) lc_release(take_at(v, v->len - 1));
             return LC_UNIT;
         }
         case M_add: lc_panic("E0203", site, "lists use `push`; `add` is for sets");
@@ -1467,9 +1488,9 @@ lc_v lc_mutate(int m, lc_v *slot, int argc, lc_v *args, const char *site) {
             } else {
                 lc_v ys = lc_items(args[0], site);
                 for (int64_t i = 0; i < VEC(ys)->len; i++) {
-                    lc_v x = VEC(ys)->items[i];
+                    lc_v x = lc_vget(VEC(ys), i);
                     if (x.tag != T_TUPLE || VEC(x)->len != 2) lc_panic("E0301", site, "map `extend` needs a map or (key, value) pairs");
-                    lc_map_put(s, lc_retain(VEC(x)->items[0]), lc_retain(VEC(x)->items[1]));
+                    lc_map_put(s, lc_retain(VEC(x)->boxed[0]), lc_retain(VEC(x)->boxed[1]));
                 }
                 lc_release(ys);
             }
@@ -1488,13 +1509,13 @@ lc_v lc_mutate(int m, lc_v *slot, int argc, lc_v *args, const char *site) {
             return LC_UNIT;
         case M_pop: return heap_pop(s);
         case M_clear:
-            for (int64_t i = 0; i < VEC(s)->len; i++) lc_release(VEC(s)->items[i]);
+            for (int64_t i = 0; i < VEC(s)->len; i++) lc_release(VEC(s)->boxed[i]);
             VEC(s)->len = 0;
             return LC_UNIT;
         case M_extend: {
             need(argc, 1, m, site);
             lc_v ys = lc_items(args[0], site);
-            for (int64_t i = 0; i < VEC(ys)->len; i++) lc_heap_push(s, lc_retain(VEC(ys)->items[i]), site);
+            for (int64_t i = 0; i < VEC(ys)->len; i++) lc_heap_push(s, lc_retain(lc_vget(VEC(ys), i)), site);
             lc_release(ys);
             return LC_UNIT;
         }
@@ -1517,7 +1538,7 @@ lc_v lc_mutate(int m, lc_v *slot, int argc, lc_v *args, const char *site) {
         case M_extend: {
             need(argc, 1, m, site);
             lc_v ys = lc_items(args[0], site);
-            for (int64_t i = 0; i < VEC(ys)->len; i++) lc_set_add(s, lc_retain(VEC(ys)->items[i]));
+            for (int64_t i = 0; i < VEC(ys)->len; i++) lc_set_add(s, lc_retain(lc_vget(VEC(ys), i)));
             lc_release(ys);
             return LC_UNIT;
         }
