@@ -33,13 +33,125 @@ static void *xrealloc(void *p, size_t n) {
     return p;
 }
 
+/* ----- memory -----
+ *
+ * Values and their storage come from here. A block of up to SMALL_MAX
+ * bytes is popped from the free list of its size class (a multiple of 16
+ * bytes), or carved from a chunk when the list is empty, and is pushed back
+ * when freed: no malloc, no lock and no header. Freeing takes the size,
+ * which every object knows (a string's cap, a list's kind and cap). Freed
+ * blocks wait on their list for the next block of that class and are never
+ * given back to malloc. The runtime runs on one thread, so the lists are
+ * plain globals. Larger blocks are malloc's.
+ *
+ * Under AddressSanitizer every block comes from malloc instead, so the
+ * sanitizer still sees each one, with its size in a header that freeing
+ * checks. */
+
+#define SMALL_MAX 512
+#define CHUNK_MIN ((size_t)64 << 10)
+#define CHUNK_MAX ((size_t)4 << 20)
+
+#ifdef __SANITIZE_ADDRESS__
+
+static void *mem_alloc(size_t n) {
+    size_t *p = xmalloc(n + 16);
+    *p = n;
+    return (char *)p + 16;
+}
+
+static void mem_free(void *p, size_t n) {
+    if (!p) return;
+    size_t *h = (size_t *)((char *)p - 16);
+    if (*h != n) {
+        fprintf(stderr, "lacon runtime: freeing %zu bytes of a %zu-byte block\n", n, *h);
+        abort();
+    }
+    free(h);
+}
+
+#else
+
+typedef struct free_block { struct free_block *next; } free_block;
+static free_block *free_lists[SMALL_MAX / 16 + 1];
+static char *chunk_at, *chunk_end;
+static size_t chunk_size = CHUNK_MIN;
+
+static inline __attribute__((always_inline)) size_t size_class(size_t n) { return n ? (n + 15) >> 4 : 1; }
+
+/* A block of `c` * 16 bytes from a new chunk. What is left of the old
+ * chunk, a whole number of classes, goes on the free list of its size. */
+static __attribute__((noinline)) void *chunk_carve(size_t c) {
+    size_t left = (size_t)(chunk_end - chunk_at);
+    if (left) {
+        free_block *b = (free_block *)chunk_at;
+        b->next = free_lists[left >> 4];
+        free_lists[left >> 4] = b;
+    }
+    chunk_at = xmalloc(chunk_size);
+    chunk_end = chunk_at + chunk_size;
+    if (chunk_size < CHUNK_MAX) chunk_size *= 2;
+    void *p = chunk_at;
+    chunk_at += c << 4;
+    return p;
+}
+
+static inline __attribute__((always_inline)) void *mem_alloc(size_t n) {
+    if (__builtin_expect(n > SMALL_MAX, 0)) return xmalloc(n);
+    size_t c = size_class(n);
+    free_block *b = free_lists[c];
+    if (__builtin_expect(b != NULL, 1)) {
+        free_lists[c] = b->next;
+        return b;
+    }
+    if (__builtin_expect((size_t)(chunk_end - chunk_at) >= c << 4, 1)) {
+        void *p = chunk_at;
+        chunk_at += c << 4;
+        return p;
+    }
+    return chunk_carve(c);
+}
+
+/* Frees a block of `n` bytes from `mem_alloc`, or nothing for NULL. */
+static inline __attribute__((always_inline)) void mem_free(void *p, size_t n) {
+    if (__builtin_expect(n > SMALL_MAX, 0)) {
+        free(p);
+        return;
+    }
+    if (!p) return;
+    free_block *b = p;
+    size_t c = size_class(n);
+    b->next = free_lists[c];
+    free_lists[c] = b;
+}
+
+#endif
+
+/* A block of `old` bytes (or NULL) grown or shrunk to `n` bytes. */
+static void *mem_realloc(void *p, size_t old, size_t n) {
+    if (!p) return mem_alloc(n);
+#ifndef __SANITIZE_ADDRESS__
+    if (old > SMALL_MAX && n > SMALL_MAX) return xrealloc(p, n);
+    if (old <= SMALL_MAX && n <= SMALL_MAX && size_class(old) == size_class(n)) return p;
+#endif
+    void *q = mem_alloc(n);
+    memcpy(q, p, old < n ? old : n);
+    mem_free(p, old);
+    return q;
+}
+
+#define STR_SIZE(cap) (sizeof(lc_str) + (size_t)(cap) + 1)
+#define VEC_DATA_SIZE(kind, cap) (lc_ksize(kind) * (size_t)(cap))
+
 /* ----- freeing ----- */
 
 void lc_free(lc_v v) {
     switch (v.tag) {
     case T_STR:
+        mem_free(v.u.o, STR_SIZE(STR(v)->cap));
+        break;
     case T_RANGE:
-        free(v.u.o);
+        mem_free(v.u.o, sizeof(lc_range));
         break;
     case T_LIST:
     case T_TUPLE:
@@ -47,8 +159,8 @@ void lc_free(lc_v v) {
         lc_vec *x = VEC(v);
         if (x->kind == K_BOXED)
             for (int64_t i = 0; i < x->len; i++) lc_release(x->boxed[i]);
-        free(x->data);
-        free(x);
+        mem_free(x->data, VEC_DATA_SIZE(x->kind, x->cap));
+        mem_free(x, sizeof(lc_vec));
         break;
     }
     case T_MAP:
@@ -58,40 +170,40 @@ void lc_free(lc_v v) {
             lc_release(m->e[i].k);
             lc_release(m->e[i].v);
         }
-        free(m->e);
-        free(m->idx);
-        free(m);
+        mem_free(m->e, sizeof(lc_entry) * m->cap);
+        mem_free(m->idx, sizeof(int32_t) * m->icap);
+        mem_free(m, sizeof(lc_map));
         break;
     }
     case T_STRUCT:
     case T_VARIANT: {
         lc_rec *r = REC(v);
         for (int64_t i = 0; i < r->n; i++) lc_release(r->f[i]);
-        free(r);
+        mem_free(r, sizeof(lc_rec) + sizeof(lc_v) * r->n);
         break;
     }
     case T_ERR:
         lc_release(ERRV(v)->payload);
-        free(v.u.o);
+        mem_free(v.u.o, sizeof(lc_err));
         break;
     case T_FUNC: {
         lc_fn *f = FN(v);
         for (int i = 0; i < f->nenv; i++) lc_release(f->env[i]);
-        free(f);
+        mem_free(f, sizeof(lc_fn) + sizeof(lc_v) * f->nenv);
         break;
     }
     case T_FRAME: {
         lc_frame *f = FRAME(v);
         for (int64_t i = 0; i < f->n; i++) lc_release(f->slots[i]);
         if (f->parent) lc_release(lc_obj_v(T_FRAME, f->parent));
-        free(f);
+        mem_free(f, sizeof(lc_frame) + sizeof(lc_v) * f->n);
         break;
     }
     }
 }
 
 lc_frame *lc_frame_new(int64_t n, lc_frame *parent) {
-    lc_frame *f = xmalloc(sizeof(lc_frame) + sizeof(lc_v) * n);
+    lc_frame *f = mem_alloc(sizeof(lc_frame) + sizeof(lc_v) * n);
     f->rc = 1;
     f->parent = parent;
     if (parent) parent->rc++;
@@ -110,7 +222,7 @@ static int64_t count_chars(const char *s, int64_t len) {
 }
 
 lc_v lc_str_new(const char *s, int64_t len) {
-    lc_str *x = xmalloc(sizeof(lc_str) + len + 1);
+    lc_str *x = mem_alloc(STR_SIZE(len));
     x->rc = 1;
     x->len = len;
     x->cap = len;
@@ -125,7 +237,7 @@ lc_v lc_cstr(const char *s) { return lc_str_new(s, (int64_t)strlen(s)); }
 /* `a` then `b` as a new string, in one allocation. */
 lc_v lc_str_cat(lc_str *a, lc_str *b) {
     int64_t len = a->len + b->len;
-    lc_str *x = xmalloc(sizeof(lc_str) + len + 1);
+    lc_str *x = mem_alloc(STR_SIZE(len));
     x->rc = 1;
     x->len = len;
     x->cap = len;
@@ -166,7 +278,7 @@ lc_v lc_str_append(lc_v a, const char *s, int64_t n) {
     lc_str *x = STR(a);
     if (x->len + n > x->cap) {
         int64_t cap = x->cap * 2 > x->len + n ? x->cap * 2 : x->len + n;
-        x = xrealloc(x, sizeof(lc_str) + cap + 1);
+        x = mem_realloc(x, STR_SIZE(x->cap), STR_SIZE(cap));
         x->cap = cap;
     }
     memcpy(x->data + x->len, s, n);
@@ -211,12 +323,12 @@ static int kind_of(lc_v v) {
 }
 
 lc_v lc_vec_alloc(uint32_t tag, int kind, int64_t cap) {
-    lc_vec *x = xmalloc(sizeof(lc_vec));
+    lc_vec *x = mem_alloc(sizeof(lc_vec));
     x->rc = 1;
     x->len = 0;
     x->cap = cap;
     x->kind = kind;
-    x->data = cap ? xmalloc(lc_ksize(kind) * cap) : NULL;
+    x->data = cap ? mem_alloc(VEC_DATA_SIZE(kind, cap)) : NULL;
     return lc_obj_v(tag, x);
 }
 
@@ -226,9 +338,9 @@ lc_v lc_heap_new(void) { return lc_vec_alloc(T_HEAP, K_BOXED, 0); }
 
 void lc_vec_box(lc_vec *x) {
     if (x->kind == K_BOXED) return;
-    lc_v *b = xmalloc(sizeof(lc_v) * (x->cap ? x->cap : 1));
+    lc_v *b = x->cap ? mem_alloc(VEC_DATA_SIZE(K_BOXED, x->cap)) : NULL;
     for (int64_t i = 0; i < x->len; i++) b[i] = lc_vget(x, i);
-    free(x->data);
+    mem_free(x->data, VEC_DATA_SIZE(x->kind, x->cap));
     x->boxed = b;
     x->kind = K_BOXED;
 }
@@ -238,15 +350,16 @@ void lc_vec_push(lc_v vec, lc_v item) {
     int k = kind_of(item);
     if (k != x->kind) {
         if (x->len == 0 && vec.tag == T_LIST) {
-            if (x->cap) x->data = xrealloc(x->data, lc_ksize(k) * x->cap);
+            if (x->cap) x->data = mem_realloc(x->data, VEC_DATA_SIZE(x->kind, x->cap), VEC_DATA_SIZE(k, x->cap));
             x->kind = k;
         } else {
             lc_vec_box(x);
         }
     }
     if (x->len == x->cap) {
-        x->cap = x->cap ? x->cap * 2 : 4;
-        x->data = xrealloc(x->data, lc_ksize(x->kind) * x->cap);
+        int64_t cap = x->cap ? x->cap * 2 : 4;
+        x->data = mem_realloc(x->data, VEC_DATA_SIZE(x->kind, x->cap), VEC_DATA_SIZE(x->kind, cap));
+        x->cap = cap;
     }
     switch (x->kind) {
     case K_INT: x->ints[x->len++] = item.u.i; break;
@@ -292,7 +405,7 @@ lc_v lc_tuple_of(int n, lc_v *items) {
 }
 
 static lc_v map_alloc(uint32_t tag) {
-    lc_map *m = xmalloc(sizeof(lc_map));
+    lc_map *m = mem_alloc(sizeof(lc_map));
     m->rc = 1;
     m->len = m->cap = 0;
     m->e = NULL;
@@ -307,8 +420,8 @@ lc_v lc_set_new(void) { return map_alloc(T_SET); }
 static void map_reindex(lc_map *m) {
     int64_t icap = 8;
     while (icap < m->cap * 2) icap *= 2;
-    free(m->idx);
-    m->idx = xmalloc(sizeof(int32_t) * icap);
+    mem_free(m->idx, sizeof(int32_t) * m->icap);
+    m->idx = mem_alloc(sizeof(int32_t) * icap);
     m->icap = icap;
     for (int64_t i = 0; i < icap; i++) m->idx[i] = -1;
     for (int64_t i = 0; i < m->len; i++) {
@@ -351,8 +464,9 @@ static lc_entry *map_insert(lc_map *m, lc_v k, lc_v v, bool *existed) {
     }
     *existed = false;
     if (m->len == m->cap) {
-        m->cap = m->cap ? m->cap * 2 : 4;
-        m->e = xrealloc(m->e, sizeof(lc_entry) * m->cap);
+        int64_t cap = m->cap ? m->cap * 2 : 4;
+        m->e = mem_realloc(m->e, sizeof(lc_entry) * m->cap, sizeof(lc_entry) * cap);
+        m->cap = cap;
     }
     m->e[m->len] = (lc_entry){k, v, h};
     m->len++;
@@ -408,7 +522,7 @@ void lc_map_clear(lc_v map) {
 }
 
 lc_v lc_rec_new(uint32_t tag, uint32_t ty, uint32_t vtag, int64_t n, lc_v *fields) {
-    lc_rec *r = xmalloc(sizeof(lc_rec) + sizeof(lc_v) * n);
+    lc_rec *r = mem_alloc(sizeof(lc_rec) + sizeof(lc_v) * n);
     r->rc = 1;
     r->ty = ty;
     r->tag = vtag;
@@ -418,7 +532,7 @@ lc_v lc_rec_new(uint32_t tag, uint32_t ty, uint32_t vtag, int64_t n, lc_v *field
 }
 
 lc_v lc_range_new(int64_t start, int64_t end, int64_t step) {
-    lc_range *r = xmalloc(sizeof(lc_range));
+    lc_range *r = mem_alloc(sizeof(lc_range));
     r->rc = 1;
     r->start = start;
     r->end = end;
@@ -432,14 +546,14 @@ int64_t lc_range_len(lc_range *r) {
 }
 
 lc_v lc_err_new(lc_v payload) {
-    lc_err *e = xmalloc(sizeof(lc_err));
+    lc_err *e = mem_alloc(sizeof(lc_err));
     e->rc = 1;
     e->payload = payload;
     return lc_obj_v(T_ERR, e);
 }
 
 lc_v lc_closure_new(lc_code code, int nparams, int nenv, lc_v *env) {
-    lc_fn *f = xmalloc(sizeof(lc_fn) + sizeof(lc_v) * nenv);
+    lc_fn *f = mem_alloc(sizeof(lc_fn) + sizeof(lc_v) * nenv);
     f->rc = 1;
     f->kind = FN_CLOSURE;
     f->id = f->tag = 0;
@@ -451,7 +565,7 @@ lc_v lc_closure_new(lc_code code, int nparams, int nenv, lc_v *env) {
 }
 
 lc_v lc_fnval_new(int kind, int id, int tag, lc_code code) {
-    lc_fn *f = xmalloc(sizeof(lc_fn));
+    lc_fn *f = mem_alloc(sizeof(lc_fn));
     f->rc = 1;
     f->kind = kind;
     f->id = id;

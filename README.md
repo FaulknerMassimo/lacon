@@ -20,9 +20,9 @@ report type errors before anything runs, each on one line with a fix where
 there is one. `build` compiles a program to a native executable through C;
 its output matches the interpreter's byte for byte on every golden program
 and task. Phase 2 has started: native code holds the ints, bools and floats
-the checker proves as C scalars and packs lists of them. On seven benchmark
-programs it takes 1.1-3.9x Rust's time, a geometric mean of 2.1x. Cheaper
-allocation comes next. The design and build plan is in
+the checker proves as C scalars, packs lists of them, and takes small values
+from free lists rather than malloc. On seven benchmark programs it takes
+1.0-3.9x Rust's time. Perceus-style reuse comes next. The design and build plan is in
 [PLAN.md](PLAN.md).
 
 ```

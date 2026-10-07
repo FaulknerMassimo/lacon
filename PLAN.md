@@ -225,9 +225,9 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
 
 - **Now:** the parser, the resolver (to an IR of slots and explicit lambdas),
   the type checker, then either the interpreter or the C backend, which
-  unboxes the ints, bools and floats the checker proves (§16) and packs
-  lists of them (§17). Mode checking, RC insertion and reuse analysis are
-  not built yet.
+  unboxes the ints, bools and floats the checker proves (§16), packs
+  lists of them (§17) and takes small values from free lists (§18). Mode
+  checking, RC insertion and reuse analysis are not built yet.
 - **Backends, in order:**
   1. **C** first. That's how Koka, Nim and Lean work, and it's the fastest way
      to native speed and portability.
@@ -317,8 +317,11 @@ Rust's time (geometric mean 3.0x, from 9.7x). Lists of ints, floats and bools
 are now packed (§17): sieve went from 4.5x Rust to 1.8x and knapsack from
 3.9x to 2.5x, a geometric mean of 2.1x from 2.5x on the machine §17 used.
 wordfreq is within the 1.5x bar.
-Next: allocation (a small-object allocator, then Perceus reuse). Mode
-checking, `fix`, `put` and `q` aren't started.
+Strings, lists, structs and the rest now come from a small-object
+allocator (§18): records went from 2.5x Rust to 1.7x and wordfreq from
+1.09x to 1.03x. Next: Perceus reuse, and the cost of a closure call per
+element in `sort_by` and `map`, which is most of what records has left.
+Mode checking, `fix`, `put` and `q` aren't started.
 
 ### Phase 3 — Speed and scale
 
@@ -1103,3 +1106,59 @@ What's left:
   loop that can't change its length would remove most of them.
 - **records** and **wordfreq** allocate, and **fib** keeps call records, as
   §16 says. Allocation is next.
+
+---
+
+## 18. Phase 2: a small-object allocator
+
+§17 left every string, list, map, struct, closure and heap frame its own
+`malloc` and `free`. Programs run on a second thread, for its 1 GB stack, so
+glibc serves them from a secondary arena; records took 19% less time with
+glibc's trimming turned off, and 47% less with jemalloc preloaded.
+
+**Free lists by size.** A block of up to 512 bytes is popped from the free
+list of its size class, a multiple of 16 bytes, and pushed back when freed.
+An empty list is refilled from a chunk, 64 KB at first and doubling to
+4 MB, and what is left of the old chunk goes on the list of its size.
+Blocks have no header: freeing takes the size, which every object knows (a
+string from its capacity, a list from its kind and capacity, a struct from
+its field count). Larger blocks, such as a long list's elements, are
+malloc's, and a block that grows past 512 bytes moves there. Freed blocks
+wait for the next block of their class and are never given back to malloc.
+The lists are plain globals, since the runtime runs on one thread; threads
+(§3.5) will need a heap each.
+
+**Checking sizes.** A block freed with too large a size would later be
+handed out over its neighbour, so under AddressSanitizer every block comes
+from malloc instead, with its size in a header, and freeing it with any
+other size aborts with both sizes. A size planted wrong in the struct case of
+`lc_free` fails `tests/run/alloc.lc` at once. That test grows strings,
+lists and maps past 512 bytes, empties packed lists and gives them an
+element of another size, boxes packed lists in place, and frees many values
+and makes others of different sizes.
+
+**Not moved:** `lc_buf`, the buffer behind interpolation and formatting,
+still uses malloc. Moving it saved nothing measurable, since glibc's
+per-thread cache hands the same block back each time.
+
+Verified as before: every golden program, task input and benchmark program
+gives the same stdout, stderr and exit code from the interpreter and from
+native code (140 runs), typed and with `LACON_BOXED=1`, each also under
+AddressSanitizer and UndefinedBehaviorSanitizer.
+
+**Results**, on §17's machine but on battery, where a run's time moved by
+up to half with the CPU's clock. Old and new builds were run back to back
+40 times, and these are the medians:
+
+| Program | New time / old | Against Rust, before | After |
+|---|---|---|---|
+| records | 0.68 (quartiles 0.64-0.72) | 2.5x | 1.7x |
+| wordfreq | 0.94 | 1.09x | 1.03x |
+
+The other five allocate nothing in their loops and didn't change. records
+also takes 38% fewer page faults (14,600 from 23,800), and its peak memory
+is unchanged: 123 MB, against Rust's 88 MB.
+
+What's left in records is mostly not allocation: `sort_by` takes about half
+its time and `map(it.score).sum()` a quarter, each a closure call per
+element.
