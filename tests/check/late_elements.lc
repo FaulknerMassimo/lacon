@@ -1,0 +1,46 @@
+# Arithmetic on two elements of a list whose type is learned later is
+# checked once it is known.
+fn rpn(line str) int! =
+  var st = []
+  for tok in line.split():
+    if tok == "+":
+      b = st.pop() ?? fail "underflow"
+      a = st.pop() ?? fail "underflow"
+      st.push(a + b)
+    else:
+      st.push(int(tok))
+  st.pop() ?? fail "empty"
+
+fn firsts(rows [str]) int =
+  var xs = []
+  var t = 0
+  for r in rows:
+    if xs.len > 1: t += xs[0] * xs[1]
+    xs.push(r.find(","))
+  t
+
+type P {x int}
+
+fn joined(ps [P]) =
+  var acc = []
+  for p in ps:
+    if acc.len > 1: print(acc[0] - acc[1])
+    acc.push(p)
+
+# Fine once known: ints and strs.
+fn sums(words [str]) str =
+  var ns = []
+  var ss = []
+  for w in words:
+    if ns.len > 1:
+      print(ns[0] + ns[1])
+      print(ss[0] + ss[1])
+    ns.push(w.len)
+    ss.push(w)
+  ss.join("")
+
+fn main() =
+  print(rpn("1 2 +") ?? 0)
+  print(firsts(["a,b"]))
+  joined([P{1}])
+  print(sums(["ab"]))

@@ -1,0 +1,14 @@
+P{x: 3.0, n: 2, on: true} 1.5
+P{x: 7.0, n: 8, on: true} 3.5
+Line{a: P{x: 7.0, n: 5, on: true}, b: P{x: 5.0, n: 0, on: false}} 2.5
+{"k": P{x: 9.0, n: 1, on: true}} 4.5
+P{x: 8.0, n: 9, on: true} 4.0
+3.5 4.0
+[3.0, 4.0]
+Box{v: 3, w: 4.0} 1 2.0
+(7, 2) [7]
+[P{x: 0.0, n: 0, on: true}, P{x: 1.5, n: 20, on: false}, P{x: 40.0, n: 40, on: true}, P{x: 3.5, n: 60, on: false}, P{x: 80.0, n: 80, on: true}]
+8000.0 80.0 0
+P{x: 1.5, n: 1, on: true} [P{x: 1.5, n: 1, on: true}, P{x: 1.5, n: 1, on: true}, P{x: 1.5, n: 1, on: true}] [P{x: 1.5, n: 2, on: true}, P{x: 2.5, n: 3, on: true}, P{x: 3.5, n: 3, on: true}]
+125.0 120 [0.0, 0.75, 20.0, 1.75, 40.0]
+[exit 0]

@@ -67,6 +67,17 @@ fn rep_of_type(t: &T) -> Rep {
     }
 }
 
+/// A declared type as the checker's, as far as `place_type` needs it: the
+/// structs, lists and maps a place walks through. `None` for the rest.
+fn shape_of(t: &Ty) -> Option<T> {
+    Some(match t {
+        Ty::Struct(id, args) if args.is_empty() => T::Struct(*id, vec![]),
+        Ty::List(x) => T::list(shape_of(x)?),
+        Ty::Map(k, v) => T::map(shape_of(k).unwrap_or(T::Unknown), shape_of(v)?),
+        _ => return None,
+    })
+}
+
 /// Integer operators done on unboxed ints, as the runtime does them.
 fn int_op(op: BinOp) -> Option<&'static str> {
     Some(match op {
@@ -112,11 +123,13 @@ struct Cx {
     /// The enclosing loops' views (`lc_view`) of list slots: slot, C name,
     /// kind.
     views: Vec<(u32, String, Rep)>,
+    /// The checker's type of each slot, in a sound program.
+    tys: Vec<T>,
 }
 
 impl Cx {
-    fn new(slots: Vec<Rep>) -> Cx {
-        Cx { max_up: 0, slots, ret: Rep::Boxed, viewable: HashMap::new(), views: Vec::new() }
+    fn new(slots: Vec<Rep>, tys: Vec<T>) -> Cx {
+        Cx { max_up: 0, slots, ret: Rep::Boxed, viewable: HashMap::new(), views: Vec::new(), tys }
     }
 }
 
@@ -298,7 +311,8 @@ fn pat_slots(p: &PatIr, out: &mut Vec<u32>) {
 /// What the frame's own code writes to its slots: the value of a plain
 /// binding or assignment, or `None` where a pattern or an unpacking binds
 /// a slot from inside another value. Compound assignments are left out.
-fn frame_writes(body: &Ex) -> Vec<(u32, Option<&Ex>)> {
+/// The flag marks a write the slot's declared `f64` type makes a float.
+fn frame_writes(body: &Ex) -> Vec<(u32, Option<&Ex>, bool)> {
     let mut out = Vec::new();
     walk_ex(body, 0, &mut |n, d| {
         if d != 0 {
@@ -306,10 +320,10 @@ fn frame_writes(body: &Ex) -> Vec<(u32, Option<&Ex>)> {
         }
         let mut bound = Vec::new();
         match n {
-            Node::St(St::Bind(PatIr::Bind(s), e, _, _)) => out.push((*s, Some(e))),
+            Node::St(St::Bind(PatIr::Bind(s), e, ty, _)) => out.push((*s, Some(e), matches!(ty, Some(Ty::Float)))),
             Node::St(St::Bind(p, ..)) | Node::St(St::For { pat: p, .. }) => pat_slots(p, &mut bound),
-            Node::St(St::Assign { place: Place { root: Root::Local(s), path, .. }, op: None, value, .. }) if path.is_empty() => {
-                out.push((*s, Some(value)));
+            Node::St(St::Assign { place: Place { root: Root::Local(s), path, decl, .. }, op: None, value, .. }) if path.is_empty() => {
+                out.push((*s, Some(value), matches!(decl, Some(Ty::Float))));
             }
             Node::St(St::AssignMulti { targets, .. }) => {
                 for t in targets {
@@ -322,7 +336,7 @@ fn frame_writes(body: &Ex) -> Vec<(u32, Option<&Ex>)> {
             Node::Ex(Ex::Match { arms, .. }) => arms.iter().for_each(|a| pat_slots(&a.pat, &mut bound)),
             _ => {}
         }
-        out.extend(bound.into_iter().map(|s| (s, None)));
+        out.extend(bound.into_iter().map(|s| (s, None, false)));
     });
     out
 }
@@ -370,7 +384,7 @@ fn pinned_slots(prog: &Program, body: &Ex) -> std::collections::HashSet<u32> {
 /// binds it, assigns it (compound assignments too), changes it in place or
 /// reaches it by pointer. Such a parameter can borrow its argument.
 fn only_read(prog: &Program, body: &Ex, s: u32) -> bool {
-    if pinned_slots(prog, body).contains(&s) || frame_writes(body).iter().any(|(w, _)| *w == s) {
+    if pinned_slots(prog, body).contains(&s) || frame_writes(body).iter().any(|(w, _, _)| *w == s) {
         return false;
     }
     let mut assigned = false;
@@ -398,11 +412,11 @@ fn captured_slots(body: &Ex) -> std::collections::HashSet<u32> {
 }
 
 /// The slots a loop (its condition and body) uses only to read elements,
-/// assign elements (`xs[i] = v`, `xs[i] op= v`) and read `len`: it never
-/// binds or assigns them, passes them anywhere, calls a method on them or
-/// reaches into an element. Nothing in such a loop changes their lists but
-/// those assignments, unless a lambda that captured one is called, so the
-/// caller leaves out captured slots.
+/// assign elements or their fields (`xs[i] = v`, `xs[i].f op= v`) and read
+/// `len`: it never binds or assigns them, passes them anywhere, calls a
+/// method on them or reaches into an element otherwise. Nothing in such a
+/// loop changes their lists but those assignments, unless a lambda that
+/// captured one is called, so the caller leaves out captured slots.
 fn view_slots(cond: Option<&Ex>, body: &[St]) -> Vec<u32> {
     // Per slot: uses as a value, the allowed ones, uses as a place, the
     // allowed ones.
@@ -439,7 +453,7 @@ fn view_slots(cond: Option<&Ex>, body: &[St]) -> Vec<u32> {
                 _ => {}
             },
             Node::Place(Place { root: Root::Local(s), .. }, _) => uses.entry(*s).or_default()[2] += 1,
-            Node::St(St::Assign { place: Place { root: Root::Local(s), path, .. }, .. }) if matches!(&path[..], [Seg::Index(..)]) => {
+            Node::St(St::Assign { place: Place { root: Root::Local(s), path, .. }, .. }) if matches!(&path[..], [Seg::Index(..)] | [Seg::Index(..), Seg::Field(..)]) => {
                 uses.entry(*s).or_default()[3] += 1;
             }
             Node::St(St::Bind(p, ..)) | Node::St(St::For { pat: p, .. }) => pat_slots(p, &mut bound),
@@ -485,7 +499,7 @@ impl<'p> Gen<'p> {
             entries: Vec::new(),
             lambda_n: 0,
             tmp: 0,
-            cx: Cx::new(vec![]),
+            cx: Cx::new(vec![], vec![]),
         }
     }
 
@@ -529,6 +543,7 @@ impl<'p> Gen<'p> {
             Ex::CallFn { fns, args, .. } => self.direct_entry(fns, args).is_some_and(|en| en.ret == Rep::Float),
             Ex::CallBuiltin { f: Builtin::Conv(ConvTo::Float), args, .. } => args.len() == 1 && self.numeric(&args[0]),
             Ex::Cast { to: ConvTo::Float, e: x, .. } => self.numeric(x),
+            Ex::Field { obj, name, user: None, .. } => self.float_field(obj, name).is_some(),
             Ex::Method { recv, name, user: None, .. } => {
                 let recv_float = match recv {
                     Recv::Value(x) => self.rep(x) == Rep::Float,
@@ -539,6 +554,33 @@ impl<'p> Gen<'p> {
             }
             _ => false,
         }
+    }
+
+    /// The checker's slot types for the frame whose body is `body`.
+    fn slot_tys(&self, body: &Ex) -> Vec<T> {
+        if !self.typed {
+            return Vec::new();
+        }
+        self.types.frame(body).map(|t| t.to_vec()).unwrap_or_default()
+    }
+
+    /// The checker's type of what the first `upto` steps of place `p`
+    /// reach, for a place rooted in this frame's own slots.
+    fn place_type(&self, p: &Place, upto: usize) -> Option<T> {
+        let Root::Local(s) = p.root else { return None };
+        let mut t = self.cx.tys.get(s as usize)?.clone();
+        for seg in p.path.iter().take(upto) {
+            t = match (seg, t) {
+                (Seg::Field(name, _), T::Struct(id, _)) => {
+                    let fd = self.prog.structs[id as usize].fields.iter().find(|f| *f.name == **name)?;
+                    shape_of(&fd.ty)?
+                }
+                (Seg::Index(..), T::List(x)) => *x,
+                (Seg::Index(..), T::Map(_, v)) => *v,
+                _ => return None,
+            };
+        }
+        Some(t)
     }
 
     fn slot_rep(&self, s: u32) -> Rep {
@@ -571,7 +613,7 @@ impl<'p> Gen<'p> {
             }
         }
         let writes = frame_writes(body);
-        let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
+        let saved = std::mem::replace(&mut self.cx, Cx::new(reps, vec![]));
         for &s in params {
             if self.cx.slots.get(s as usize) == Some(&Rep::Float) && !float_params.contains(&s) {
                 self.cx.slots[s as usize] = Rep::Boxed;
@@ -579,9 +621,10 @@ impl<'p> Gen<'p> {
         }
         loop {
             let mut changed = false;
-            for (s, w) in &writes {
+            for (s, w, conv) in &writes {
                 let i = *s as usize;
-                if self.cx.slots.get(i) == Some(&Rep::Float) && !w.is_some_and(|e| self.rep(e) == Rep::Float) {
+                let float = *conv && w.is_some_and(|e| self.numeric(e)) || w.is_some_and(|e| self.rep(e) == Rep::Float);
+                if self.cx.slots.get(i) == Some(&Rep::Float) && !float {
                     self.cx.slots[i] = Rep::Boxed;
                     changed = true;
                 }
@@ -810,9 +853,16 @@ impl<'p> Gen<'p> {
             let _ = writeln!(tables, "static const int SF{sid}[] = {{{}}};", if ids.is_empty() { "0".into() } else { ids.join(", ") });
             let _ = writeln!(tables, "static const char *const SN{sid}[] = {{{}}};", if names.is_empty() { "\"\"".into() } else { names.join(", ") });
         }
+        // Each field's declared type, which a value stored in it takes;
+        // after the statics, which define the types.
+        let mut field_tys = String::new();
+        for (sid, sd) in prog.structs.iter().enumerate() {
+            let tys: Vec<String> = sd.fields.iter().map(|f| self.ty(&f.ty)).collect();
+            let _ = writeln!(field_tys, "static const lc_ty *const ST{sid}[] = {{{}}};", if tys.is_empty() { "NULL".into() } else { tys.join(", ") });
+        }
         let structs: Vec<String> =
-            prog.structs.iter().enumerate().map(|(i, s)| format!("{{{}, {}, SF{i}, SN{i}}}", cstr(&s.name), s.fields.len())).collect();
-        let _ = writeln!(tables, "static const lc_struct_info STRUCTS[] = {{{}}};", if structs.is_empty() { "{\"\", 0, NULL, NULL}".into() } else { structs.join(", ") });
+            prog.structs.iter().enumerate().map(|(i, s)| format!("{{{}, {}, SF{i}, SN{i}, ST{i}}}", cstr(&s.name), s.fields.len())).collect();
+        let _ = writeln!(field_tys, "static const lc_struct_info STRUCTS[] = {{{}}};", if structs.is_empty() { "{\"\", 0, NULL, NULL, NULL}".into() } else { structs.join(", ") });
         for (eid, ed) in prog.enums.iter().enumerate() {
             let vs: Vec<String> = ed.variants.iter().map(|v| format!("{{{}, {}}}", cstr(&v.name), v.fields.len())).collect();
             let _ = writeln!(tables, "static const lc_variant_info EV{eid}[] = {{{}}};", if vs.is_empty() { "{\"\", 0}".into() } else { vs.join(", ") });
@@ -823,9 +873,10 @@ impl<'p> Gen<'p> {
         let _ = writeln!(tables, "static const char *const FN_NAMES[] = {{{}}};", if fns.is_empty() { "\"\"".into() } else { fns.join(", ") });
         let fields: Vec<String> = self.fields.iter().map(|f| cstr(f)).collect();
         let _ = writeln!(tables, "static const char *const FIELD_NAMES[] = {{{}}};", if fields.is_empty() { "\"\"".into() } else { fields.join(", ") });
-        let _ = writeln!(tables, "static const lc_program PROG = {{STRUCTS, ENUMS, FN_NAMES, FIELD_NAMES}};");
+        let _ = writeln!(field_tys, "static const lc_program PROG = {{STRUCTS, ENUMS, FN_NAMES, FIELD_NAMES}};");
         out.push_str(&tables);
         out.push_str(&self.statics);
+        out.push_str(&field_tys);
         out.push('\n');
         out.push_str(&self.funcs);
         let _ = writeln!(out, "\nstatic void INIT(void) {{\n{}}}\n", self.init);
@@ -867,7 +918,8 @@ impl<'p> Gen<'p> {
     /// default.
     fn thunk_fn(&mut self, name: &str, body: &Ex, nslots: u32) -> String {
         let reps = self.frame_reps(body, nslots, &[], &[], &[]);
-        let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
+        let tys = self.slot_tys(body);
+        let saved = std::mem::replace(&mut self.cx, Cx::new(reps, tys));
         let heap = has_lambda(body);
         let e = self.expr(body);
         let natives = self.native_decls();
@@ -942,7 +994,7 @@ impl<'p> Gen<'p> {
     fn typed_fn(&mut self, id: FnId, en: &Entry) -> String {
         let fd = &self.prog.fns[id as usize];
         let (params, floats) = param_slots(fd);
-        let mut cx = Cx::new(self.frame_reps(&fd.body, fd.nslots, &[], &params, &floats));
+        let mut cx = Cx::new(self.frame_reps(&fd.body, fd.nslots, &[], &params, &floats), self.slot_tys(&fd.body));
         cx.ret = en.ret;
         cx.viewable = self.viewable(&fd.body);
         let saved = std::mem::replace(&mut self.cx, cx);
@@ -1084,7 +1136,8 @@ impl<'p> Gen<'p> {
         let muts: Vec<u32> = fd.params.iter().enumerate().filter(|(_, p)| p.mode == Mode::Mut).map(|(i, _)| i as u32).collect();
         let (params, floats) = param_slots(fd);
         let reps = self.frame_reps(&fd.body, fd.nslots, &muts, &params, &floats);
-        let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
+        let tys = self.slot_tys(&fd.body);
+        let saved = std::mem::replace(&mut self.cx, Cx::new(reps, tys));
         self.cx.viewable = self.viewable(&fd.body);
         let heap = has_lambda(&fd.body);
         let body = self.expr(&fd.body);
@@ -1310,35 +1363,84 @@ impl<'p> Gen<'p> {
 
     /// Statements that store the owned `lc_v` named `v` into place `p`,
     /// evaluating its keys. A last index step stores into the container,
-    /// so a packed list stays packed.
-    fn store_place(&mut self, p: &Place, v: &str) -> String {
+    /// so a packed list stays packed. A value stored in a struct field, or
+    /// in a variable declared with a type, takes that type, or is reported
+    /// at `vsite`; `exact` says the checker proved it already has it.
+    fn store_place(&mut self, p: &Place, v: &str, vsite: &str, exact: bool) -> String {
         let (kc, keys) = self.place_keys(p);
         let ptr = self.t();
         let rk = Self::release_all(&keys);
-        if let Some(Seg::Index(_, sp)) = p.path.last() {
-            let lsite = self.site(*sp);
-            let walk = self.place_walk_to(p, &keys, &ptr, "VIV_INSERT", "LC_UNIT", 0, p.path.len() - 1);
-            return format!("{{ {kc}{walk}lc_store_index({ptr}, {}, {v}, {lsite}); {rk}}} ", keys[keys.len() - 1]);
+        match p.path.last() {
+            Some(Seg::Index(_, sp)) => {
+                let lsite = self.site(*sp);
+                let walk = self.place_walk_to(p, &keys, &ptr, "VIV_INSERT", "LC_UNIT", 0, p.path.len() - 1);
+                format!("{{ {kc}{walk}lc_store_index({ptr}, {}, {v}, {lsite}); {rk}}} ", keys[keys.len() - 1])
+            }
+            Some(Seg::Field(name, sp)) => {
+                let (fsite, fid) = (self.site(*sp), self.field_id(name));
+                let walk = self.place_walk_to(p, &keys, &ptr, "VIV_INSERT", "LC_UNIT", 0, p.path.len() - 1);
+                format!("{{ {kc}{walk}lc_store_field({ptr}, {fid}, {}, {v}, {fsite}, {vsite}); {rk}}} ", cstr(name))
+            }
+            None => {
+                let walk = self.place_walk(p, &keys, &ptr, "VIV_INSERT", "LC_UNIT", 0);
+                let v = if exact { v.to_string() } else { self.conform_var(p, v, vsite) };
+                format!("{{ {kc}{walk}lc_set({ptr}, {v}); {rk}}} ")
+            }
         }
-        let walk = self.place_walk(p, &keys, &ptr, "VIV_INSERT", "LC_UNIT", 0);
-        format!("{{ {kc}{walk}lc_set({ptr}, {v}); {rk}}} ")
     }
 
     /// Statements for `p op= v`, consuming the owned `lc_v` named `v`, with
-    /// arithmetic errors reported at `site`; as `store_place` for the steps.
+    /// arithmetic errors reported at `site`; as `store_place` for the steps
+    /// and declared types.
     fn update_place(&mut self, p: &Place, op: BinOp, v: &str, site: &str) -> String {
         let (kc, keys) = self.place_keys(p);
         let ptr = self.t();
         let rk = Self::release_all(&keys);
         let opc = binop_c(op);
-        if let Some(Seg::Index(_, sp)) = p.path.last() {
-            let lsite = self.site(*sp);
-            let walk = self.place_walk_to(p, &keys, &ptr, "VIV_ZERO_OF", "LC_UNIT", 0, p.path.len() - 1);
-            return format!("{{ {kc}{walk}lc_update_index({ptr}, {}, {opc}, {v}, {lsite}, {site}); {rk}}} ", keys[keys.len() - 1]);
+        match p.path.last() {
+            Some(Seg::Index(_, sp)) => {
+                let lsite = self.site(*sp);
+                let walk = self.place_walk_to(p, &keys, &ptr, "VIV_ZERO_OF", "LC_UNIT", 0, p.path.len() - 1);
+                format!("{{ {kc}{walk}lc_update_index({ptr}, {}, {opc}, {v}, {lsite}, {site}); {rk}}} ", keys[keys.len() - 1])
+            }
+            Some(Seg::Field(name, sp)) => {
+                let (fsite, fid) = (self.site(*sp), self.field_id(name));
+                let walk = self.place_walk_to(p, &keys, &ptr, "VIV_ZERO_OF", "LC_UNIT", 0, p.path.len() - 1);
+                format!("{{ {kc}{walk}lc_update_field({ptr}, {fid}, {}, {opc}, {v}, {fsite}, {site}); {rk}}} ", cstr(name))
+            }
+            None => {
+                let walk = self.place_walk(p, &keys, &ptr, "VIV_ZERO_OF", v, 0);
+                let old = self.t();
+                let new = self.conform_var(p, &format!("lc_arith_own({opc}, {old}, {v}, {site})"), site);
+                format!("{{ {kc}{walk}lc_v {old} = lc_take({ptr}); *{ptr} = {new}; {rk}}} ")
+            }
         }
-        let walk = self.place_walk(p, &keys, &ptr, "VIV_ZERO_OF", v, 0);
-        let old = self.t();
-        format!("{{ {kc}{walk}lc_v {old} = lc_take({ptr}); *{ptr} = lc_arith_own({opc}, {old}, {v}, {site}); {rk}}} ")
+    }
+
+    /// The owned `lc_v` `v`, stored in variable `p` itself, converted to
+    /// the variable's declared type or reported at `site`.
+    fn conform_var(&mut self, p: &Place, v: &str, site: &str) -> String {
+        match &p.decl {
+            Some(t) if !matches!(t, Ty::Any | Ty::Param(_)) => {
+                let ty = self.ty(t);
+                format!("lc_coerce_var({v}, {ty}, {}, {site})", cstr(&p.name))
+            }
+            _ => v.to_string(),
+        }
+    }
+
+    /// For an unboxed int `x` stored where a sized int type `t` is
+    /// declared: a statement reporting it at `site` when out of range.
+    /// `name` is the variable's, or `None` for the binding declaring it.
+    fn sized_check(&mut self, t: &Ty, x: &str, name: Option<&str>, site: &str) -> String {
+        match t {
+            Ty::Int { min, max, .. } if *min != i64::MIN || *max != i64::MAX => {
+                let ty = self.ty(t);
+                let name = name.map_or("NULL".to_string(), cstr);
+                format!("if ({x} < {min}LL || {x} > {max}LL) lc_coerce_var(lc_int({x}), {ty}, {name}, {site}); ")
+            }
+            _ => String::new(),
+        }
     }
 
     /// `xs[i] = v` and `xs[i] op= v` with an unboxed index and value: done
@@ -1546,6 +1648,7 @@ impl<'p> Gen<'p> {
             Ex::Local(s, _) => self.slot_rep(*s) == Rep::Float,
             Ex::If { els: Some(_), .. } | Ex::Block(_, Some(_)) | Ex::Match { .. } | Ex::CallFn { .. } => true,
             Ex::CallBuiltin { f: Builtin::Conv(ConvTo::Float), args, .. } => matches!(self.rep(&args[0]), Rep::Int | Rep::Float),
+            Ex::Field { obj, name, user: None, .. } => self.float_field(obj, name).is_some(),
             Ex::Method { recv: Recv::Value(x), name, args, .. } => args.is_empty() && matches!(&**name, "sqrt" | "abs") && self.rep(x) == Rep::Float,
             Ex::Method { recv: Recv::Place(Place { root: Root::Local(s), path, .. }), name, args, .. } => {
                 args.is_empty() && matches!(&**name, "sqrt" | "abs") && path.is_empty() && self.slot_rep(*s) == Rep::Float
@@ -1604,6 +1707,7 @@ impl<'p> Gen<'p> {
                 self.typed_call(fns[0], &en, args, *span)
             }
             Ex::CallBuiltin { args, .. } => self.num(&args[0]),
+            Ex::Field { obj, name, span, .. } => self.field_scalar(obj, name, *span, Rep::Float),
             Ex::Method { recv, name, .. } => {
                 let x = match recv {
                     Recv::Value(x) => self.float(x),
@@ -1644,6 +1748,7 @@ impl<'p> Gen<'p> {
             Ex::Unary { op: UnOp::Neg | UnOp::Bang, e: x, .. } => self.rep(x) == Rep::Int,
             Ex::If { els: Some(_), .. } | Ex::Block(_, Some(_)) | Ex::Match { .. } => true,
             Ex::CallFn { fns, args, .. } => self.direct_entry(fns, args).is_some_and(|en| en.ret == Rep::Int),
+            Ex::Field { obj, name, user: None, .. } => self.is_len(e) || self.scalar_field(obj, name).is_some_and(|f| f.2 == Rep::Int),
             Ex::Field { .. } | Ex::Method { .. } => self.is_len(e),
             Ex::Index { index, .. } => self.rep(index) == Rep::Int,
             _ => false,
@@ -1656,6 +1761,7 @@ impl<'p> Gen<'p> {
             Ex::Lit(Value::Bool(_), _) => true,
             Ex::Local(s, _) => self.slot_rep(*s) == Rep::Bool,
             Ex::Compare { .. } | Ex::And(..) | Ex::Or(..) => true,
+            Ex::Field { obj, name, user: None, .. } => self.scalar_field(obj, name).is_some_and(|f| f.2 == Rep::Bool),
             Ex::Unary { op: UnOp::Not | UnOp::Bang, e: x, .. } => self.rep(x) == Rep::Bool,
             Ex::If { els: Some(_), .. } | Ex::Block(_, Some(_)) | Ex::Match { .. } => true,
             Ex::CallFn { fns, args, .. } => self.direct_entry(fns, args).is_some_and(|en| en.ret == Rep::Bool),
@@ -1698,6 +1804,157 @@ impl<'p> Gen<'p> {
         let Some(T::Struct(id, _)) = self.types.of(obj) else { return None };
         let k = self.prog.structs[*id as usize].fields.iter().position(|f| f.name == name)?;
         Some((*id, k))
+    }
+
+    /// `obj.name`, a field declared `f64`, an int type or `bool`, as a C
+    /// scalar of `rep`. `xs[i].f` reads the element in place, through the
+    /// view an enclosing loop took of `xs` or from the borrowed list.
+    fn field_scalar(&mut self, obj: &Ex, name: &str, span: Span, rep: Rep) -> String {
+        let (id, k, _) = self.scalar_field(obj, name).unwrap_or((0, 0, rep));
+        let site = self.site(span);
+        let (ct, unbox) = match rep {
+            Rep::Float => ("double", "lc_unbox_float"),
+            Rep::Int => ("int64_t", "lc_unbox_int"),
+            _ => ("bool", "lc_unbox_bool"),
+        };
+        // On a list of these structs, the general read can only end in an
+        // error (an index out of range, or a checker bug): written so, the
+        // C compiler knows nothing else happens there, and can share the
+        // checks between reads.
+        let list = matches!(obj, Ex::Index { obj: lst, .. } if matches!(self.types.of(lst), Some(T::List(_))));
+        if let (Ex::Index { obj: lst, index, .. }, true) = (obj, list) {
+            if self.rep(index) == Rep::Int && self.pure(index) {
+                if let Some((_, w, Rep::Boxed)) = self.view(lst) {
+                    let i = self.int(index);
+                    let (j, el, r) = (self.t(), self.t(), self.t());
+                    let slow = self.field_scalar_read(obj, name, id, k, ct, unbox, &site);
+                    return format!(
+                        "({{ uint64_t {j} = lc_pos({i}, {w}.len); lc_v *{el}; {ct} {r}; if ({j} < (uint64_t){w}.len && ({el} = (lc_v *){w}.data + {j})->tag == T_STRUCT && REC(*{el})->ty == {id}) {r} = {unbox}(REC(*{el})->f[{k}], {site}); else {{ (void){slow}; lc_unbox_fail(LC_UNIT, {}, {site}); }} {r}; }})",
+                        cstr(&format!("a struct with field `{name}`"))
+                    );
+                }
+                if let Some(l) = self.borrowed(lst) {
+                    let i = self.int(index);
+                    let (o, v, j, r) = (self.t(), self.t(), self.t(), self.t());
+                    let slow = self.field_scalar_read(obj, name, id, k, ct, unbox, &site);
+                    return format!(
+                        "({{ lc_v {o} = {l}; lc_vec *{v}; uint64_t {j}; {ct} {r}; if ({o}.tag == T_LIST && ({v} = VEC({o}))->kind == K_BOXED && ({j} = lc_pos({i}, {v}->len)) < (uint64_t){v}->len && {v}->boxed[{j}].tag == T_STRUCT && REC({v}->boxed[{j}])->ty == {id}) {r} = {unbox}(REC({v}->boxed[{j}])->f[{k}], {site}); else {{ (void){slow}; lc_unbox_fail(LC_UNIT, {}, {site}); }} {r}; }})",
+                        cstr(&format!("a struct with field `{name}`"))
+                    );
+                }
+            }
+        }
+        self.field_scalar_read(obj, name, id, k, ct, unbox, &site)
+    }
+
+    /// `field_scalar` for any `obj`: in place when it is struct `id`, else
+    /// as the boxed read does it.
+    #[allow(clippy::too_many_arguments)]
+    fn field_scalar_read(&mut self, obj: &Ex, name: &str, id: u32, k: usize, ct: &str, unbox: &str, site: &str) -> String {
+        let (o, r, found, b) = (self.t(), self.t(), self.t(), self.t());
+        let fid = self.field_id(name);
+        let mid = method_id(name).map_or(-1, |m| m as i64);
+        let (init, release) = match self.borrowed(obj) {
+            Some(b) => (b, String::new()),
+            None => (self.expr(obj), format!("lc_release({o}); ")),
+        };
+        format!(
+            "({{ lc_v {o} = {init}; {ct} {r}; if ({o}.tag == T_STRUCT && REC({o})->ty == {id}) {r} = {unbox}(REC({o})->f[{k}], {site}); else {{ bool {found}; lc_v {b} = lc_field({o}, {fid}, {n}, &{found}, {site}); if (!{found}) {{ {b} = lc_field_fallback({o}, {n}, {mid}, {site}); if (lc_unwinding) UNWIND; }} {r} = {unbox}({b}, {site}); }} {release}{r}; }})",
+            n = cstr(name)
+        )
+    }
+
+    /// `p.f = v` and `p.f op= v` where the checker knows the struct, `f` is
+    /// declared `f64` or `int`, and the value is unboxed: done in place when
+    /// nothing else holds the struct, else as `store_place` and
+    /// `update_place` do. `None` when the place or the value doesn't suit.
+    fn assign_field(&mut self, place: &Place, op: Option<BinOp>, value: &Ex, site: &str) -> Option<String> {
+        let Some(Seg::Field(name, fsp)) = place.path.last() else { return None };
+        if !self.typed {
+            return None;
+        }
+        let n = place.path.len();
+        let Some(T::Struct(id, _)) = self.place_type(place, n - 1) else { return None };
+        let k = self.prog.structs[id as usize].fields.iter().position(|f| *f.name == **name)?;
+        let float = match (&self.prog.structs[id as usize].fields[k].ty, self.rep(value)) {
+            (Ty::Float, Rep::Float | Rep::Int) => true,
+            (Ty::Int { min, max, .. }, Rep::Int) if *min == i64::MIN && *max == i64::MAX => false,
+            _ => return None,
+        };
+        let (v, ptr, f) = (self.t(), self.t(), self.t());
+        let new = match (op, float) {
+            (None, _) => v.clone(),
+            (Some(op), true) => match op {
+                BinOp::Add => format!("{f}->u.f + {v}"),
+                BinOp::Sub => format!("{f}->u.f - {v}"),
+                BinOp::Mul => format!("{f}->u.f * {v}"),
+                BinOp::Div => format!("{f}->u.f / {v}"),
+                BinOp::Rem => format!("fmod({f}->u.f, {v})"),
+                BinOp::Pow => format!("pow({f}->u.f, {v})"),
+                _ => return None,
+            },
+            (Some(op), false) => {
+                let iop = int_op(op)?;
+                if iop.len() == 1 {
+                    format!("{f}->u.i {iop} {v}")
+                } else {
+                    format!("{iop}({f}->u.i, {v}, {site})")
+                }
+            }
+        };
+        let (ct, member, tag, rep) = if float { ("double", "f", "T_FLOAT", Rep::Float) } else { ("int64_t", "i", "T_INT", Rep::Int) };
+        let vv = if float { self.num(value) } else { self.int(value) };
+        let viv = if op.is_none() { "VIV_INSERT" } else { "VIV_ZERO_OF" };
+        let (fsite, fid) = (self.site(*fsp), self.field_id(name));
+        let boxed = box_c(rep, &v);
+        let slow = match op {
+            None => {
+                let vsite = self.site(if value.span() == Span::default() { place.span } else { value.span() });
+                format!("lc_store_field({ptr}, {fid}, {}, {boxed}, {fsite}, {vsite})", cstr(name))
+            }
+            Some(op) => format!("lc_update_field({ptr}, {fid}, {}, {}, {boxed}, {fsite}, {site})", cstr(name), binop_c(op)),
+        };
+        // `xs[i].f` through the view an enclosing loop took of `xs`: the
+        // element in place when nothing else holds the list or it.
+        if let (Root::Local(s), [Seg::Index(ix, _), Seg::Field(..)]) = (&place.root, &place.path[..]) {
+            if let Some((s, w, Rep::Boxed)) = self.view_of(*s).filter(|_| self.rep(ix) == Rep::Int) {
+                let (kk, j, el) = (self.t(), self.t(), self.t());
+                let iv = self.int(ix);
+                let walk = self.place_walk_to(place, &[format!("lc_int({kk})")], &ptr, viv, "LC_UNIT", 0, n - 1);
+                let reread = self.view_read(s, Rep::Boxed);
+                return Some(format!(
+                    "{{ {ct} {v} = {vv}; int64_t {kk} = {iv}; uint64_t {j} = lc_pos({kk}, {w}.wlen); lc_v *{el}; if ({j} < (uint64_t){w}.wlen && ({el} = (lc_v *){w}.data + {j})->tag == T_STRUCT && {el}->u.o->rc == 1 && REC(*{el})->ty == {id} && REC(*{el})->f[{k}].tag == {tag}) {{ lc_v *{f} = &REC(*{el})->f[{k}]; {f}->u.{member} = {new}; }} else {{ {walk}{slow}; {w} = {reread}; }} }} "
+                ));
+            }
+        }
+        let (kc, keys) = self.place_keys_to(place, n - 1);
+        let walk = self.place_walk_to(place, &keys, &ptr, viv, "LC_UNIT", 0, n - 1);
+        let rk = Self::release_all(&keys);
+        let reread = self.view_reread(place);
+        Some(format!(
+            "{{ {ct} {v} = {vv}; {kc}{walk}if ({ptr}->tag == T_STRUCT && {ptr}->u.o->rc == 1 && REC(*{ptr})->ty == {id} && REC(*{ptr})->f[{k}].tag == {tag}) {{ lc_v *{f} = &REC(*{ptr})->f[{k}]; {f}->u.{member} = {new}; }} else {{ {slow}; {reread}}} {rk}}} "
+        ))
+    }
+
+    /// The struct and position of field `name` of `obj` when it is
+    /// declared `f64`. It holds a float for certain, since every value
+    /// stored in it is converted.
+    fn float_field(&self, obj: &Ex, name: &str) -> Option<(u32, usize)> {
+        self.scalar_field(obj, name).filter(|f| f.2 == Rep::Float).map(|(id, k, _)| (id, k))
+    }
+
+    /// The struct, position and representation of field `name` of `obj`
+    /// when it is declared `f64`, an int type or `bool`: what it holds at
+    /// run time, since every value stored in a field takes its type.
+    fn scalar_field(&self, obj: &Ex, name: &str) -> Option<(u32, usize, Rep)> {
+        let (id, k) = self.struct_field(obj, name)?;
+        let rep = match self.prog.structs[id as usize].fields[k].ty {
+            Ty::Float => Rep::Float,
+            Ty::Int { .. } => Rep::Int,
+            Ty::Bool => Rep::Bool,
+            _ => return None,
+        };
+        Some((id, k, rep))
     }
 
     /// An expression statement whose value is dropped, in a sound program:
@@ -1819,6 +2076,9 @@ impl<'p> Gen<'p> {
                     T::Int(_) => Rep::Int,
                     T::Bool => Rep::Bool,
                     T::Float => Rep::Float,
+                    // A list of structs, whose fields a loop reads and
+                    // assigns: `Boxed`.
+                    T::Struct(..) => Rep::Boxed,
                     _ => continue,
                 },
                 _ => continue,
@@ -1860,7 +2120,8 @@ impl<'p> Gen<'p> {
         let k = match kind {
             Rep::Int => "K_INT",
             Rep::Bool => "K_BOOL",
-            _ => "K_FLOAT",
+            Rep::Float => "K_FLOAT",
+            Rep::Boxed => "K_BOXED",
         };
         format!("lc_view_of({}, {k})", self.slot(0, s))
     }
@@ -1875,12 +2136,12 @@ impl<'p> Gen<'p> {
         self.cx.views.iter().rev().find(|(v, _, _)| *v == s).cloned()
     }
 
-    /// After an assignment to an element of the list in `place` that may
-    /// have copied it or changed its kind: reads its view again, if it has
-    /// one.
+    /// After an assignment to an element of the list in `place`, or to a
+    /// field of one, that may have copied it or changed its kind: reads its
+    /// view again, if it has one.
     fn view_reread(&mut self, place: &Place) -> String {
-        match (&place.root, place.path.len()) {
-            (Root::Local(s), 1) => match self.view_of(*s) {
+        match (&place.root, place.path.first()) {
+            (Root::Local(s), Some(Seg::Index(..))) => match self.view_of(*s) {
                 Some((s, w, kind)) => format!("{w} = {}; ", self.view_read(s, kind)),
                 None => String::new(),
             },
@@ -1976,6 +2237,7 @@ impl<'p> Gen<'p> {
                 self.typed_call(fns[0], &en, args, *span)
             }
             Ex::Index { obj, index, span } if self.int_native(e) => self.elem(obj, index, *span, Rep::Int),
+            Ex::Field { obj, name, user: None, span } if self.int_native(e) => self.field_scalar(obj, name, *span, Rep::Int),
             _ => {
                 let site = self.site(e.span());
                 let v = self.expr(e);
@@ -1990,6 +2252,7 @@ impl<'p> Gen<'p> {
             Ex::Lit(Value::Bool(b), _) => if *b { "true" } else { "false" }.into(),
             Ex::Local(s, _) if self.slot_rep(*s) == Rep::Bool => format!("N{s}"),
             Ex::Compare { first, rest, .. } => self.compare(first, rest),
+            Ex::Field { obj, name, user: None, span } if self.bool_native(e) => self.field_scalar(obj, name, *span, Rep::Bool),
             Ex::And(a, b, span) | Ex::Or(a, b, span) => {
                 let site = self.site(*span);
                 let (x, y) = (self.cond_at(a, &site), self.cond_at(b, &site));
@@ -2816,7 +3079,8 @@ impl<'p> Gen<'p> {
         self.lambda_n += 1;
         let n = self.lambda_n;
         let reps = self.frame_reps(&def.body, def.nslots, &[], &def.params, &[]);
-        let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
+        let tys = self.slot_tys(&def.body);
+        let saved = std::mem::replace(&mut self.cx, Cx::new(reps, tys));
         let heap = has_lambda(&def.body);
         let body = self.expr(&def.body);
         let max_up = self.cx.max_up.max(1);
@@ -2858,7 +3122,8 @@ impl<'p> Gen<'p> {
         self.lambda_n += 1;
         let n = self.lambda_n;
         let reps = self.frame_reps(&def.body, def.nslots, &[], &def.params, &[]);
-        let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
+        let tys = self.slot_tys(&def.body);
+        let saved = std::mem::replace(&mut self.cx, Cx::new(reps, tys));
         let body = self.expr(&def.body);
         let max_up = self.cx.max_up.max(1);
         let natives = self.native_decls();
@@ -3021,16 +3286,33 @@ impl<'p> Gen<'p> {
                 let v = self.expr(e);
                 format!("{{ lc_v {t} = {v}; lc_check_ignored({t}, {site}); lc_release({t}); }} ")
             }
-            St::Bind(PatIr::Bind(slot), e, _, _) => match self.slot_rep(*slot) {
-                Rep::Int => format!("N{slot} = {}; ", self.int(e)),
-                Rep::Bool => format!("N{slot} = {}; ", self.boolean(e)),
-                Rep::Float => format!("N{slot} = {}; ", self.float(e)),
-                Rep::Boxed => {
-                    let v = self.expr(e);
-                    let s = self.slot(0, *slot);
-                    format!("lc_set(&{s}, {v}); ")
+            St::Bind(PatIr::Bind(slot), e, ty, span) => {
+                // `x f64 = 1` makes `x` a float, and `b u8 = n` checks `n`.
+                let decl = ty.as_ref().filter(|t| !matches!(t, Ty::Any | Ty::Param(_)));
+                match self.slot_rep(*slot) {
+                    Rep::Int => {
+                        let v = self.int(e);
+                        let site = self.site(*span);
+                        let check = decl.map_or(String::new(), |t| self.sized_check(t, &format!("N{slot}"), None, &site));
+                        format!("N{slot} = {v}; {check}")
+                    }
+                    Rep::Bool => format!("N{slot} = {}; ", self.boolean(e)),
+                    Rep::Float if decl.is_some() => format!("N{slot} = {}; ", self.num(e)),
+                    Rep::Float => format!("N{slot} = {}; ", self.float(e)),
+                    Rep::Boxed => {
+                        let v = self.expr(e);
+                        let v = match decl {
+                            Some(t) if !self.exact(t, e) => {
+                                let (ty, site) = (self.ty(t), self.site(*span));
+                                format!("lc_coerce_var({v}, {ty}, NULL, {site})")
+                            }
+                            _ => v,
+                        };
+                        let s = self.slot(0, *slot);
+                        format!("lc_set(&{s}, {v}); ")
+                    }
                 }
-            },
+            }
             St::Bind(pat, e, _, span) => {
                 let site = self.site(*span);
                 let t = self.t();
@@ -3038,14 +3320,24 @@ impl<'p> Gen<'p> {
                 let cond = self.pat(pat, &t, &site);
                 format!("{{ lc_v {t} = {v}; if (!({cond})) lc_bad_unpack({t}, -1, false, {site}); lc_release({t}); }} ")
             }
-            St::Assign { place: Place { root: Root::Local(s), path, .. }, op, value, span }
+            St::Assign { place: Place { root: Root::Local(s), path, decl, name, .. }, op, value, span }
                 if path.is_empty() && self.slot_rep(*s) != Rep::Boxed =>
             {
                 let s = *s;
                 let site = self.site(*span);
                 let r = self.slot_rep(s);
-                match op {
+                // A sized int's range, checked after the store, at the value
+                // for `=` and at the statement for `op=`.
+                let check = match decl {
+                    Some(t) if r == Rep::Int => {
+                        let csite = if op.is_none() { self.site(if value.span() == Span::default() { *span } else { value.span() }) } else { site.clone() };
+                        self.sized_check(t, &format!("N{s}"), Some(name), &csite)
+                    }
+                    _ => String::new(),
+                };
+                let code = match op {
                     None if r == Rep::Int => format!("N{s} = {}; ", self.int(value)),
+                    None if r == Rep::Float && decl.is_some() => format!("N{s} = {}; ", self.num(value)),
                     None if r == Rep::Float => format!("N{s} = {}; ", self.float(value)),
                     None => format!("N{s} = {}; ", self.boolean(value)),
                     Some(op) if r == Rep::Float => {
@@ -3078,17 +3370,25 @@ impl<'p> Gen<'p> {
                         let st = self.store(s, &format!("lc_arith_own({}, {old}, {t}, {site})", binop_c(*op)), &site);
                         format!("{{ lc_v {t} = {v}; {st}}} ")
                     }
-                }
+                };
+                format!("{code}{check}")
             }
             St::Assign { place, op, value, span } => {
                 let site = self.site(*span);
                 if let Some(c) = self.assign_elem(place, *op, value, &site) {
                     return c;
                 }
+                if let Some(c) = self.assign_field(place, *op, value, &site) {
+                    return c;
+                }
                 let v = self.t();
+                let vsite = self.site(if value.span() == Span::default() { *span } else { value.span() });
+                // A value the checker proves has the variable's declared
+                // type needn't be checked again.
+                let exact = place.path.is_empty() && place.decl.as_ref().is_some_and(|t| self.exact(t, value));
                 let vv = self.expr(value);
                 let st = match op {
-                    None => self.store_place(place, &v),
+                    None => self.store_place(place, &v, &vsite, exact),
                     Some(op) => self.update_place(place, *op, &v, &site),
                 };
                 let reread = self.view_reread(place);
@@ -3108,13 +3408,15 @@ impl<'p> Gen<'p> {
                             let st = self.store(*slot, &format!("lc_retain(lc_vget(VEC({t}), {i}))"), &site);
                             code.push_str(&st);
                         }
-                        Target::Place(Place { root: Root::Local(slot), path, .. }) if path.is_empty() && self.slot_rep(*slot) != Rep::Boxed => {
-                            let st = self.store(*slot, &format!("lc_retain(lc_vget(VEC({t}), {i}))"), &site);
+                        Target::Place(p @ Place { root: Root::Local(slot), path, .. }) if path.is_empty() && self.slot_rep(*slot) != Rep::Boxed => {
+                            let x = format!("lc_retain(lc_vget(VEC({t}), {i}))");
+                            let x = self.conform_var(p, &x, &site);
+                            let st = self.store(*slot, &x, &site);
                             code.push_str(&st);
                         }
                         Target::Place(p) => {
                             let x = self.t();
-                            let st = self.store_place(p, &x);
+                            let st = self.store_place(p, &x, &site, false);
                             let _ = write!(code, "{{ lc_v {x} = lc_retain(lc_vget(VEC({t}), {i})); {st}}} ");
                         }
                     }

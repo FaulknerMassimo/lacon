@@ -1,0 +1,10 @@
+# A sized int field updated in a loop over a list: out of range is an error
+# at the statement, as at construction.
+type C {r u8, g u8}
+
+fn main() =
+  var cs = [C{240, 0}, C{250, 1}]
+  for i in 0..cs.len:
+    cs[i].g = i
+    cs[i].r += 8
+    print(cs[i])

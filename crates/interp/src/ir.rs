@@ -142,6 +142,9 @@ pub struct Place {
     pub root: Root,
     pub name: Rc<str>,
     pub mutable: bool,
+    /// The variable's declared type (a parameter's, or `var x T = ...`'s),
+    /// which a value stored into the variable itself takes.
+    pub decl: Option<Ty>,
     pub path: Vec<Seg>,
     pub span: Span,
 }

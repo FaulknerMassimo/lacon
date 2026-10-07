@@ -1984,6 +1984,11 @@ impl<'p> Checker<'p> {
         if matches!(a, T::Var(_)) || matches!(b, T::Var(_)) {
             if let (T::Var(x), T::Var(y)) = (&a, &b) {
                 if x == y {
+                    // `a + b` on two elements of a list not yet known to
+                    // hold `int!`: the result is their type, checked once
+                    // it is known.
+                    let kind = DKind::Arith { op, l: a.clone(), r: b, lspan, rspan };
+                    self.deferred.push(Deferred { recv: a.clone(), kind, ret: a.clone(), span, ctx: self.ctx.clone() });
                     return a;
                 }
             }

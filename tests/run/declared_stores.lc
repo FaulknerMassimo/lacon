@@ -1,0 +1,74 @@
+# A value stored in a struct field, or in a variable declared with a type,
+# takes that type: an int stored in an `f64` one becomes a float, and a
+# sized int is range-checked. Native code reads such fields in place.
+
+type P {x f64, n int, on bool}
+type Line {a P, b P}
+type Box[T] {v T, w f64}
+
+fn bump(mut p P) =
+  p.x += 1
+  p.n += 1
+
+fn total(ps [P]) f64 =
+  var t = 0.0
+  for i in 0..ps.len:
+    if ps[i].on: t += ps[i].x * ps[i].n
+  t
+
+fn main() =
+  # Fields: assigned, updated, unpacked, nested, through a list and a map.
+  var p = P{1, 2, true}
+  p.x = 3
+  print(p, p.x / 2)
+  p.x += 1
+  p.x, p.n = 7, 8
+  print(p, p.x / 2)
+  var l = Line{p, P{0, 0, false}}
+  l.b.x = 5
+  l.a.n -= 3
+  print(l, l.b.x / 2)
+  var m = {"k": P{0.5, 1, true}}
+  m["k"].x = 9
+  print(m, m["k"].x / 2)
+  bump(p)
+  print(p, p.x / 2)
+  # Typed variables, and the parameters that are variables too.
+  x f64 = 7
+  var g f64 = 1.5
+  g = 7
+  g += 1
+  print(x / 2, g / 2)
+  var w [f64] = [1, 2]
+  w = [3, 4]
+  print(w)
+  # Generic fields take whatever they are given; declared ones convert.
+  var b = Box{1, 2}
+  b.v = 3
+  b.w = 4
+  print(b, b.v / 2, b.w / 2)
+  # A tuple's element and a list's element keep what they are given.
+  var t = (1.5, 2)
+  t.0 = 7
+  var fs = [0.5]
+  fs[0] = 7
+  print(t, fs)
+  # Loops that read and assign fields of a list's elements.
+  var ps = (0..5).map(P{it, it * 10, it % 2 == 0})
+  for i in 0..ps.len:
+    ps[i].x += 0.5
+    ps[i].n *= 2
+    if ps[i].on: ps[i].x = ps[i].n
+  print(ps)
+  print(total(ps), ps[-1].x, ps[-ps.len].n)
+  # A struct two elements share, and a list another variable holds: the
+  # first assignment copies, and the loop goes on with the copy.
+  q = P{1.5, 1, true}
+  var qs = [q, q, q]
+  var keep = qs
+  for i in 0..qs.len:
+    qs[i].x += i
+    qs[i].n = qs[i].n + qs[0].n
+  print(q, keep, qs)
+  # Ints and floats summed from fields, in loops and lambdas.
+  print(ps.map(it.x).sum(), ps.filter(it.on).map(it.n).sum(), ps.map(it.x / 2))

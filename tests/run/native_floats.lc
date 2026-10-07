@@ -1,5 +1,6 @@
 # Floats are unboxed in native code only where they are floats for certain:
-# an `f64` can hold an int at run time, and must print as one.
+# an `f64` can hold an int at run time, and must print as one. A field or a
+# variable declared `f64` can't: an int stored there becomes a float.
 
 type P {x f64, y f64}
 

@@ -1,0 +1,4 @@
+E0406 late_elements.lc:9:15 `a` may be an error; add `?` to pass the error up | fix: a?
+E0407 late_elements.lc:18:25 `xs[0]` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (xs[0] ?? 0)
+E0301 late_elements.lc:27:27 cannot apply `-` to P and P
+[exit 1]

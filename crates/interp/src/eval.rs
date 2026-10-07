@@ -65,6 +65,16 @@ impl Out {
     }
 }
 
+/// What a value stored in a place must be: the variable's declared type
+/// when the place is the variable itself, or the field's when it ends in a
+/// struct field. List and map elements keep whatever they are given.
+#[derive(Clone, Copy)]
+enum Decl<'a> {
+    Var(&'a str, &'a Ty),
+    /// The field, the struct's name, and the field's type.
+    Field(&'a str, &'a str, &'a Ty),
+}
+
 /// What to create when a mutation reaches a missing map key.
 #[derive(Clone, Copy)]
 enum Viv<'v> {
@@ -163,8 +173,11 @@ impl<'p> Interp<'p> {
                 }
                 Ok(())
             }
-            St::Bind(pat, e, _, span) => {
-                let v = self.eval(e, f)?;
+            St::Bind(pat, e, ty, span) => {
+                let mut v = self.eval(e, f)?;
+                if let Some(t) = ty {
+                    v = self.coerce(v, t).map_err(|got| panic("E0301", *span, format!("declared {}, got {got}", ty_name(t, self.prog))))?;
+                }
                 if !self.match_pat(pat, &v, f) {
                     return Err(panic("E0414", *span, format!("cannot destructure {}", self.short(&v))));
                 }
@@ -173,17 +186,17 @@ impl<'p> Interp<'p> {
             St::Assign { place, op, value, span } => {
                 let rhs = self.eval(value, f)?;
                 match op {
-                    None => self.with_place(place, f, Viv::Insert, |slot| {
-                        *slot = rhs;
+                    None => self.with_place_decl(place, f, Viv::Insert, |slot, decl| {
+                        *slot = self.conform(rhs, decl, cond_span_or(value, *span))?;
                         Ok(())
                     }),
                     Some(op) => {
                         let zero = rhs.clone();
-                        self.with_place(place, f, Viv::ZeroOf(&zero), |slot| {
+                        self.with_place_decl(place, f, Viv::ZeroOf(&zero), |slot, decl| {
                             let old = std::mem::replace(slot, Value::Unit);
                             match arith(self.prog, *op, old, rhs) {
                                 Ok(v) => {
-                                    *slot = v;
+                                    *slot = self.conform(v, decl, *span)?;
                                     Ok(())
                                 }
                                 Err((code, msg)) => Err(panic(code, *span, msg)),
@@ -201,8 +214,8 @@ impl<'p> Interp<'p> {
                 for (t, x) in targets.iter().zip(items.iter()) {
                     match t {
                         Target::Bind(slot) => f.set(*slot, x.clone()),
-                        Target::Place(p) => self.with_place(p, f, Viv::Insert, |slot| {
-                            *slot = x.clone();
+                        Target::Place(p) => self.with_place_decl(p, f, Viv::Insert, |slot, decl| {
+                            *slot = self.conform(x.clone(), decl, *span)?;
                             Ok(())
                         })?,
                     }
@@ -890,6 +903,12 @@ impl<'p> Interp<'p> {
     /// Runs `op` on the value stored at `p`, creating missing map entries as
     /// `viv` says. No user code runs while the frame is borrowed.
     fn with_place<T>(&self, p: &Place, f: &Rc<Frame>, viv: Viv, op: impl FnOnce(&mut Value) -> R<T>) -> R<T> {
+        self.with_place_decl(p, f, viv, |v, _| op(v))
+    }
+
+    /// `with_place`, also giving `op` the type a value stored there must
+    /// take (`Decl`).
+    fn with_place_decl<'a, T>(&'a self, p: &'a Place, f: &Rc<Frame>, viv: Viv, op: impl FnOnce(&mut Value, Option<Decl<'a>>) -> R<T>) -> R<T> {
         let mut keys: Vec<Option<Value>> = Vec::with_capacity(p.path.len());
         for seg in &p.path {
             keys.push(match seg {
@@ -904,11 +923,17 @@ impl<'p> Interp<'p> {
         let (Root::Local(slot) | Root::Up(_, slot)) = p.root;
         let mut slots = frame.slots.borrow_mut();
         let mut cur: &mut Value = &mut slots[slot as usize];
+        let mut decl = p.decl.as_ref().map(|t| Decl::Var(&p.name, t));
         let n = p.path.len();
         for (i, seg) in p.path.iter().enumerate() {
             let last = i + 1 == n;
+            decl = None;
             cur = match seg {
-                Seg::Field(name, sp) => self.field_mut(cur, name, *sp)?,
+                Seg::Field(name, sp) => {
+                    let (c, d) = self.field_mut(cur, name, *sp)?;
+                    decl = d;
+                    c
+                }
                 Seg::Index(_, sp) => {
                     let key = keys[i].take().unwrap();
                     let create = if last {
@@ -934,10 +959,28 @@ impl<'p> Interp<'p> {
                 }
             };
         }
-        op(cur)
+        op(cur, decl)
     }
 
-    fn field_mut<'v>(&self, cur: &'v mut Value, name: &str, span: Span) -> R<&'v mut Value> {
+    /// `v`, stored where `decl` says, converted to the declared type: an int
+    /// stored in an `f64` field or variable becomes a float, and a sized int
+    /// is range-checked.
+    fn conform(&self, v: Value, decl: Option<Decl>, span: Span) -> R<Value> {
+        let Some(d) = decl else { return Ok(v) };
+        let t = match d {
+            Decl::Var(_, t) | Decl::Field(_, _, t) => t,
+        };
+        self.coerce(v, t).map_err(|got| {
+            let want = ty_name(t, self.prog);
+            match d {
+                Decl::Var(name, _) => panic("E0301", span, format!("`{name}` is declared {want}, got {got}")),
+                Decl::Field(field, owner, _) => panic("E0301", span, format!("field `{field}` of {owner}: want {want} got {got}")),
+            }
+        })
+    }
+
+    /// A struct's field, made unique, and its declared type.
+    fn field_mut<'v>(&self, cur: &'v mut Value, name: &str, span: Span) -> R<(&'v mut Value, Option<Decl<'p>>)> {
         let kind = self.kind(cur);
         match cur {
             Value::Struct(o) => {
@@ -945,10 +988,11 @@ impl<'p> Interp<'p> {
                 let Some(i) = def.fields.iter().position(|fd| fd.name == name) else {
                     return Err(panic("E0208", span, format!("{} has no field `{name}`", def.name)));
                 };
-                Ok(&mut Rc::make_mut(o).fields[i])
+                let fd = &def.fields[i];
+                Ok((&mut Rc::make_mut(o).fields[i], Some(Decl::Field(&fd.name, &def.name, &fd.ty))))
             }
             Value::Tuple(xs) => match name.parse::<usize>() {
-                Ok(i) if i < xs.len() => Ok(&mut Rc::make_mut(xs)[i]),
+                Ok(i) if i < xs.len() => Ok((&mut Rc::make_mut(xs)[i], None)),
                 _ => Err(panic("E0402", span, format!("tuple has no element {name}"))),
             },
             _ => Err(panic("E0301", span, format!("cannot set field `{name}` on {kind}"))),

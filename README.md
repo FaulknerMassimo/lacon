@@ -22,10 +22,11 @@ its output matches the interpreter's byte for byte on every golden program
 and task. Phase 2 has started: native code holds the ints, bools and floats
 the checker proves as C scalars, packs lists of them, takes small values
 from free lists rather than malloc, inlines lambdas given to `map`,
-`filter` and `sort_by`, and reads a list once before a loop that only
-assigns its elements. On seven benchmark programs it takes 1.0-2.6x
-Rust's time (geometric mean 1.4x). fib (2.6x) and knapsack (1.85x) are the
-slowest, and overflow checks are much of what they pay for. `fix` applies
+`filter` and `sort_by`, reads a list once before a loop that only
+assigns its elements or their fields, and reads struct fields in place.
+On nine benchmark programs it takes 1.0-4.5x Rust's time (geometric mean
+1.5x). nbody (4.5x), with its tests on every field access, and fib (2.6x),
+which pays for overflow checks, are the slowest. `fix` applies
 the fixes diagnostics carry, `put` replaces a function by name, and `q`
 answers queries (an item's source, its callers, a type), though no
 harness run uses them yet.

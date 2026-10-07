@@ -1,0 +1,19 @@
+enum Tree = Leaf | Node(Tree, Tree)
+
+fn make(d int) Tree = if d == 0: Leaf else: Node(make(d - 1), make(d - 1))
+
+fn check(t Tree) int = match t
+  Leaf: 1
+  Node(l, r): 1 + check(l) + check(r)
+
+fn main() =
+  n = 16
+  long = make(n)
+  var d = 4
+  while d <= n:
+    iters = 1 << (n - d + 4)
+    var c = 0
+    for i in 0..iters: c += check(make(d))
+    print("{iters} trees of depth {d} check: {c}")
+    d += 2
+  print("long lived tree of depth {n} check: {check(long)}")

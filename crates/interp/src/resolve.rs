@@ -18,6 +18,8 @@ use crate::value::{Func, Value};
 struct Binding {
     slot: u32,
     mutable: bool,
+    /// The declared type, for a parameter or `var x T = ...`.
+    ty: Option<Ty>,
 }
 
 #[derive(Default)]
@@ -596,13 +598,14 @@ impl<'a> Resolver<'a> {
     fn fn_body(&mut self, id: FnId, f: &FnDecl) {
         let ret_optional = matches!(f.ret, Some(TypeExpr::Optional(_)));
         let mut ctx = Ctx { scopes: vec![HashMap::new()], ret_optional, ..Default::default() };
-        for p in &f.params {
+        for (i, p) in f.params.iter().enumerate() {
             if ctx.scopes[0].contains_key(&p.name.name) {
                 self.err("E0205", p.name.span, format!("duplicate parameter `{}`", p.name.name));
             }
             let slot = ctx.nslots;
             ctx.nslots += 1;
-            ctx.scopes[0].insert(p.name.name.clone(), Binding { slot, mutable: p.mode != Mode::Borrow });
+            let ty = self.prog.fns[id as usize].params.get(i).map(|p| p.ty.clone());
+            ctx.scopes[0].insert(p.name.name.clone(), Binding { slot, mutable: p.mode != Mode::Borrow, ty });
         }
         self.ctxs.push(ctx);
         self.cur_fn = Some(id);
@@ -632,10 +635,14 @@ impl<'a> Resolver<'a> {
     }
 
     fn declare(&mut self, name: &str, mutable: bool) -> u32 {
+        self.declare_ty(name, mutable, None)
+    }
+
+    fn declare_ty(&mut self, name: &str, mutable: bool, ty: Option<Ty>) -> u32 {
         let ctx = self.ctx();
         let slot = ctx.nslots;
         ctx.nslots += 1;
-        ctx.scopes.last_mut().unwrap().insert(name.to_string(), Binding { slot, mutable });
+        ctx.scopes.last_mut().unwrap().insert(name.to_string(), Binding { slot, mutable, ty });
         slot
     }
 
@@ -771,7 +778,7 @@ impl<'a> Resolver<'a> {
                 let v = self.expr(value);
                 let gens = self.cur_generics();
                 let ty = ty.as_ref().map(|t| self.ty(t, &gens));
-                let slot = self.declare(&name.name, *mutable);
+                let slot = self.declare_ty(&name.name, *mutable, ty.clone());
                 St::Bind(PatIr::Bind(slot), v, ty, name.span)
             }
             Stmt::Assign { targets, op, value, span } => return self.assign(targets, *op, value, *span),
@@ -869,7 +876,7 @@ impl<'a> Resolver<'a> {
                     }
                     Some((depth, b, innermost)) => {
                         if b.mutable {
-                            let place = Place { root: self.root(depth, b.slot), name: n.as_str().into(), mutable: true, path: vec![], span: t.span };
+                            let place = Place { root: self.root(depth, b.slot), name: n.as_str().into(), mutable: true, decl: b.ty, path: vec![], span: t.span };
                             return Some(St::Assign { place, op, value: v, span });
                         }
                         if innermost && op.is_none() {
@@ -944,7 +951,7 @@ impl<'a> Resolver<'a> {
         match &e.kind {
             ExprKind::Name(n) => {
                 let (depth, b, _) = self.lookup(n)?;
-                Some(Place { root: self.root(depth, b.slot), name: n.as_str().into(), mutable: b.mutable, path: vec![], span: e.span })
+                Some(Place { root: self.root(depth, b.slot), name: n.as_str().into(), mutable: b.mutable, decl: b.ty, path: vec![], span: e.span })
             }
             ExprKind::Field { obj, name } => {
                 if !self.field_names.contains(&name.name) && name.name.parse::<usize>().is_err() {
@@ -1171,7 +1178,7 @@ impl<'a> Resolver<'a> {
         for p in params {
             let slot = ctx.nslots;
             ctx.nslots += 1;
-            ctx.scopes[0].insert(p.name.clone(), Binding { slot, mutable: false });
+            ctx.scopes[0].insert(p.name.clone(), Binding { slot, mutable: false, ty: None });
             slots.push(slot);
         }
         self.ctxs.push(ctx);

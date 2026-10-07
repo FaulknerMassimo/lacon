@@ -901,6 +901,15 @@ lc_v lc_coerce_field(lc_v v, const lc_ty *t, const char *field, const char *owne
     return v;
 }
 
+lc_v lc_coerce_var(lc_v v, const lc_ty *t, const char *name, const char *site) {
+    char got[256], want[256];
+    if (!lc_coerce(&v, t, got, sizeof got)) {
+        if (name) lc_panic("E0301", site, "`%s` is declared %s, got %s", name, lc_ty_name(t, want, sizeof want), got);
+        lc_panic("E0301", site, "declared %s, got %s", lc_ty_name(t, want, sizeof want), got);
+    }
+    return v;
+}
+
 _Noreturn void lc_no_arm(lc_v v, const char *site) {
     lc_buf t = {0};
     lc_panic("E0411", site, "no match arm for %s", short_repr(v, &t));
@@ -1074,6 +1083,41 @@ lc_v *lc_place_field(lc_v *p, int field_id, const char *name, const char *site) 
         lc_panic("E0402", site, "tuple has no element %s", name);
     }
     lc_panic("E0301", site, "cannot set field `%s` on %s", name, lc_kind(*p, k));
+}
+
+/* The field a store goes to, made unique, and its declared type (NULL for
+ * a tuple's element). */
+static lc_v *field_slot(lc_v *p, int field_id, const char *name, const lc_ty **ty, const char **owner, const char *site) {
+    *ty = NULL;
+    if (p->tag == T_STRUCT) {
+        lc_make_unique(p);
+        lc_rec *r = REC(*p);
+        const lc_struct_info *si = &lc_prog->structs[r->ty];
+        for (int i = 0; i < si->nfields; i++)
+            if (si->field_ids[i] == field_id) {
+                *ty = si->field_tys[i];
+                *owner = si->name;
+                return &r->f[i];
+            }
+    }
+    return lc_place_field(p, field_id, name, site);
+}
+
+void lc_store_field(lc_v *p, int field_id, const char *name, lc_v v, const char *fsite, const char *vsite) {
+    const lc_ty *ty;
+    const char *owner = "";
+    lc_v *slot = field_slot(p, field_id, name, &ty, &owner, fsite);
+    if (ty) v = lc_coerce_field(v, ty, name, owner, false, vsite);
+    lc_set(slot, v);
+}
+
+void lc_update_field(lc_v *p, int field_id, const char *name, int op, lc_v v, const char *fsite, const char *site) {
+    const lc_ty *ty;
+    const char *owner = "";
+    lc_v *slot = field_slot(p, field_id, name, &ty, &owner, fsite);
+    lc_v old = lc_take(slot);
+    lc_v nv = lc_arith_own(op, old, v, site);
+    *slot = ty ? lc_coerce_field(nv, ty, name, owner, false, site) : nv;
 }
 
 static lc_v zero_of(lc_v v, bool *ok) {

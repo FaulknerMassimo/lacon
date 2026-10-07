@@ -1,0 +1,9 @@
+# A field read through a loop's view of the list, one past its end.
+type P {x f64}
+
+fn main() =
+  ps = [P{1}, P{2}]
+  var t = 0.0
+  for i in 0..ps.len + 1:
+    t += ps[i].x
+    print(t)

@@ -1,0 +1,3 @@
+C{r: 248, g: 0}
+E0301 declared_range.lc:9:5 field `r` of C: want u8 got 258 (out of range for u8)
+[exit 1]

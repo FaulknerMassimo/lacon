@@ -108,7 +108,15 @@ static inline __attribute__((always_inline)) lc_v lc_take(lc_v *slot) {
 
 /* ----- program description, filled in by the generated code ----- */
 
-typedef struct { const char *name; int nfields; const int *field_ids; const char *const *field_names; } lc_struct_info;
+struct lc_ty;
+typedef struct {
+    const char *name;
+    int nfields;
+    const int *field_ids;
+    const char *const *field_names;
+    /* Declared types, which a value stored in the field takes. */
+    const struct lc_ty *const *field_tys;
+} lc_struct_info;
 typedef struct { const char *name; int nfields; } lc_variant_info;
 typedef struct { const char *name; int nvariants; const lc_variant_info *variants; } lc_enum_info;
 typedef struct {
@@ -271,6 +279,9 @@ lc_v lc_field_fallback(lc_v o, const char *name, int method, const char *site);
 lc_v lc_coerce_ret(lc_v v, const lc_ty *t, const char *fn, const char *site);
 lc_v lc_coerce_arg(lc_v v, const lc_ty *t, const char *param, const char *fn, const char *site);
 lc_v lc_coerce_field(lc_v v, const lc_ty *t, const char *field, const char *owner, bool variant, const char *site);
+/* A value stored in a variable declared with a type (`name` NULL for the
+ * binding that declares it). */
+lc_v lc_coerce_var(lc_v v, const lc_ty *t, const char *name, const char *site);
 _Noreturn void lc_no_arm(lc_v v, const char *site);
 _Noreturn void lc_bad_unpack(lc_v v, int n, bool in_for, const char *site);
 void lc_check_ignored(lc_v v, const char *site);
@@ -299,6 +310,12 @@ const char *lc_ty_name(const lc_ty *t, char *buf, size_t len);
 
 enum { VIV_NO, VIV_INSERT, VIV_ZERO_OF, VIV_METHOD, VIV_MAP };
 lc_v *lc_place_field(lc_v *p, int field_id, const char *name, const char *site);
+/* `p.f = v` and `p.f op= v`, where `p` points at the struct or tuple: the
+ * stored value takes a struct field's declared type. A missing field is
+ * reported at `fsite`; a value of the wrong type at `vsite`, or for an
+ * update at `site`, with the arithmetic. */
+void lc_store_field(lc_v *p, int field_id, const char *name, lc_v v, const char *fsite, const char *vsite);
+void lc_update_field(lc_v *p, int field_id, const char *name, int op, lc_v v, const char *fsite, const char *site);
 lc_v *lc_place_index(lc_v *p, lc_v key, int viv, lc_v zero_of, int method, const char *site);
 void lc_make_unique(lc_v *p);
 

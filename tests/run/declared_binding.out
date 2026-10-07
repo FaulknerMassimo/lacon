@@ -1,0 +1,3 @@
+255
+E0301 declared_binding.lc:7:3 declared u8, got 510 (out of range for u8)
+[exit 1]

@@ -7,8 +7,8 @@
 true true true false false
 false true
 23.96875 23.0 24.0 23.96875 4.895789006891535
-P{x: 1.0, y: 2.5} P{x: 3, y: 2.5} 5.5
+P{x: 1.0, y: 2.5} P{x: 3.0, y: 2.5} 5.5
 [2.0, 4.0]
 [3.0, 4.0] 2.0
-E0301 native_floats.lc:43:15 cannot compare f64 with f64
+E0301 native_floats.lc:44:15 cannot compare f64 with f64
 [exit 1]

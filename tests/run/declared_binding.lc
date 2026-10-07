@@ -1,0 +1,8 @@
+# A binding declared with a sized int type checks its value's range.
+fn main() =
+  var b u8 = 250
+  b += 5
+  print(b)
+  n = b * 2
+  c u8 = n
+  print(c)

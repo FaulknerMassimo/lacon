@@ -230,9 +230,10 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
 - **Now:** the parser, the resolver (to an IR of slots and explicit lambdas),
   the type checker, then either the interpreter or the C backend, which
   unboxes the ints, bools and floats the checker proves (§16), packs
-  lists of them (§17), takes small values from free lists (§18) and reads
-  a list once before a loop that only assigns its elements (§20). Mode
-  checking, RC insertion and reuse analysis are not built yet.
+  lists of them (§17), takes small values from free lists (§18), reads
+  a list once before a loop that only assigns its elements (§20) or their
+  fields, and reads struct fields in place (§23). Mode checking, RC
+  insertion and reuse analysis are not built yet.
 - **Backends, in order:**
   1. **C** first. That's how Koka, Nim and Lean work, and it's the fastest way
      to native speed and portability.
@@ -340,6 +341,12 @@ geometric mean is 1.40x. Range facts reach little of what the three have
 left (§21), so Perceus reuse is next for speed.
 `fix`, `put` and `q` are built (§22), but no harness run has used them
 yet. Mode checking isn't started.
+Two benchmarks were added, nbody and trees (§23). nbody ran at 56x Rust,
+which found a semantic bug: an int assigned to an `f64` field or typed
+variable stayed an int, so `/` truncated. Stores now take the declared
+type, and native code reads and updates struct fields in place: nbody
+went to 4.5x, and the nine programs' geometric mean is 1.51x, at the
+bar rather than under it.
 
 ### Phase 3 — Speed and scale
 
@@ -480,6 +487,9 @@ overturn.
 - **Numbers.** Ints and floats mix and give `f64`; int `/` and `%` truncate
   like Rust; integers are 64-bit at run time, with declared sized types
   (`u8`, `u32`) range-checked at function, struct and return boundaries.
+  A value stored where a type is declared takes it: a parameter, a
+  result, a struct field, a typed binding (`x f64 = 7` is `7.0`) and an
+  assignment to any of these (§23). List and map elements don't convert.
 - **Determinism.** Maps and sets keep insertion order, so output never
   depends on hashing.
 - **Strings** index and slice by character. One-character strings stand in
@@ -1542,10 +1552,118 @@ checker should reject. A stack `var st = []` filled by
 `st.push(int(tok))`, with no `?`, is a `[int!]`, and `a + b` on two of its
 elements passed, because the element type was still unknown at `a + b`,
 which comes before the `push`. `q type` showed it: `st` is `[int!]` and
-`b` is `int!`. It isn't fixed here.
+`b` is `int!`. §23 fixes it.
 
 Not done: neither the harness nor either primer offers these commands,
 so no run has measured them, and `rename`, `add-field` and mode checking
 aren't built. Next: a harness mode in which Lacon episodes edit with
 `lacon put` and `lacon fix` and read with `lacon q` and `lacon sig`, in
 place of Write, Edit and Read, to see whether they cut tokens-to-green.
+
+---
+
+## 23. Phase 2: declared types on stores, and struct fields in native code
+
+The seven benchmarks had no structs updated in place and no recursive
+data, so two more cover them: `nbody` (float fields of five structs in a
+list, updated in place, 6,000,000 steps) and `trees` (a recursive enum
+built and walked, depth 16). trees ran at 1.02x Rust from the start;
+nbody at 56x. Finding why turned up a semantic bug.
+
+**An `f64` field could hold an int.** By design an `f64` can hold an int
+at run time, so it prints as Python would (§16). Construction, arguments
+and returns convert an int to a float, but three stores didn't: assigning
+a field (`p.x = 7`), a typed binding (`x f64 = 7`) and assigning a typed
+variable (`var g f64 = 1.5`, then `g = 7`). Int `/` truncates, so `p.x / 2`
+gave 3 for a field declared `f64`, with no error. Now a value stored in a
+struct field, or in a variable declared with a type (a parameter or
+`var x T = ...`), takes that type: an int becomes a float, a list of ints
+stored as an `[f64]` becomes floats, and a sized int is range-checked, so
+`c.r += 10` on a `u8` field holding 250 is an error, where it used to store
+260. List and map elements and a tuple's elements keep what they are
+given, as before; `push` and the other methods would need the same rule.
+Two golden outputs changed: `q.x = 3` into an `f64` field prints `3.0`,
+and `var g [f64] = [1, 2]` holds floats, as a `[f64]` argument already did.
+
+The resolver gives each place the declared type of its variable, and the
+interpreter's walk of a place finds each field's declared type as it goes.
+Native code does the same through `lc_store_field` and `lc_update_field`,
+which look the field's type up in the struct table (now with each field's
+type), and `lc_coerce_var`.
+
+**Fields in native code.** Since every store converts, a field declared
+`f64` of a struct the checker knows always holds a float, and one declared
+an int type or `bool` holds one of those. Native code now:
+
+- reads such a field as a C scalar in place, without taking a reference.
+  Field reads had gone through a boxed value, and their arithmetic through
+  the runtime's generic `lc_arith_own`: most of nbody's 56x.
+- reads `xs[i].f` from the element of the borrowed list, without retaining
+  the element.
+- updates `p.f = v` and `p.f op= v` in place when nothing else holds the
+  struct, for fields declared `f64` or `int`.
+- takes a loop view (§20) of a list of structs when a loop only reads
+  elements, reads their fields and assigns their fields. Each access then
+  tests the bounds, the element's tag and the struct's type with the list
+  in registers. An assignment that misses, because something else holds
+  the list or the struct, takes the general path and reads the view again.
+- writes the general path of a field read from a list (`xs[i].f`) as
+  ending in an error: on a list the checker types as one of these structs
+  it can only report an index out of range, or E0000 for a checker bug.
+  Knowing nothing else happens there, gcc shares the tests between reads;
+  that took nbody from 0.38 s to 0.23 s at 2,000,000 steps.
+
+A hand-written C version with the same layout (a list of tagged pointers
+to records of tagged fields) and no tests runs as fast as Rust: 0.077 s
+against 0.065 s at 2,000,000 steps. What's left is the tests on each
+access: the bounds, the element's tag, the struct's type and the field's
+tag, and for a store that nothing else holds the struct. A store's
+general path can't be written as ending in an error, since a struct two
+elements share must be copied first; written so on bodies nothing shares,
+the stores would save another 24%.
+
+**A checker gap closed.** §22's stack of `int!` values: `a + b` on two
+elements of a list whose element type was learned later went unchecked,
+because both operands had the same unknown type. It is now checked once
+the type is known, and reported as E0406 with the fix `a?`
+(`tests/check/late_elements.lc`). It changes no generated C: every golden,
+task and benchmark program compiles to the same C as before.
+
+`declared_stores.lc` covers each kind of store: fields assigned, updated
+and unpacked, nested, through a list and a map and a `mut` parameter;
+typed bindings and variables; generic fields, tuples and list elements,
+which don't convert; and loops through a view over structs two elements
+share and a list another variable holds. `declared_range.lc`,
+`declared_binding.lc` and `field_far.lc` cover a sized field out of range
+in a loop, a sized binding out of range, and a field read through a view
+one past the end.
+
+Verified as before: every golden program and task input gives the same
+stdout, stderr and exit code from the interpreter and from native code
+(67 programs, 144 runs), typed and with `LACON_BOXED=1`, and typed under
+AddressSanitizer and UndefinedBehaviorSanitizer; `bench/tasks/check.py
+--native` passes every task. Generated C for the 30 tasks is 2% larger
+(548 KB from 535 KB).
+
+**Results**, on §17's machine, pinned, best of seven runs. Before is
+§22's compiler:
+
+| Program | Before | After |
+|---|---|---|
+| collatz | 1.61x | 1.60x |
+| fib | 2.62x | 2.62x |
+| knapsack | 1.83x | 1.82x |
+| mandel | 1.06x | 1.04x |
+| nbody | 56.2x | 4.52x |
+| records | 1.04x | 1.02x |
+| sieve | 1.13x | 1.12x |
+| trees | 1.02x | 1.02x |
+| wordfreq | 1.00x | 1.00x |
+| geometric mean | 2.00x | 1.51x |
+
+(Native time as a multiple of Rust's, `rustc -O`. The seven of §21 alone
+have a geometric mean of 1.37x.) The nine are at Phase 2's 1.5x bar,
+not under it: nbody is 4.5x, and fib, knapsack and collatz pay for
+overflow checks (§20, §21). Holding a struct's fields unboxed, or proving
+the tests on a field access once for a whole loop, would close most of
+nbody's gap.
