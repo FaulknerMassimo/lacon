@@ -1,0 +1,7 @@
+3
+-1
+[2, 3]
+E0408 stack_overflow.lc:5:22 stack overflow: recursion deeper than 20000 calls (in `down`)
+  in `down`, called at stack_overflow.lc:5:22 (19998 times)
+  in `down`, called at stack_overflow.lc:11:9
+[exit 1]

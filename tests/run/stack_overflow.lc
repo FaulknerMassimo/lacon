@@ -1,0 +1,11 @@
+# Calls that return, unwind or run inside a lambda leave the depth as they
+# found it, so the overflow comes at the same depth natively.
+fn inc(n int) int = n + 1
+fn checked(s str) int! = int(s)? + inc(0)
+fn down(n int) int = down(n + 1) + 1
+
+fn main() =
+  print(inc(inc(1)))
+  print(checked("x") ?? -1)
+  print([1, 2].map(inc(it)))
+  print(down(0))

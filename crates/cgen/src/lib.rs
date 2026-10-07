@@ -105,11 +105,18 @@ struct Cx {
     slots: Vec<Rep>,
     /// How the current function returns its value: `RETURN` takes this.
     ret: Rep,
+    /// The slots of lists of ints, bools or floats that no lambda of the
+    /// current frame uses (a call could change those), with that kind:
+    /// what a loop may take a view of (see `view_slots`).
+    viewable: HashMap<u32, Rep>,
+    /// The enclosing loops' views (`lc_view`) of list slots: slot, C name,
+    /// kind.
+    views: Vec<(u32, String, Rep)>,
 }
 
 impl Cx {
     fn new(slots: Vec<Rep>) -> Cx {
-        Cx { max_up: 0, slots, ret: Rep::Boxed }
+        Cx { max_up: 0, slots, ret: Rep::Boxed, viewable: HashMap::new(), views: Vec::new() }
     }
 }
 
@@ -527,6 +534,88 @@ fn only_read(prog: &Program, body: &Ex, s: u32) -> bool {
         }
     });
     !assigned
+}
+
+/// The slots of the frame whose body is `body` that a lambda in it uses.
+fn captured_slots(body: &Ex) -> std::collections::HashSet<u32> {
+    let mut out = std::collections::HashSet::new();
+    walk_ex(body, 0, &mut |n, d| match n {
+        Node::Ex(Ex::Up(k, s, _)) if *k == d => {
+            out.insert(*s);
+        }
+        Node::Place(Place { root: Root::Up(k, s), .. }, _) if *k == d => {
+            out.insert(*s);
+        }
+        _ => {}
+    });
+    out
+}
+
+/// The slots a loop (its condition and body) uses only to read elements,
+/// assign elements (`xs[i] = v`, `xs[i] op= v`) and read `len`: it never
+/// binds or assigns them, passes them anywhere, calls a method on them or
+/// reaches into an element. Nothing in such a loop changes their lists but
+/// those assignments, unless a lambda that captured one is called, so the
+/// caller leaves out captured slots.
+fn view_slots(cond: Option<&Ex>, body: &[St]) -> Vec<u32> {
+    // Per slot: uses as a value, the allowed ones, uses as a place, the
+    // allowed ones.
+    let mut uses: HashMap<u32, [usize; 4]> = HashMap::new();
+    let mut bad = std::collections::HashSet::new();
+    let local = |e: &Ex| match e {
+        Ex::Local(s, _) => Some(*s),
+        _ => None,
+    };
+    let mut f = |n: Node, d: u32| {
+        if d != 0 {
+            return;
+        }
+        let mut bound = Vec::new();
+        match n {
+            Node::Ex(Ex::Local(s, _)) => uses.entry(*s).or_default()[0] += 1,
+            Node::Ex(Ex::Index { obj, .. }) => {
+                if let Some(s) = local(obj) {
+                    uses.entry(s).or_default()[1] += 1;
+                }
+            }
+            Node::Ex(Ex::Field { obj, name, user: None, .. }) if &**name == "len" => {
+                if let Some(s) = local(obj) {
+                    uses.entry(s).or_default()[1] += 1;
+                }
+            }
+            Node::Ex(Ex::Method { recv, name, user: None, args, .. }) if &**name == "len" && args.is_empty() => match recv {
+                Recv::Value(obj) => {
+                    if let Some(s) = local(obj) {
+                        uses.entry(s).or_default()[1] += 1;
+                    }
+                }
+                Recv::Place(Place { root: Root::Local(s), path, .. }) if path.is_empty() => uses.entry(*s).or_default()[3] += 1,
+                _ => {}
+            },
+            Node::Place(Place { root: Root::Local(s), .. }, _) => uses.entry(*s).or_default()[2] += 1,
+            Node::St(St::Assign { place: Place { root: Root::Local(s), path, .. }, .. }) if matches!(&path[..], [Seg::Index(..)]) => {
+                uses.entry(*s).or_default()[3] += 1;
+            }
+            Node::St(St::Bind(p, ..)) | Node::St(St::For { pat: p, .. }) => pat_slots(p, &mut bound),
+            Node::St(St::AssignMulti { targets, .. }) => {
+                for t in targets {
+                    if let Target::Bind(s) = t {
+                        bound.push(*s);
+                    }
+                }
+            }
+            Node::Ex(Ex::Match { arms, .. }) => arms.iter().for_each(|a| pat_slots(&a.pat, &mut bound)),
+            _ => {}
+        }
+        bad.extend(bound);
+    };
+    if let Some(c) = cond {
+        walk_ex(c, 0, &mut f);
+    }
+    walk_stmts(body, 0, &mut f);
+    let mut out: Vec<u32> = uses.into_iter().filter(|(s, [v, va, p, pa])| v == va && p == pa && !bad.contains(s)).map(|(s, _)| s).collect();
+    out.sort_unstable();
+    out
 }
 
 impl<'p> Gen<'p> {
@@ -1009,6 +1098,7 @@ impl<'p> Gen<'p> {
         let (params, floats) = param_slots(fd);
         let mut cx = Cx::new(self.frame_reps(&fd.body, fd.nslots, &[], &params, &floats));
         cx.ret = en.ret;
+        cx.viewable = self.viewable(&fd.body);
         let saved = std::mem::replace(&mut self.cx, cx);
         let body = match en.ret {
             Rep::Int => self.int(&fd.body),
@@ -1044,7 +1134,8 @@ impl<'p> Gen<'p> {
                 }
             }
         }
-        let _ = writeln!(f, "    lc_enter({id});\n    ret = {body};\n    goto out;\nout:\n    lc_leave();");
+        // The caller pushed this call's record (`lc_push`) and pops it.
+        let _ = writeln!(f, "    ret = {body};\n    goto out;\nout:");
         match (&fd.ret, en.ret) {
             (Some(t), Rep::Boxed) => {
                 let ty = self.ty(t);
@@ -1086,8 +1177,8 @@ impl<'p> Gen<'p> {
             let _ = writeln!(f, "    {} Q{i} = {v};", c_type(*r));
             args.push(format!("Q{i}"));
         }
-        let call = box_c(en.ret, &format!("FT{id}({})", args.join(", ")));
-        let _ = writeln!(f, "    return {call};\n}}\n");
+        let _ = writeln!(f, "    int64_t d = lc_push({id}, lc_callsite);\n    {} r = FT{id}({});\n    lc_depth = d;", c_type(en.ret), args.join(", "));
+        let _ = writeln!(f, "    return {};\n}}\n", box_c(en.ret, "r"));
         f
     }
 
@@ -1133,7 +1224,8 @@ impl<'p> Gen<'p> {
                 pass.push(q);
             }
         }
-        let _ = write!(code, "lc_callsite = {site}; FT{id}({}); }})", pass.join(", "));
+        let (d, r) = (self.t(), self.t());
+        let _ = write!(code, "int64_t {d} = lc_push({id}, {site}); {} {r} = FT{id}({}); lc_depth = {d}; {r}; }})", c_type(en.ret), pass.join(", "));
         code
     }
 
@@ -1147,6 +1239,7 @@ impl<'p> Gen<'p> {
         let (params, floats) = param_slots(fd);
         let reps = self.frame_reps(&fd.body, fd.nslots, &muts, &params, &floats);
         let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
+        self.cx.viewable = self.viewable(&fd.body);
         let heap = has_lambda(&fd.body);
         let body = self.expr(&fd.body);
         let natives = self.native_decls();
@@ -1460,9 +1553,20 @@ impl<'p> Gen<'p> {
             Some(x) => (format!("double *{f}; "), format!("else if (({f} = lc_float_at({ptr}, {k})) != NULL) *{f} = {x}; ")),
             None => (String::new(), String::new()),
         };
-        Some(format!(
-            "{{ {ct} {v} = {vv}; {kc}int64_t {k} = {kv}; {walk}{ct} *{e} = {at}({ptr}, {k}); {fdecl}if ({e}) *{e} = {new}; {also}else {slow}; {rk}}} "
-        ))
+        let view = match (&place.root, n) {
+            (Root::Local(s), 1) => self.view_of(*s),
+            _ => None,
+        };
+        let reread = self.view_reread(place);
+        match view {
+            Some((_, w, kind)) if kind == vrep => Some(format!(
+                "{{ {ct} {v} = {vv}; {kc}int64_t {k} = {kv}; {walk}{ct} *{e} = lc_view_{}({w}, {k}); if ({e}) *{e} = {new}; else {{ {e} = {at}({ptr}, {k}); {fdecl}if ({e}) *{e} = {new}; {also}else {slow}; {reread}}} {rk}}} ",
+                &at["lc_".len()..]
+            )),
+            _ => Some(format!(
+                "{{ {ct} {v} = {vv}; {kc}int64_t {k} = {kv}; {walk}{ct} *{e} = {at}({ptr}, {k}); {fdecl}if ({e}) *{e} = {new}; {also}else {slow}; {reread}{rk}}} "
+            )),
+        }
     }
 
     fn release_all(names: &[String]) -> String {
@@ -1833,6 +1937,9 @@ impl<'p> Gen<'p> {
                 let site = self.site(*span);
                 let fid = self.field_id("len");
                 let o = self.slot(0, s);
+                if let Some((_, w, _)) = self.view_of(s) {
+                    return Some(format!("({w}.data ? {w}.len : lc_len({o}, {fid}, {site}))"));
+                }
                 return Some(format!("lc_len({o}, {fid}, {site})"));
             }
             _ => return None,
@@ -1840,6 +1947,9 @@ impl<'p> Gen<'p> {
         let site = self.site(span);
         let fid = self.field_id("len");
         if let Some(o) = self.borrowed(obj) {
+            if let Some((_, w, _)) = self.view(obj) {
+                return Some(format!("({w}.data ? {w}.len : lc_len({o}, {fid}, {site}))"));
+            }
             return Some(format!("lc_len({o}, {fid}, {site})"));
         }
         let (o, n) = (self.t(), self.t());
@@ -1847,11 +1957,101 @@ impl<'p> Gen<'p> {
         Some(format!("({{ lc_v {o} = {ov}; int64_t {n} = lc_len({o}, {fid}, {site}); lc_release({o}); {n}; }})"))
     }
 
+    /// The slots of a frame a loop in it may take a view of, by kind: lists
+    /// of ints, bools or floats that no lambda in it uses.
+    fn viewable(&self, body: &Ex) -> HashMap<u32, Rep> {
+        let mut out = HashMap::new();
+        let Some(ts) = self.types.frame(body).filter(|_| self.typed) else { return out };
+        let captured = captured_slots(body);
+        for (s, t) in ts.iter().enumerate() {
+            let kind = match t {
+                T::List(e) => match **e {
+                    T::Int(_) => Rep::Int,
+                    T::Bool => Rep::Bool,
+                    T::Float => Rep::Float,
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            if !captured.contains(&(s as u32)) {
+                out.insert(s as u32, kind);
+            }
+        }
+        out
+    }
+
+    /// Views (`lc_view`) of the list slots a loop only reads and assigns
+    /// elements of, for `elem`, `assign_elem` and `len_fast` to use: the C
+    /// that reads them, to run before the loop, and how many views to drop
+    /// after it (`close_views`).
+    fn open_views(&mut self, cond: Option<&Ex>, body: &[St]) -> (String, usize) {
+        let mut code = String::new();
+        let mut n = 0;
+        for s in view_slots(cond, body) {
+            let Some(&kind) = self.cx.viewable.get(&s) else { continue };
+            if self.slot_rep(s) != Rep::Boxed || self.view_of(s).is_some() {
+                continue;
+            }
+            let w = self.t();
+            let _ = write!(code, "lc_view {w} = {}; ", self.view_read(s, kind));
+            self.cx.views.push((s, w, kind));
+            n += 1;
+        }
+        (code, n)
+    }
+
+    fn close_views(&mut self, n: usize) {
+        let keep = self.cx.views.len() - n;
+        self.cx.views.truncate(keep);
+    }
+
+    /// Reads the view of slot `s`, packed as `kind`.
+    fn view_read(&mut self, s: u32, kind: Rep) -> String {
+        let k = match kind {
+            Rep::Int => "K_INT",
+            Rep::Bool => "K_BOOL",
+            _ => "K_FLOAT",
+        };
+        format!("lc_view_of({}, {k})", self.slot(0, s))
+    }
+
+    /// The view an enclosing loop took of `e`'s list, if `e` is a slot.
+    fn view(&self, e: &Ex) -> Option<(u32, String, Rep)> {
+        let Ex::Local(s, _) = e else { return None };
+        self.view_of(*s)
+    }
+
+    fn view_of(&self, s: u32) -> Option<(u32, String, Rep)> {
+        self.cx.views.iter().rev().find(|(v, _, _)| *v == s).cloned()
+    }
+
+    /// After an assignment to an element of the list in `place` that may
+    /// have copied it or changed its kind: reads its view again, if it has
+    /// one.
+    fn view_reread(&mut self, place: &Place) -> String {
+        match (&place.root, place.path.len()) {
+            (Root::Local(s), 1) => match self.view_of(*s) {
+                Some((s, w, kind)) => format!("{w} = {}; ", self.view_read(s, kind)),
+                None => String::new(),
+            },
+            _ => String::new(),
+        }
+    }
+
     /// `obj[index]` with an unboxed index, its element typed int, bool or
     /// `f64` (`rep` Float: a number read as a double): read from a packed
     /// list without boxing.
     fn elem(&mut self, obj: &Ex, index: &Ex, span: Span, rep: Rep) -> String {
         let site = self.site(span);
+        if let Some((s, w, kind)) = self.view(obj).filter(|v| v.2 == rep) {
+            let get = match kind {
+                Rep::Int => "lc_view_int",
+                Rep::Bool => "lc_view_bool",
+                _ => "lc_view_num",
+            };
+            let i = self.int(index);
+            return format!("{get}({w}, {i}, &{}, {site})", self.slot(0, s));
+        }
         let get = match rep {
             Rep::Int => "lc_get_int",
             Rep::Bool => "lc_get_bool",
@@ -3041,7 +3241,8 @@ impl<'p> Gen<'p> {
                     None => self.store_place(place, &v),
                     Some(op) => self.update_place(place, *op, &v, &site),
                 };
-                format!("{{ lc_v {v} = {vv}; {st}}} ")
+                let reread = self.view_reread(place);
+                format!("{{ lc_v {v} = {vv}; {st}{reread}}} ")
             }
             St::AssignMulti { targets, value, span } => {
                 let site = self.site(*span);
@@ -3100,11 +3301,13 @@ impl<'p> Gen<'p> {
                     },
                     _ => String::new(),
                 };
+                let (views, nv) = self.open_views(None, body);
                 let mut bd = String::new();
                 for s in body {
                     bd.push_str(&self.stmt(s));
                 }
-                let _ = write!(code, "for (int64_t {i} = {a}; {i} < {b}; {i}++) {{ {bind}{bd}}} }} ");
+                self.close_views(nv);
+                let _ = write!(code, "{views}for (int64_t {i} = {a}; {i} < {b}; {i}++) {{ {bind}{bd}}} }} ");
                 code
             }
             St::For { pat, iter, body, span } => {
@@ -3119,12 +3322,14 @@ impl<'p> Gen<'p> {
                         _ => None,
                     } {
                         // An unboxed loop variable: packed elements go straight into it.
+                        let (views, nv) = self.open_views(None, body);
                         let mut b = String::new();
                         for s in body {
                             b.push_str(&self.stmt(s));
                         }
+                        self.close_views(nv);
                         return format!(
-                            "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, true, {site}); lc_release({iv}); while ({next}(&{it}, &N{slot}, {site})) {{ {b}}} lc_iter_done(&{it}); }} "
+                            "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, true, {site}); lc_release({iv}); {views}while ({next}(&{it}, &N{slot}, {site})) {{ {b}}} lc_iter_done(&{it}); }} "
                         );
                     }
                 }
@@ -3136,22 +3341,26 @@ impl<'p> Gen<'p> {
                         format!("if (!({cond})) lc_bad_unpack({x}, -1, true, {site}); lc_release({x}); ")
                     }
                 };
+                let (views, nv) = self.open_views(None, body);
                 let mut b = String::new();
                 for s in body {
                     b.push_str(&self.stmt(s));
                 }
+                self.close_views(nv);
                 format!(
-                    "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, {keys_only}, {site}); lc_release({iv}); lc_v {x}; while (lc_iter_next_fast(&{it}, &{x})) {{ {bind}{b}}} lc_iter_done(&{it}); }} "
+                    "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, {keys_only}, {site}); lc_release({iv}); {views}lc_v {x}; while (lc_iter_next_fast(&{it}, &{x})) {{ {bind}{b}}} lc_iter_done(&{it}); }} "
                 )
             }
             St::While { cond, body, .. } => {
                 let site = self.site(cond.span());
+                let (views, nv) = self.open_views(Some(cond), body);
                 let c = self.cond_at(cond, &site);
                 let mut b = String::new();
                 for s in body {
                     b.push_str(&self.stmt(s));
                 }
-                format!("while (1) {{ if (!{c}) break; {b}}} ")
+                self.close_views(nv);
+                format!("{{ {views}while (1) {{ if (!{c}) break; {b}}} }} ")
             }
             St::Break(_) => "break; ".into(),
             St::Continue(_) => "continue; ".into(),

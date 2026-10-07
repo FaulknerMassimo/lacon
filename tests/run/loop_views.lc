@@ -1,0 +1,73 @@
+# Loops that only read and assign a list's elements read its storage once
+# (an `lc_view`) in native code. Each case here must still see every change.
+
+fn main() =
+  # ints, bools and floats, with negative indexes and `len` in the condition
+  var xs = [0] * 6
+  var i = 0
+  while i < xs.len:
+    xs[i] = i * i
+    xs[-1] += 1
+    i += 1
+  print(xs)
+  var seen = [false] * 5
+  for k in 0..5:
+    seen[k] = k % 2 == 0
+    seen[-k - 1] = seen[-k - 1] or seen[k]
+  print(seen)
+  var fs = [0.5] * 4
+  for k in 0..4:
+    fs[k] *= f64(k)
+    fs[k] += fs[-1]
+  print(fs)
+
+  # a list another variable shares is copied by the first assignment
+  var a = [1, 2, 3]
+  b = a
+  for k in 0..3:
+    a[k] = a[k] * 10
+  print(a, b)
+
+  # ints into a list of floats: it holds ints after, and reads see them
+  var mixed = [0.5, 1.5, 2.5]
+  for k in 0..3:
+    mixed[k] = k
+  var total = 0.0
+  for k in 0..3:
+    total += mixed[k]
+  print(mixed, total)
+
+  # an empty list typed [int] is packed only from its first element
+  var grow = []
+  grow.push(0)
+  for k in 0..3:
+    grow[0] += k
+  print(grow)
+
+  # an outer loop's view serves the inner loop
+  var dp = [0] * 8
+  for item in [3, 5]:
+    var c = 7
+    while c >= item:
+      if dp[c - item] + item > dp[c]: dp[c] = dp[c - item] + item
+      c -= 1
+  print(dp)
+
+  # a loop that pushes, passes the list on or calls a lambda that changes it
+  # takes no view
+  var ys = [1, 2]
+  for k in 0..3:
+    ys.push(ys[k] + ys[k + 1])
+  print(ys)
+  var zs = [1, 2, 3]
+  bump = |n| zs.push(n)
+  for k in 0..2:
+    zs[k] = zs[k] + 1
+    bump(k)
+  print(zs)
+
+  # out of range, through a view
+  var short = [1, 2, 3]
+  for k in 0..5:
+    short[k] = k
+  print(short)

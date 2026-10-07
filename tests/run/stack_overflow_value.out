@@ -1,0 +1,7 @@
+E0408 stack_overflow_value.lc:3:19 stack overflow: recursion deeper than 20000 calls (in `b`)
+  in `a`, called at stack_overflow_value.lc:6:3
+  in `b`, called at stack_overflow_value.lc:3:19
+  in `a`, called at stack_overflow_value.lc:6:3
+  in `b`, called at stack_overflow_value.lc:3:19
+  ... 19995 more frames
+[exit 1]

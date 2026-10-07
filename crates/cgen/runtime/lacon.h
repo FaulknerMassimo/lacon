@@ -213,21 +213,26 @@ void lc_flush(void);
 
 extern const char *lc_callsite;
 extern int64_t lc_depth;
-void lc_enter_slow(int fn_id);
-typedef struct { int fn; const char *site; } lc_call_rec;
-extern lc_call_rec *lc_frames;
-extern int64_t lc_frames_cap;
-/* The frame array never holds more than the depth limit, so one bound check
- * covers both. */
-static inline __attribute__((always_inline)) void lc_enter(int fn_id) {
+/* The function and call site of each call in progress, for traces. Fixed
+ * arrays, so their addresses are constants; two arrays, because fib ran 20%
+ * slower storing both into an array of structs. */
+#define LC_MAX_DEPTH 20000
+extern int lc_frame_fn[LC_MAX_DEPTH];
+extern const char *lc_frame_site[LC_MAX_DEPTH];
+_Noreturn void lc_too_deep(int fn_id, const char *site);
+/* Pushes the record of a call to `fn_id` from `site`; the caller sets
+ * `lc_depth` back to the result when the call returns. A direct call to a
+ * typed entry pushes its own record with constants, so the callee needn't. */
+static inline __attribute__((always_inline)) int64_t lc_push(int fn_id, const char *site) {
     int64_t d = lc_depth;
-    if (__builtin_expect(d < lc_frames_cap, 1)) {
-        lc_frames[d] = (lc_call_rec){fn_id, lc_callsite};
-        lc_depth = d + 1;
-    } else {
-        lc_enter_slow(fn_id);
-    }
+    if (__builtin_expect(d >= LC_MAX_DEPTH, 0)) lc_too_deep(fn_id, site);
+    lc_frame_fn[d] = fn_id;
+    lc_frame_site[d] = site;
+    lc_depth = d + 1;
+    return d;
 }
+/* Entry to a function called with `lc_callsite` set. */
+static inline __attribute__((always_inline)) void lc_enter(int fn_id) { lc_push(fn_id, lc_callsite); }
 static inline __attribute__((always_inline)) void lc_leave(void) { lc_depth--; }
 /* A lambda call: counts toward the depth limit but shows in no trace. */
 void lc_enter_lambda(const char *site);
@@ -604,6 +609,46 @@ LC_ELEM_AT(lc_int_at, int64_t, K_INT, ints)
 LC_ELEM_AT(lc_bool_at, bool, K_BOOL, bools)
 LC_ELEM_AT(lc_float_at, double, K_FLOAT, floats)
 #undef LC_ELEM_AT
+
+/* A list variable's storage, read once before a loop that changes the
+ * variable only by assigning its elements, for the one kind the checker
+ * expects: its elements, the length to read them by, and the length to
+ * write them by. Both lengths are 0 if the list isn't packed as `kind`,
+ * and the second if anything else holds it, so one bounds check covers
+ * all of it. The loop keeps these in registers, where `lc_get_int` and
+ * `lc_int_at` reload them for every element, since a store to an element
+ * might have changed them. An assignment that misses reads the view again. */
+typedef struct { void *data; int64_t len, wlen; } lc_view;
+static inline __attribute__((always_inline)) lc_view lc_view_of(lc_v o, int kind) {
+    if (o.tag != T_LIST || VEC(o)->kind != kind) return (lc_view){NULL, 0, 0};
+    lc_vec *v = VEC(o);
+    return (lc_view){v->data, v->len, o.u.o->rc == 1 ? v->len : 0};
+}
+/* The position `xs[i]` names in `len` elements, or -1. */
+static inline __attribute__((always_inline)) int64_t lc_view_pos(int64_t i, int64_t len) {
+    int64_t k = i < 0 ? len + i : i;
+    return (uint64_t)k < (uint64_t)len ? k : -1;
+}
+/* `lc_get_int` and the rest through a view of the list in slot `o`. */
+#define LC_VIEW_GET(name, type, get)                                                                    \
+    static inline __attribute__((always_inline)) type name(lc_view w, int64_t i, lc_v *o, const char *site) { \
+        int64_t k = lc_view_pos(i, w.len);                                                               \
+        return k >= 0 ? ((type *)w.data)[k] : get(*o, i, site);                                          \
+    }
+LC_VIEW_GET(lc_view_int, int64_t, lc_get_int)
+LC_VIEW_GET(lc_view_bool, bool, lc_get_bool)
+LC_VIEW_GET(lc_view_num, double, lc_get_num)
+#undef LC_VIEW_GET
+/* `lc_int_at` and the rest through a view. */
+#define LC_VIEW_AT(name, type)                                                       \
+    static inline __attribute__((always_inline)) type *name(lc_view w, int64_t i) { \
+        int64_t k = lc_view_pos(i, w.wlen);                                          \
+        return k >= 0 ? &((type *)w.data)[k] : NULL;                                 \
+    }
+LC_VIEW_AT(lc_view_int_at, int64_t)
+LC_VIEW_AT(lc_view_bool_at, bool)
+LC_VIEW_AT(lc_view_float_at, double)
+#undef LC_VIEW_AT
 
 /* `xs.push(x)` for an unboxed value: in place when the list is packed as
  * that kind and has room, else the general case. */

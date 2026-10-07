@@ -971,9 +971,11 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
         if (m == M_sum && v->kind == K_INT) {
             /* Packed ints: summed until one would overflow, which the
              * general case below then reports. */
-            int64_t total = 0;
-            for (; i < v->len; i++)
-                if (__builtin_add_overflow(total, v->ints[i], &total)) break;
+            int64_t total = 0, t;
+            for (; i < v->len; i++) {
+                if (__builtin_add_overflow(total, v->ints[i], &t)) break;
+                total = t;
+            }
             acc = lc_int(total);
         }
         for (; i < v->len; i++) {

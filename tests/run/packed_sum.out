@@ -1,0 +1,3 @@
+9223372036854775807
+E0405 packed_sum.lc:3:9 integer overflow in `+`
+[exit 1]

@@ -226,7 +226,8 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
 - **Now:** the parser, the resolver (to an IR of slots and explicit lambdas),
   the type checker, then either the interpreter or the C backend, which
   unboxes the ints, bools and floats the checker proves (§16), packs
-  lists of them (§17) and takes small values from free lists (§18). Mode
+  lists of them (§17), takes small values from free lists (§18) and reads
+  a list once before a loop that only assigns its elements (§20). Mode
   checking, RC insertion and reuse analysis are not built yet.
 - **Backends, in order:**
   1. **C** first. That's how Koka, Nim and Lean work, and it's the fastest way
@@ -323,8 +324,14 @@ allocator (§18): records went from 2.5x Rust to 1.7x and wordfreq from
 hold between runs, and a lambda given to `map`, `filter` or `sort_by` runs
 inlined over a list, with int keys sorted by radix (§19): records went
 from 1.8x Rust to 1.0x, and the geometric mean is 1.9x. records, wordfreq
-and sieve are within the 1.5x bar. Next: fib (5.7x) and knapsack (3.2x),
-the furthest from it, and Perceus reuse.
+and sieve are within the 1.5x bar. Programs now compile at `-O2`, a direct
+call pushes its own call record, and a loop reads a list once when it only
+assigns its elements (§20): fib went from 5.6x Rust to 2.6x, knapsack from
+3.2x to 2.3x, mandel from 2.1x to 1.05x, and the geometric mean is 1.4x,
+within the bar. mandel joins the four within it; fib, knapsack and collatz
+(1.6x) are left, mostly paying for overflow checks and negative indexes.
+Next: range facts that remove those checks where a loop's condition
+proves them, and Perceus reuse.
 Mode checking, `fix`, `put` and `q` aren't started.
 
 ### Phase 3 — Speed and scale
@@ -919,8 +926,9 @@ floats, typed lists and structs), then Perceus-style RC insertion and reuse.
 
 Build time is the other gap: a 109-line program becomes 77 KB of C and takes
 1.2 s (0.3 s for a small one), against §6's 1 s for 10,000 lines. Programs
-compile at `-O1`, which runs as fast as `-O2` on this code in 60% of the time;
-the runtime is compiled once at `-O2` and cached. The generated C is verbose;
+compile at `-O1`, which runs as fast as `-O2` on this code in 60% of the time
+(§20 moves them to `-O2`, which unboxed code needs); the runtime is compiled
+once at `-O2` and cached. The generated C is verbose;
 a less wordy generator or Cranelift (Phase 3) would cut the rest.
 
 ---
@@ -1249,3 +1257,114 @@ runs differ by. records takes 0.23 s from 0.39 s: its filter and sort
 0.064 s from 0.136 s, and its `map` and `sum` 0.027 s from 0.08-0.10 s.
 What it has left is building its 1,500,000 structs and their strings,
 0.086 s, and freeing them all as `main` returns, 0.056 s.
+
+---
+
+## 20. Phase 2: `-O2`, call records at the call site, and loop views
+
+§19 left fib at 5.6x Rust and knapsack at 3.2x. Three changes, and a bug
+found on the way.
+
+**`-O2`.** §15 compiled programs at `-O1`, which ran boxed code as fast as
+`-O2`. Unboxed code it doesn't: at `-O2`, mandel goes from 2.1x Rust to
+1.05x and collatz from 2.0x to 1.6x, and the rest move by 0.05x or less.
+The 30 tasks take 47% longer to build (8.6 s from 5.9 s for all 30, with
+the runtime cached), all of it from `-O2`. `lacon run`, `lacon test` and
+the harness interpret, so only `lacon build` pays; a debug build at `-O1`
+can come back with Phase 3's build modes.
+
+**Call records at the call site.** For traces, each call of a typed entry
+(§16) stored the function and call site: the caller wrote the global
+`lc_callsite`, and the callee pushed `{fn, lc_callsite}` onto a growable
+array and popped it on return. fib(41) makes 330 million calls, and this
+took two thirds of its time. Now:
+
+- A direct call to a typed entry pushes the record itself, the function
+  and site being constants there (`lc_push`), and sets the depth back when
+  the call returns; the callee does nothing. `F{id}`, the boxed wrapper,
+  pushes for calls through values, and functions without a typed entry
+  still push on entry from `lc_callsite`.
+- The records are two fixed arrays of 20,000 entries, the depth limit: one
+  of functions and one of sites. A fixed array's address is a constant,
+  where the growable one's pointer had to be loaded again after every
+  store. One array of `{fn, site}` structs ran fib in 0.86 s, two arrays
+  in 0.71 s.
+
+Traces and the stack-overflow error are unchanged. No golden test reached
+the depth limit; `stack_overflow.lc` reaches it through direct calls after
+calls that returned, unwound with `?` or ran inside a lambda, so a record
+left behind would change the count of repeated frames, and
+`stack_overflow_value.lc` through a function value and a function with a
+default. fib went from 5.5x Rust to 2.6x at `-O2`. Without records at all
+it would be 1.9x, and the rest is the overflow check on `+`: fib without
+any checks runs in 0.16 s, faster than Rust's 0.27 s.
+
+**Loop views.** knapsack's inner loop reads `best[c - wi]` and `best[c]`
+and assigns `best[c]`. For each, generated code checked the list's tag and
+kind, and for the assignment that nothing else held it, and loaded its
+length and elements. It loaded them again for every element, since the C
+compiler had to assume that a store to an `int64_t` element might change
+the length or the variable. Now:
+
+- A loop that uses a list variable only to read elements, assign elements
+  and read `len` (in its condition and body: it never binds or assigns the
+  variable, passes it anywhere, calls another method on it or reaches into
+  an element) reads it once before it, as an `lc_view`: its elements, a
+  length to read them by and a length to write them by.
+- The view is for the kind of the checker's element type. Both lengths
+  are 0 if the list is packed as another kind, and the write length is 0
+  if anything else holds it, so each access is one bounds check, and a
+  miss takes the old path. A view's three values stay in registers.
+- An assignment that misses may copy the list or change its kind, so it
+  reads the view again. Nothing else in the loop can change the list but a
+  lambda that captured the variable, through a call, so a variable a
+  lambda uses takes no view. An inner loop uses its outer loop's view.
+
+`loop_views.lc` covers ints, bools and floats, negative indexes, `len` in
+a condition, a list shared with another variable (copied by the first
+assignment), ints assigned into a list of floats (boxed, then read), an
+empty list packed by its first push, nested loops, the loops that take no
+view, and an assignment out of range. knapsack went from 3.2x Rust to 2.3x
+and sieve from 1.33x to 1.12x. What knapsack has left on each element is
+the overflow checks on `c - wi`, `+ vi` and `c -= 1` and the test for a
+negative index on each access, none of which Rust makes. Some of them
+can't fail: the loop's condition, `c >= wi`, means `c - wi` is never a
+negative index. Range facts like that are the next step.
+
+**A bug.** `sum` of a packed list of ints whose total overflows printed a
+wrong number in native code instead of the overflow error: the fast path
+§17 added kept the wrapped total when it stopped, and the general case
+went on from there. It now stops before the add that overflows.
+`packed_sum.lc` covers it.
+
+Verified as before: every golden program, task input and benchmark program
+gives the same stdout, stderr and exit code from the interpreter and from
+native code (145 programs; the benchmarks at their old sizes), typed and
+with `LACON_BOXED=1`, each also under AddressSanitizer and
+UndefinedBehaviorSanitizer. LeakSanitizer reports leaks in the same 18
+programs as before, and `bench/tasks/check.py --native` passes every task.
+
+**Results**, on §17's machine, pinned, best of seven runs. Before is §19's
+compiler, and `-O2` is §19's compiler at `-O2`:
+
+| Program | Before | `-O2` | After |
+|---|---|---|---|
+| collatz | 2.0x | 1.6x | 1.6x |
+| fib | 5.6x | 5.5x | 2.6x |
+| knapsack | 3.2x | 3.2x | 2.3x |
+| mandel | 2.1x | 1.05x | 1.05x |
+| records | 1.04x | 1.02x | 1.03x |
+| sieve | 1.38x | 1.33x | 1.12x |
+| wordfreq | 1.03x | 1.00x | 1.00x |
+| geometric mean | 1.95x | 1.69x | 1.42x |
+
+(Native time as a multiple of Rust's, `rustc -O`.) Generated C for the 30
+tasks is 1% larger (535 KB from 531 KB).
+
+What's left: the geometric mean is within Phase 2's 1.5x bar, and four of
+the seven are within it on their own. fib, knapsack and collatz are not.
+They pay for checks that Lacon's semantics need and Rust's don't make:
+overflow traps (§10) and negative indexes. collatz without the checks on
+`3 * n + 1` runs at 1.18x, and fib without its check on `+` faster than
+Rust. Removing checks where they can't fire needs range facts, which the C
+compiler doesn't derive through the generated code.

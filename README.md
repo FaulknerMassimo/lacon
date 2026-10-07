@@ -21,9 +21,11 @@ there is one. `build` compiles a program to a native executable through C;
 its output matches the interpreter's byte for byte on every golden program
 and task. Phase 2 has started: native code holds the ints, bools and floats
 the checker proves as C scalars, packs lists of them, takes small values
-from free lists rather than malloc, and inlines lambdas given to `map`,
-`filter` and `sort_by`. On seven benchmark programs it takes 1.0-5.7x
-Rust's time (geometric mean 1.9x). fib and knapsack, the slowest, come next.
+from free lists rather than malloc, inlines lambdas given to `map`,
+`filter` and `sort_by`, and reads a list once before a loop that only
+assigns its elements. On seven benchmark programs it takes 1.0-2.6x
+Rust's time (geometric mean 1.4x). fib and knapsack are the slowest, held
+back by overflow checks and negative indexes.
 The design and build plan is in [PLAN.md](PLAN.md).
 
 ```

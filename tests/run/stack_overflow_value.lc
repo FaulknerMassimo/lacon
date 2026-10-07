@@ -1,0 +1,9 @@
+# Recursion through a function with a default and through a function value,
+# neither of which is a direct call to a typed entry.
+fn a(n int) int = b(n + 1)
+fn b(n int, k int = 1) int =
+  f = a
+  f(n) + k
+
+fn main() =
+  print(a(0))

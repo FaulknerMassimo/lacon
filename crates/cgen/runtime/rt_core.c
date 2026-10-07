@@ -1368,32 +1368,18 @@ void lc_out(const char *s, int64_t n) {
 
 /* ----- the call stack and panics ----- */
 
-#define MAX_DEPTH 20000
-lc_call_rec *lc_frames;
-int64_t lc_frames_cap;
-#define frames lc_frames
+int lc_frame_fn[LC_MAX_DEPTH];
+const char *lc_frame_site[LC_MAX_DEPTH];
 
-/* Room for one more frame, at most MAX_DEPTH in all. */
-static void grow_frames(void) {
-    if (lc_depth == lc_frames_cap) {
-        int64_t cap = lc_frames_cap ? lc_frames_cap * 2 : 256;
-        lc_frames_cap = cap < MAX_DEPTH ? cap : MAX_DEPTH;
-        lc_frames = xrealloc(lc_frames, sizeof(lc_call_rec) * lc_frames_cap);
-    }
-}
-
-void lc_enter_slow(int fn_id) {
-    if (lc_depth >= MAX_DEPTH)
-        lc_panic("E0408", lc_callsite ? lc_callsite : "", "stack overflow: recursion deeper than %d calls (in `%s`)", MAX_DEPTH, lc_prog->fn_names[fn_id]);
-    grow_frames();
-    lc_frames[lc_depth++] = (lc_call_rec){fn_id, lc_callsite};
+_Noreturn void lc_too_deep(int fn_id, const char *site) {
+    lc_panic("E0408", site ? site : "", "stack overflow: recursion deeper than %d calls (in `%s`)", LC_MAX_DEPTH, lc_prog->fn_names[fn_id]);
 }
 
 void lc_enter_lambda(const char *site) {
-    if (lc_depth >= MAX_DEPTH) lc_panic("E0408", site, "stack overflow");
-    grow_frames();
+    if (lc_depth >= LC_MAX_DEPTH) lc_panic("E0408", site, "stack overflow");
     /* No site: traces leave lambdas out. */
-    lc_frames[lc_depth++] = (lc_call_rec){-1, NULL};
+    lc_frame_fn[lc_depth] = -1;
+    lc_frame_site[lc_depth++] = NULL;
 }
 
 _Noreturn void lc_exit(int code) {
@@ -1416,8 +1402,8 @@ _Noreturn void lc_panic(const char *code, const char *site, const char *fmt, ...
     int shown = 0, total = 0, count = 0, fn = -1;
     const char *at = NULL;
     for (int64_t i = lc_depth - 1; i >= -1; i--) {
-        if (i >= 0 && !frames[i].site) continue;
-        if (i >= 0 && count > 0 && frames[i].fn == fn && frames[i].site == at) {
+        if (i >= 0 && !lc_frame_site[i]) continue;
+        if (i >= 0 && count > 0 && lc_frame_fn[i] == fn && lc_frame_site[i] == at) {
             count++;
             continue;
         }
@@ -1432,8 +1418,8 @@ _Noreturn void lc_panic(const char *code, const char *site, const char *fmt, ...
             }
         }
         if (i >= 0) {
-            fn = frames[i].fn;
-            at = frames[i].site;
+            fn = lc_frame_fn[i];
+            at = lc_frame_site[i];
             count = 1;
         }
     }
