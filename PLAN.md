@@ -367,7 +367,7 @@ can overturn.
   only; `lacon sig` shows `io` or `pure`.*
 - **Braces in strings.** With interpolation everywhere, `"{"` was an error, and
   bracket and JSON code hit it at once. *A `{` that can't start an
-  interpolation is literal.*
+  interpolation is literal, and so is a string that is only `{}`.*
 - **Blocks inside brackets.** Layout is off inside `( )`, so
   `push(match x ...)` with indented arms couldn't parse, and writing the tasks
   hit it at once (§13). *A `match` inside brackets finds its arms by column:
@@ -494,6 +494,8 @@ fixed and has a golden test.
 - **`"{}"`** for an empty JSON object is an error (an empty interpolation). It
   stays an error, because silently printing `{}` for a Rust-style
   `print("{} items", n)` costs more than one retry; the hint names `{{}}`.
+  (Later narrowed: a string that is only `{}` is literal; see "Closing the
+  gaps" below.)
 
 ### First harness run
 
@@ -679,6 +681,28 @@ hint instead of a parse error.
 
 Next: add the short primer's misses back (about 60 tokens), read `"{\n"`
 as a literal brace, and rerun the short primer with the chaining hint.
+
+### Closing the gaps
+
+- **`json-format`'s first builds.** Each run's first attempt failed on
+  `"{}"` first, and two had a second error. `"{\n" + body + "\n}"` read the
+  `{` as an interpolation that ran past the closing quote to the `}` of a
+  later string; a `{` before a `\` is now literal, since no expression holds
+  a `\`. `(if c: "0" else: num, i)` took `num, i` as the else branch, a
+  tuple, where Python reads a pair; inside brackets a one-line branch now
+  ends at a comma.
+- **`"{}"` is literal when it is the whole string.** It had failed
+  `json-format`'s first build in all four runs, and the Rust-style mistake
+  it guards against (§13) hadn't appeared once. `"{} items"` stays an error,
+  and so does `print("{}", x)`, with the fix `print("{x}")`. With these
+  three changes two of the three first attempts from the primer experiment
+  build and pass every hidden test unchanged; the third has a bug of its own.
+- **The short primer's misses** are back: `int(x)`, `f64(x)`, `str(x)`;
+  `sort_by` takes a key, not a comparator; `m.remove(k)`; `trim_end("\r")`;
+  `split_once` returns `(str, str)?`. It is 1,356 tokens, up from 1,286.
+  `remove_key` and a two-parameter lambda in `sort_by`, `min_by` or `max_by`
+  now get hints too; the lambda had been told it "takes 2 arguments, but gets
+  one int".
 
 ---
 

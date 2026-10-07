@@ -11,3 +11,5 @@ fn main() =
   zs = [1].sort_by(|a, b| b.cmp(a))
   t = "xa".removeprefix("x")
   u = "a\r".trim_end_matches("\r")
+  var m = {"a": 1}
+  m.remove_key("a")

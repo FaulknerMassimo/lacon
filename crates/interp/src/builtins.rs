@@ -119,6 +119,7 @@ pub fn method_hint(n: &str) -> Option<&'static str> {
         "parse_float" | "parseFloat" | "to_float" | "toFloat" | "to_f64" | "as_f64" => "use `f64(x)` or `s.parse()`",
         "toString" | "to_str" => "use `str(x)` or interpolation",
         "removeAt" | "remove_at" | "del" => "use `remove(i)`",
+        "remove_key" | "remove_entry" | "delete" | "erase" | "pop_key" => "use `remove`: `m.remove(k)` by key, `xs.remove(i)` by index",
         "keySet" => "use `keys`",
         "copy" | "deepcopy" => "values are copied on assignment: `ys = xs`",
         "cmp" | "partial_cmp" | "compareTo" | "localeCompare" => "`sort_by` takes a key, not a comparator: `xs.sort_by(-it.age)`",

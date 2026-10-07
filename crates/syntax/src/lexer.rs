@@ -110,6 +110,8 @@ pub struct Token {
     /// True when a newline separates this token from the previous one, even
     /// inside brackets.
     pub nl_before: bool,
+    /// True inside `( )`, `[ ]` or `{ }`, where there are no layout tokens.
+    pub in_brackets: bool,
 }
 
 pub fn describe(t: &Tok) -> String {
@@ -321,7 +323,8 @@ impl<'a> Lexer<'a> {
 
     fn push(&mut self, tok: Tok, start: usize, end: usize, nl_before: bool) {
         let span = self.span(start, end);
-        self.out.push(Token { tok, span, nl_before });
+        let in_brackets = self.depth > 0;
+        self.out.push(Token { tok, span, nl_before, in_brackets });
     }
 
     pub fn tokenize(mut self) -> (Vec<Token>, Vec<Diag>) {
@@ -680,13 +683,19 @@ impl<'a> Lexer<'a> {
                     lit.push('}');
                     self.pos += 2;
                 }
+                // A whole string of `{}` is an empty JSON object, not a
+                // placeholder; `print("{}", x)` is caught when resolving.
+                b'{' if !triple && parts.is_empty() && lit.is_empty() && self.peek(1) == b'}' && self.peek(2) == q => {
+                    lit.push_str("{}");
+                    self.pos += 2;
+                }
                 b'{' => {
                     let brace = self.pos;
                     self.pos += 1;
                     let expr_start = self.pos;
                     // A `{` that cannot start an interpolation (right before the
-                    // closing quote, at a line end, or never closed) is literal,
-                    // so "{" and "([{" need no escaping.
+                    // closing quote, at a line end, never closed, or before a
+                    // `\`) is literal, so "{", "([{" and "{\n" need no escaping.
                     let next = self.peek(0);
                     let end = if next == q || next == b'\n' || next == 0 { None } else { self.scan_interp() };
                     let Some(end) = end else {
@@ -749,7 +758,9 @@ impl<'a> Lexer<'a> {
                         self.pos += 1;
                     }
                 }
-                b'\n' => return Option::None,
+                // No expression holds a `\` outside a string, so the `{` is
+                // literal: "{\n" + body + "\n}" isn't one interpolation.
+                b'\n' | b'\\' => return Option::None,
                 _ => {}
             }
             self.pos += 1;

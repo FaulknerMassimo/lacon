@@ -10,4 +10,5 @@ E0203 unknown_names.lc:10:12 no method `copy`: values are copied on assignment: 
 E0203 unknown_names.lc:11:29 no method `cmp`: `sort_by` takes a key, not a comparator: `xs.sort_by(-it.age)`
 E0203 unknown_names.lc:12:12 no method `removeprefix`: use `s.strip_prefix(p) ?? s`
 E0203 unknown_names.lc:13:13 no method `trim_end_matches`: use `trim_end(chars)`, e.g. `trim_end("\r")`
+E0203 unknown_names.lc:15:5 no method `remove_key`: use `remove`: `m.remove(k)` by key, `xs.remove(i)` by index
 [exit 1]

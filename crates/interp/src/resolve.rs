@@ -1589,6 +1589,17 @@ impl<'a> Resolver<'a> {
         if let Some(f) = builtin {
             if matches!(f, Builtin::Print | Builtin::Eprint) {
                 self.note_io();
+                // Rust's `println!("{}", x)`: a lone `"{}"` is literal text.
+                if args.len() > 1 && matches!(&args[0].kind, ExprKind::Str(segs) if matches!(segs.as_slice(), [StrSeg::Lit(l)] if l == "{}")) {
+                    let msg = "no format placeholders; put the value inside the braces: \"{x}\"";
+                    let arg = self.snippet(args[1].span).to_string();
+                    if args.len() == 2 && !arg.contains('"') {
+                        self.err_fix("E0101", span, msg, format!("{n}(\"{{{arg}}}\")"));
+                    } else {
+                        self.err("E0101", span, msg);
+                    }
+                    return Ex::Poison(span);
+                }
             }
             let arity_ok = match f {
                 Builtin::Range => (1..=3).contains(&args.len()),

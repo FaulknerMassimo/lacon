@@ -1,0 +1,7 @@
+# Rust's comparator lambdas, where Lacon takes a key. A map's pairs still
+# spread over two parameters.
+fn main() =
+  xs = [3, 1, 2].sort_by(|a, b| b - a)
+  m = {"a": 2, "b": 1}
+  ys = m.sort_by(|k, v| v)
+  z = ["ab", "c"].max_by(|a, b| a.len - b.len)

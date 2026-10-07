@@ -1574,14 +1574,20 @@ impl<'p> Checker<'p> {
                 // `pairs.map(|k, v| ...)` spreads a tuple over the parameters.
                 let fresh: Vec<T> = (0..n).map(|_| self.s.fresh()).collect();
                 if !self.s.unify(&ps[0], &T::Tuple(fresh.clone())) {
-                    let got = self.show(&ps[0]);
-                    self.err("E0206", def.span, format!("this lambda takes {n} arguments, but gets one {got}"));
+                    if let Some(msg) = comparator_hint(method, n) {
+                        self.err("E0206", def.span, msg);
+                    } else {
+                        let got = self.show(&ps[0]);
+                        self.err("E0206", def.span, format!("this lambda takes {n} arguments, but gets one {got}"));
+                    }
                 }
                 (fresh, Some(ps.clone()), Some((**r).clone()))
             }
             Some(T::Fn(ps, r)) => {
                 let what = method.map_or("it".to_string(), |m| format!("`{m}`"));
-                self.err("E0206", def.span, format!("this lambda takes {n} argument(s), but {what} passes {}", ps.len()));
+                let msg = comparator_hint(method, n)
+                    .unwrap_or_else(|| format!("this lambda takes {n} argument(s), but {what} passes {}", ps.len()));
+                self.err("E0206", def.span, msg);
                 ((0..n).map(|_| self.s.fresh()).collect(), Some(ps.clone()), Some((**r).clone()))
             }
             _ => ((0..n).map(|_| self.s.fresh()).collect(), None, None),
@@ -2601,6 +2607,16 @@ fn strip_opt(s: &Subst, t: &T) -> T {
 
 fn numeric(t: &T) -> bool {
     matches!(t, T::Int(_) | T::Float)
+}
+
+/// `xs.sort_by(|a, b| ...)`, Rust's comparator, where Lacon takes a key.
+fn comparator_hint(method: Option<&str>, n: usize) -> Option<String> {
+    match method {
+        Some(m @ ("sort_by" | "min_by" | "max_by")) if n == 2 => Some(format!(
+            "`{m}` takes a key, not a comparator: `xs.{m}(it.age)`, or `xs.{m}((it.city, -it.age))` for two keys"
+        )),
+        _ => None,
+    }
 }
 
 fn covers_none(p: &PatIr) -> bool {

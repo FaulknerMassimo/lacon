@@ -1,0 +1,3 @@
+E0206 comparator.lc:4:33 `sort_by` takes a key, not a comparator: `xs.sort_by(it.age)`, or `xs.sort_by((it.city, -it.age))` for two keys
+E0206 comparator.lc:7:33 `max_by` takes a key, not a comparator: `xs.max_by(it.age)`, or `xs.max_by((it.city, -it.age))` for two keys
+[exit 1]

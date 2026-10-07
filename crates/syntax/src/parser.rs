@@ -999,7 +999,9 @@ impl<'a> Parser<'a> {
         let start = self.span();
         let first = self.expr()?;
         let mut targets = vec![first];
-        while self.at(&Tok::Comma) {
+        // Inside brackets a one-line branch is one expression, and a comma
+        // belongs to the enclosing tuple, call or list: `(if c: a else: b, i)`.
+        while self.at(&Tok::Comma) && !self.tok().in_brackets {
             self.bump();
             targets.push(self.expr()?);
         }
