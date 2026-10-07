@@ -330,8 +330,10 @@ assigns its elements (§20): fib went from 5.6x Rust to 2.6x, knapsack from
 3.2x to 2.3x, mandel from 2.1x to 1.05x, and the geometric mean is 1.4x,
 within the bar. mandel joins the four within it; fib, knapsack and collatz
 (1.6x) are left, mostly paying for overflow checks and negative indexes.
-Next: range facts that remove those checks where a loop's condition
-proves them, and Perceus reuse.
+An index in range now costs one compare, as in Rust, where it cost a sign
+test and a compare (§21): knapsack went from 2.3x Rust to 1.85x, and the
+geometric mean is 1.40x. Range facts reach little of what the three have
+left (§21), so Perceus reuse is next for speed.
 Mode checking, `fix`, `put` and `q` aren't started.
 
 ### Phase 3 — Speed and scale
@@ -1368,3 +1370,74 @@ overflow traps (§10) and negative indexes. collatz without the checks on
 `3 * n + 1` runs at 1.18x, and fib without its check on `+` faster than
 Rust. Removing checks where they can't fire needs range facts, which the C
 compiler doesn't derive through the generated code.
+
+---
+
+## 21. Phase 2: one compare for an index
+
+§20 named range facts as the next step for fib, knapsack and collatz.
+Reading the three programs first showed how little of their cost range
+facts reach:
+
+- **knapsack:** `while c >= wi` proves `c - wi >= 0`, which drops the test
+  for a negative index on `best[c - wi]`: one of six checks per element.
+  The rest need bounds on `wi`, `vi` or the list's elements, and no
+  condition gives them.
+- **fib:** `n < 2` proves `n - 1` and `n - 2` safe in the else branch, but
+  most of what's left is the check on the sum of the two calls (§20).
+- **collatz:** nothing bounds `3 * n + 1` or `k += 1`.
+
+The overflow checks are already `__builtin_*_overflow`, one instruction
+and a branch each. The test for a negative index could be cheaper without
+any analysis, so this section does that instead.
+
+**One compare for an index in range.** Each inline access computed
+`k = i < 0 ? len + i : i`, then tested `0 <= k < len`. gcc compiled the
+choice as a sign test and a branch before the bounds compare, so an
+access in range took two branches where Rust's takes one. `lc_pos` now
+gives `i` when `(uint64_t)i < len`, else `i + len` in unsigned arithmetic,
+and callers test the result `< len` unsigned. That is the compare that
+chose `i`, so gcc folds the two: an index in range costs one branch, a
+negative index goes the other way, and any other index lands at or past
+`len`. Every inline access uses it: views, `lc_get_int` and the rest,
+`lc_int_at` and the rest, and the boxed `lc_index_int`, `lc_index_fast`
+and `lc_place_index_fast`.
+
+**A store through a view tests its bounds itself.** `lc_view_int_at` gave
+a pointer to the element or NULL, and the store tested the pointer. gcc
+couldn't prove `data + k` non-null, so each store took a second test.
+Generated code now tests `k < wlen` and stores to `data + k`.
+
+`index_edges.lc` covers 0, the last, -1 and -len through each path for
+ints, bools, floats and strs, in loops and out, and a store at -len - 1
+through a view. `index_far.lc` reads through a view at the most negative
+int, which `len + i` must not bring into range. No earlier test reached a
+negative index before the start of a list.
+
+Verified as before: every golden program and task input gives the same
+stdout, stderr and exit code from the interpreter and from native code
+(140 runs), typed and with `LACON_BOXED=1`, each also under
+AddressSanitizer and UndefinedBehaviorSanitizer. LeakSanitizer reports
+leaks in the same programs as before, and `bench/tasks/check.py --native`
+passes every task. Generated C for the 30 tasks is the same size.
+
+**Results**, on §17's machine, pinned, best of seven runs. Before is §20's
+compiler:
+
+| Program | Before | After |
+|---|---|---|
+| collatz | 1.6x | 1.6x |
+| fib | 2.6x | 2.6x |
+| knapsack | 2.3x | 1.85x |
+| mandel | 1.05x | 1.05x |
+| records | 1.06x | 1.07x |
+| sieve | 1.14x | 1.14x |
+| wordfreq | 1.02x | 1.02x |
+| geometric mean | 1.44x | 1.40x |
+
+(Native time as a multiple of Rust's, `rustc -O`.) sieve gains nothing:
+gcc had already proved its index non-negative, and its loop waits on
+memory. knapsack without its overflow checks on `+` and `-` would run at
+1.4x, so they are about a fifth of its time. Some of the rest is loads
+from the stack: gcc keeps the list's data pointer, `vi` and the write
+length there, and reads the pointer three times an element.

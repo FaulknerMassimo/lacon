@@ -24,8 +24,8 @@ the checker proves as C scalars, packs lists of them, takes small values
 from free lists rather than malloc, inlines lambdas given to `map`,
 `filter` and `sort_by`, and reads a list once before a loop that only
 assigns its elements. On seven benchmark programs it takes 1.0-2.6x
-Rust's time (geometric mean 1.4x). fib and knapsack are the slowest, held
-back by overflow checks and negative indexes.
+Rust's time (geometric mean 1.4x). fib (2.6x) and knapsack (1.85x) are the
+slowest, and overflow checks are much of what they pay for.
 The design and build plan is in [PLAN.md](PLAN.md).
 
 ```

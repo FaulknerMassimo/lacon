@@ -1,0 +1,2 @@
+E0402 index_far.lc:8:14 index -9223372036854775808 out of range for length 3
+[exit 1]

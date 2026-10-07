@@ -1559,10 +1559,14 @@ impl<'p> Gen<'p> {
         };
         let reread = self.view_reread(place);
         match view {
-            Some((_, w, kind)) if kind == vrep => Some(format!(
-                "{{ {ct} {v} = {vv}; {kc}int64_t {k} = {kv}; {walk}{ct} *{e} = lc_view_{}({w}, {k}); if ({e}) *{e} = {new}; else {{ {e} = {at}({ptr}, {k}); {fdecl}if ({e}) *{e} = {new}; {also}else {slow}; {reread}}} {rk}}} ",
-                &at["lc_".len()..]
-            )),
+            // The view's bounds test, then its element: a pointer the
+            // C compiler can't prove non-null would cost a second test.
+            Some((_, w, kind)) if kind == vrep => {
+                let j = self.t();
+                Some(format!(
+                    "{{ {ct} {v} = {vv}; {kc}int64_t {k} = {kv}; {walk}uint64_t {j} = lc_pos({k}, {w}.wlen); {ct} *{e}; if ({j} < (uint64_t){w}.wlen) {{ {e} = ({ct} *){w}.data + {j}; *{e} = {new}; }} else {{ {e} = {at}({ptr}, {k}); {fdecl}if ({e}) *{e} = {new}; {also}else {slow}; {reread}}} {rk}}} "
+                ))
+            }
             _ => Some(format!(
                 "{{ {ct} {v} = {vv}; {kc}int64_t {k} = {kv}; {walk}{ct} *{e} = {at}({ptr}, {k}); {fdecl}if ({e}) *{e} = {new}; {also}else {slow}; {reread}{rk}}} "
             )),

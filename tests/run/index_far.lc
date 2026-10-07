@@ -1,0 +1,9 @@
+# A read through a view at the most negative int, which counted from the
+# end is still far before the start.
+
+fn main() =
+  xs = [1, 2, 3]
+  var total = 0
+  for i in [-1, -9223372036854775807 - 1]:
+    total += xs[i]
+  print(total)

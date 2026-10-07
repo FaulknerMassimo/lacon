@@ -1,0 +1,8 @@
+10 true 0.5 a 10
+30 false 2.5 c 30
+30 false 2.5 c 30
+10 true 0.5 a 10
+[3, 0, 3] [true, false, true] [1.0, 0.0, 1.0] ["xx", "", "xx"]
+[2, 2, 14] [true, false, false] [1.0, 2.0, 1.5] ["s", "q", "r"] 2 1.5 r
+E0402 index_edges.lc:42:11 index -4 out of range for length 3
+[exit 1]

@@ -435,12 +435,21 @@ static inline __attribute__((always_inline)) bool lc_iter_next_fast(lc_iter *it,
     }
     return lc_iter_next(it, out);
 }
+/* The position `xs[i]` names in `len` elements, which is valid if it's
+ * below `len`: `i`, or a negative `i` counted from the end. Callers test
+ * `k < len` unsigned. That is the compare that picks `i`, so the C
+ * compiler folds the two and an index in range costs one branch; adjusting
+ * a negative index first put a sign test in front of every access. Any
+ * other `i` lands at or past `len`. */
+static inline __attribute__((always_inline)) uint64_t lc_pos(int64_t i, int64_t len) {
+    return __builtin_expect((uint64_t)i < (uint64_t)len, 1) ? (uint64_t)i : (uint64_t)i + (uint64_t)len;
+}
 /* `xs[i]` with an unboxed index; borrows `o`. */
 static inline __attribute__((always_inline)) lc_v lc_index_int(lc_v o, int64_t i, const char *site) {
     if (o.tag == T_LIST || o.tag == T_TUPLE) {
         lc_vec *v = VEC(o);
-        int64_t k = i < 0 ? v->len + i : i;
-        if (k >= 0 && k < v->len) return lc_retain(lc_vget(v, k));
+        uint64_t k = lc_pos(i, v->len);
+        if (k < (uint64_t)v->len) return lc_retain(lc_vget(v, k));
     }
     return lc_index(o, lc_int(i), site);
 }
@@ -455,8 +464,8 @@ static inline __attribute__((always_inline)) int64_t lc_len(lc_v o, int field_id
 static inline __attribute__((always_inline)) lc_v lc_index_fast(lc_v o, lc_v i, const char *site) {
     if ((o.tag == T_LIST || o.tag == T_TUPLE) && i.tag == T_INT) {
         lc_vec *v = VEC(o);
-        int64_t k = i.u.i < 0 ? v->len + i.u.i : i.u.i;
-        if (k >= 0 && k < v->len) return lc_retain(lc_vget(v, k));
+        uint64_t k = lc_pos(i.u.i, v->len);
+        if (k < (uint64_t)v->len) return lc_retain(lc_vget(v, k));
     }
     return lc_index(o, i, site);
 }
@@ -464,8 +473,8 @@ static inline __attribute__((always_inline)) lc_v lc_index_fast(lc_v o, lc_v i, 
 static inline __attribute__((always_inline)) lc_v *lc_place_index_fast(lc_v *p, lc_v key, int viv, lc_v zero, int method, const char *site) {
     if (p->tag == T_LIST && key.tag == T_INT && p->u.o->rc == 1 && VEC(*p)->kind == K_BOXED) {
         lc_vec *v = VEC(*p);
-        int64_t k = key.u.i < 0 ? v->len + key.u.i : key.u.i;
-        if (k >= 0 && k < v->len) return &v->boxed[k];
+        uint64_t k = lc_pos(key.u.i, v->len);
+        if (k < (uint64_t)v->len) return &v->boxed[k];
     }
     return lc_place_index(p, key, viv, zero, method, site);
 }
@@ -568,16 +577,16 @@ static inline __attribute__((always_inline)) int64_t lc_ineg(int64_t a, const ch
 static inline __attribute__((always_inline)) int64_t lc_get_int(lc_v o, int64_t i, const char *site) {
     if (o.tag == T_LIST && VEC(o)->kind == K_INT) {
         lc_vec *v = VEC(o);
-        int64_t k = i < 0 ? v->len + i : i;
-        if (k >= 0 && k < v->len) return v->ints[k];
+        uint64_t k = lc_pos(i, v->len);
+        if (k < (uint64_t)v->len) return v->ints[k];
     }
     return lc_unbox_int(lc_index_int(o, i, site), site);
 }
 static inline __attribute__((always_inline)) bool lc_get_bool(lc_v o, int64_t i, const char *site) {
     if (o.tag == T_LIST && VEC(o)->kind == K_BOOL) {
         lc_vec *v = VEC(o);
-        int64_t k = i < 0 ? v->len + i : i;
-        if (k >= 0 && k < v->len) return v->bools[k];
+        uint64_t k = lc_pos(i, v->len);
+        if (k < (uint64_t)v->len) return v->bools[k];
     }
     return lc_unbox_bool(lc_index_int(o, i, site), site);
 }
@@ -585,8 +594,8 @@ static inline __attribute__((always_inline)) bool lc_get_bool(lc_v o, int64_t i,
 static inline __attribute__((always_inline)) double lc_get_num(lc_v o, int64_t i, const char *site) {
     if (o.tag == T_LIST) {
         lc_vec *v = VEC(o);
-        int64_t k = i < 0 ? v->len + i : i;
-        if (k >= 0 && k < v->len) {
+        uint64_t k = lc_pos(i, v->len);
+        if (k < (uint64_t)v->len) {
             if (v->kind == K_FLOAT) return v->floats[k];
             if (v->kind == K_INT) return (double)v->ints[k];
         }
@@ -600,8 +609,8 @@ static inline __attribute__((always_inline)) double lc_get_num(lc_v o, int64_t i
     static inline __attribute__((always_inline)) type *name(lc_v *p, int64_t i) {              \
         if (p->tag == T_LIST && VEC(*p)->kind == k && p->u.o->rc == 1) {                        \
             lc_vec *v = VEC(*p);                                                                \
-            int64_t j = i < 0 ? v->len + i : i;                                                 \
-            if (j >= 0 && j < v->len) return &v->field[j];                                      \
+            uint64_t j = lc_pos(i, v->len);                                                     \
+            if (j < (uint64_t)v->len) return &v->field[j];                                      \
         }                                                                                       \
         return NULL;                                                                            \
     }
@@ -624,31 +633,16 @@ static inline __attribute__((always_inline)) lc_view lc_view_of(lc_v o, int kind
     lc_vec *v = VEC(o);
     return (lc_view){v->data, v->len, o.u.o->rc == 1 ? v->len : 0};
 }
-/* The position `xs[i]` names in `len` elements, or -1. */
-static inline __attribute__((always_inline)) int64_t lc_view_pos(int64_t i, int64_t len) {
-    int64_t k = i < 0 ? len + i : i;
-    return (uint64_t)k < (uint64_t)len ? k : -1;
-}
 /* `lc_get_int` and the rest through a view of the list in slot `o`. */
 #define LC_VIEW_GET(name, type, get)                                                                    \
     static inline __attribute__((always_inline)) type name(lc_view w, int64_t i, lc_v *o, const char *site) { \
-        int64_t k = lc_view_pos(i, w.len);                                                               \
-        return k >= 0 ? ((type *)w.data)[k] : get(*o, i, site);                                          \
+        uint64_t k = lc_pos(i, w.len);                                                                   \
+        return k < (uint64_t)w.len ? ((type *)w.data)[k] : get(*o, i, site);                             \
     }
 LC_VIEW_GET(lc_view_int, int64_t, lc_get_int)
 LC_VIEW_GET(lc_view_bool, bool, lc_get_bool)
 LC_VIEW_GET(lc_view_num, double, lc_get_num)
 #undef LC_VIEW_GET
-/* `lc_int_at` and the rest through a view. */
-#define LC_VIEW_AT(name, type)                                                       \
-    static inline __attribute__((always_inline)) type *name(lc_view w, int64_t i) { \
-        int64_t k = lc_view_pos(i, w.wlen);                                          \
-        return k >= 0 ? &((type *)w.data)[k] : NULL;                                 \
-    }
-LC_VIEW_AT(lc_view_int_at, int64_t)
-LC_VIEW_AT(lc_view_bool_at, bool)
-LC_VIEW_AT(lc_view_float_at, double)
-#undef LC_VIEW_AT
 
 /* `xs.push(x)` for an unboxed value: in place when the list is packed as
  * that kind and has room, else the general case. */
