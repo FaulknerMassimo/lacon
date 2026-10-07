@@ -1,0 +1,6 @@
+E0125 library_habits.lc:2:18 no `::` paths; an empty map is `{}`
+E0125 library_habits.lc:3:18 no `::` paths; an empty set is `set()`
+E0125 library_habits.lc:4:14 no `::` paths; an empty list is `[]`
+E0125 library_habits.lc:5:21 no `::` paths; a min-heap is `heap()`
+E0133 library_habits.lc:6:18 no generator expressions; use `xs.any(cond)`, `xs.map(expr).sum()` and so on, with `it`
+[exit 1]

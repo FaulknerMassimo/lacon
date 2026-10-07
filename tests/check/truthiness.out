@@ -1,0 +1,4 @@
+E0301 truthiness.lc:5:6 cannot apply `not` to [int]; no truthiness: test `x.is_empty()`
+E0301 truthiness.lc:6:6 cannot apply `not` to str; no truthiness: test `x.is_empty()`
+E0301 truthiness.lc:7:6 cannot apply `not` to int; no truthiness: test `n == 0`
+[exit 1]

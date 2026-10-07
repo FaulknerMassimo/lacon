@@ -9,6 +9,7 @@ tokens it spends getting to passing tests (tokens-to-green).
     uv run bench/harness/run.py --langs lacon,python --tasks rpn,calc --trials 3
     uv run bench/harness/run.py --agent claude-code            # through Claude Code: no API key
     uv run bench/harness/run.py --agent replay                 # no model: submit the reference solutions
+    uv run bench/harness/run.py --langs lacon --primer docs/primer-short.md   # try another primer
     uv run bench/harness/report.py bench/results/<run>         # summarize a run
 
 In each episode the model gets the task prompt, one example, and two tools:
@@ -141,11 +142,21 @@ def all_tasks() -> list[str]:
     return sorted(p.name for p in TASKS.iterdir() if (p / "prompt.md").exists())
 
 
-def system_prompt(lang: L.Lang, agent: str = "claude") -> str:
+# --chain-hint: told to every language, to see whether it saves the separate
+# `run` call a model makes before submitting.
+CHAIN_HINT = {
+    "claude": "A failed submission has no penalty and `submit` reports build errors too, so you can submit without running first.",
+    "claude-code": "A failed submission has no penalty and `./submit` reports build errors too, so you can write `main{ext}` and run `./run input.txt && ./submit` in the same turn.",
+}
+
+
+def system_prompt(lang: L.Lang, agent: str = "claude", primer: Path = PRIMER, chain_hint: bool = False) -> str:
     template = SYSTEM_CC if agent == "claude-code" else SYSTEM
     s = template.format(lang=lang.name, ext=lang.ext, environment=lang.environment)
+    if chain_hint:
+        s += "\n\n" + CHAIN_HINT["claude-code" if agent == "claude-code" else "claude"].format(ext=lang.ext)
     if lang.key == "lacon":
-        s += "\n\n" + PRIMER.read_text()
+        s += "\n\n" + primer.read_text()
     return s
 
 
@@ -257,7 +268,7 @@ def claude_agent(ep: Episode, client, args) -> tuple[str, list]:
     """The model loop. Returns the outcome and the transcript."""
     import anthropic
 
-    system = system_prompt(ep.lang)
+    system = system_prompt(ep.lang, "claude", args.primer, args.chain_hint)
     messages: list = [{"role": "user", "content": ep.task.user_message()}]
     extra = {"output_config": {"effort": args.effort}} if args.effort else {}
     nudged = False
@@ -367,7 +378,7 @@ def claude_code_agent(ep: Episode, args) -> tuple[str, list]:
             args.claude, "-p", ep.task.user_message(),
             "--output-format", "stream-json", "--verbose",
             "--model", args.model,
-            "--system-prompt", system_prompt(ep.lang, "claude-code"),
+            "--system-prompt", system_prompt(ep.lang, "claude-code", args.primer, args.chain_hint),
             "--tools", "Bash,Read,Write,Edit",
             "--allowedTools", *CC_ALLOWED,
             "--permission-prompts", "none",
@@ -476,18 +487,18 @@ def run_episode(task_name: str, lang: L.Lang, trial: int, args, client, out: Pat
         "error": error,
     }
     name = f"{task_name}.{lang.key}.{trial}.json"
-    (out / "transcripts" / name).write_text(json.dumps({"system": system_prompt(lang, args.agent), "messages": jsonable(transcript)}, indent=1))
+    (out / "transcripts" / name).write_text(json.dumps({"system": system_prompt(lang, args.agent, args.primer, args.chain_hint), "messages": jsonable(transcript)}, indent=1))
     return record
 
 
 # ----- driver -----
 
 
-def prompt_tokens(client, model: str, lang: L.Lang, task: Task) -> int | None:
+def prompt_tokens(client, args, lang: L.Lang, task: Task) -> int | None:
     """Tokens in an episode's fixed starting context: tools, system prompt
     (with the primer for Lacon) and the first user message."""
     try:
-        r = client.messages.count_tokens(model=model, system=system_prompt(lang), tools=TOOLS, messages=[{"role": "user", "content": task.user_message()}])
+        r = client.messages.count_tokens(model=args.model, system=system_prompt(lang, "claude", args.primer, args.chain_hint), tools=TOOLS, messages=[{"role": "user", "content": task.user_message()}])
         return r.input_tokens
     except Exception:
         return None
@@ -508,6 +519,8 @@ def main() -> int:
     ap.add_argument("--claude", default="claude", help="the Claude Code executable (claude-code agent)")
     ap.add_argument("--max-budget", type=float, default=2.0, help="claude-code: --max-budget-usd per episode")
     ap.add_argument("--session-timeout", type=int, default=1800, help="claude-code: seconds per episode")
+    ap.add_argument("--primer", type=Path, default=PRIMER, help="the primer Lacon episodes get (default: docs/primer.md)")
+    ap.add_argument("--chain-hint", action="store_true", help="tell every language that a failed submission has no penalty")
     args = ap.parse_args()
 
     tasks = args.tasks.split(",") if args.tasks else all_tasks()
@@ -552,10 +565,12 @@ def main() -> int:
         "max_tokens": args.max_tokens,
         "sandbox": L.SANDBOX,
         "languages": {lang.key: lang.environment for lang in langs},
+        "primer": {"path": str(args.primer), "chars": len(args.primer.read_text())},
+        "chain_hint": args.chain_hint,
     }
     if client is not None:
         sample = Task.load(tasks[0])
-        config["prompt_tokens"] = {lang.key: prompt_tokens(client, args.model, lang, sample) for lang in langs}
+        config["prompt_tokens"] = {lang.key: prompt_tokens(client, args, lang, sample) for lang in langs}
         config["prompt_tokens_task"] = sample.name
     if not (out / "config.json").exists():
         (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")

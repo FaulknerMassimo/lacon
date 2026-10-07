@@ -6,7 +6,7 @@ E0142 foreign.lc:6:3 no C-style for; write `for i in 0..n:`
 E0133 foreign.lc:8:14 no comprehensions; use `xs.filter(cond).map(expr)` with `it`
 E0135 foreign.lc:9:4 a binding needs a value: `x = value`, or `x T = value` to declare its type
 E0124 foreign.lc:10:13 `//` is not an operator: comments start with `#`; integer `/` already truncates
-E0125 foreign.lc:11:13 no `::` paths; use `.`, e.g. `Shape.Circle(1.0)`
+E0125 foreign.lc:11:13 no `::` paths; an empty string is `""`
 E0123 foreign.lc:12:12 blocks use `:` and indentation, not braces
 E0129 foreign.lc:15:7 lambdas are `|x| expr`, or use `it` directly: `xs.map(it * 2)`
 E0129 foreign.lc:16:16 lambdas are `|x| expr`, or use `it`: `xs.map(it + 1)`

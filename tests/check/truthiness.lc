@@ -1,0 +1,7 @@
+fn main() =
+  xs = [1]
+  s = ""
+  n = 0
+  if not xs: print("empty")
+  if !s: print("empty")
+  if not n: print("zero")

@@ -1,0 +1,6 @@
+fn main() =
+  var m = HashMap::new()
+  var s = HashSet::new()
+  var v = Vec::new()
+  var h = BinaryHeap::new()
+  ok = any(n > 1 for n in [1, 2])

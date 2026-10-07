@@ -1354,6 +1354,10 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
             args.push(self.expr()?);
+            if self.at(&Tok::For) {
+                self.hint("E0133", self.span(), "no generator expressions; use `xs.any(cond)`, `xs.map(expr).sum()` and so on, with `it`", None);
+                return Err(());
+            }
             if !self.eat(&Tok::Comma) {
                 break;
             }
@@ -1411,8 +1415,21 @@ impl<'a> Parser<'a> {
                     return Err(());
                 }
                 Tok::ColonColon => {
+                    let empty = match &e.kind {
+                        ExprKind::Name(n) => match n.as_str() {
+                            "HashMap" | "BTreeMap" => Some("an empty map is `{}`"),
+                            "HashSet" | "BTreeSet" => Some("an empty set is `set()`"),
+                            "Vec" | "VecDeque" => Some("an empty list is `[]`"),
+                            "String" => Some("an empty string is `\"\"`"),
+                            "BinaryHeap" => Some("a min-heap is `heap()`"),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
                     if matches!(self.peek_at(1), Tok::Lt) {
                         self.hint("E0125", self.span(), "no turbofish: methods return lists, so `.collect()` and type arguments aren't needed", None);
+                    } else if let Some(empty) = empty {
+                        self.hint("E0125", self.span(), format!("no `::` paths; {empty}"), None);
                     } else {
                         self.hint("E0125", self.span(), "no `::` paths; use `.`, e.g. `Shape.Circle(1.0)`", None);
                     }

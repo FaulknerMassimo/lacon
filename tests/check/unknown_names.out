@@ -1,4 +1,13 @@
 E0201 unknown_names.lc:2:3 `console` is not defined: print with `print("...{x}...")`
 E0203 unknown_names.lc:3:14 no method `ljust`: use `pad_right(n)`, or a spec: "{s:<{n}}"
 E0201 unknown_names.lc:4:10 `sys` is not defined: stdin is `io.read()` or `io.lines()`, arguments are `os.args`, and `os.exit(code)` exits
+E0201 unknown_names.lc:5:7 `Counter` is not defined: count with `var m = {}` and `m[k] += 1`
+E0201 unknown_names.lc:6:7 `defaultdict` is not defined: use `{}`: `m[k] += v` and `m[k].push(x)` create missing entries
+E0201 unknown_names.lc:7:7 `deque` is not defined: use a list: `push(x)`, `pop()`, and `pop(0)` from the front
+E0201 unknown_names.lc:8:7 `float` is not defined: convert with `f64(x)`; infinity is `math.inf`
+E0201 unknown_names.lc:9:7 `divmod` is not defined: use `a / b` and `a % b`
+E0203 unknown_names.lc:10:12 no method `copy`: values are copied on assignment: `ys = xs`
+E0203 unknown_names.lc:11:29 no method `cmp`: `sort_by` takes a key, not a comparator: `xs.sort_by(-it.age)`
+E0203 unknown_names.lc:12:12 no method `removeprefix`: use `s.strip_prefix(p) ?? s`
+E0203 unknown_names.lc:13:13 no method `trim_end_matches`: use `trim_end(chars)`, e.g. `trim_end("\r")`
 [exit 1]

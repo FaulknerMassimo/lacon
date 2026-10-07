@@ -276,8 +276,9 @@ reference and a Lacon solution each (`bench/tasks/`), and the harness that has
 Claude solve them (`bench/harness/`), through the API or through Claude Code
 (`claude -p`, no API key needed). A pilot run, all 30 tasks in Lacon and
 Python, is in §13: every episode passed, but Lacon took 2.92x Python's tokens
-and 67% of its first attempts built. Not done yet: Rust and Go runs, several
-trials, and a Go toolchain on the benchmark machine. See §12 for the
+and 67% of its first attempts built. A smoke run against Rust and Go and a
+primer experiment follow it in §13. Not done yet: the full Rust and Go runs
+and several trials. See §12 for the
 semantics the interpreter settled on and §13 for what writing the tasks and
 the runs taught.
 
@@ -391,7 +392,8 @@ Now:
 
 ```
 PLAN.md          this document
-docs/primer.md   the language primer an agent gets (≤ 3,000 tokens)
+docs/            the language primer an agent gets (≤ 3,000 tokens), and a
+                 shorter one under test (§13)
 crates/syntax    lexer, parser, AST, diagnostics
 crates/interp    Phase 0 resolver and tree-walking interpreter
 crates/check     type checker over the resolved IR
@@ -613,6 +615,70 @@ test unchanged, `rpn` and `log-summary` included; `json-format` is the
 exception. That would have taken first-build success from 67% to 97%, but it
 removes the smaller part of the gap: the primer and the extra calls remain.
 Next: Rust and Go, which is the comparison Phase 0's done-when names.
+
+### Smoke run against Rust and Go
+
+`calc` and `dijkstra` in Lacon, Rust and Go, one trial each
+(`bench/results/20261007-002953-claude-opus-5-5`). All six passed and every
+first attempt built. Lacon took 2.53x Rust's tokens and 2.90x Go's, but it
+was the cheapest of the three in dollars ($0.046 an episode against $0.051
+and $0.059): almost all of its extra tokens are cached reads of the primer,
+which cost a tenth of input. Its output was the smallest or close to it.
+
+The gap is the pilot's: Go and Rust wrote the file and ran
+`./run && ./submit` in one call, while Lacon wrote, ran, submitted and
+summarised in four, each reading about 7k tokens of context against 3-4k.
+Whether tokens-to-green counts cached reads at full weight decides whether
+Lacon passes Phase 0 at this task size.
+
+### Primer experiment
+
+Two ways to cut those tokens, each tried on all 30 tasks in Lacon, one trial
+(`bench/results/20261007-005436-primer-*`):
+
+- **A short primer** (`docs/primer-short.md`, about 1,290 tokens against
+  2,988). It keeps the traps that are common or silent (`var`, `T!` and `?`,
+  methods returning new values, missing map keys, int `/` truncating,
+  assignment copying, the string method names) and drops what the guess gets
+  right or a compiler hint now fixes. Probes of about 120 Python and Rust
+  guesses chose the cuts.
+- **A chaining hint** (`--chain-hint`), given to every language: a failed
+  submission has no penalty and `./submit` reports build errors too.
+
+| | Primer | Short primer | Primer + chaining hint |
+|---|---|---|---|
+| Passed | 30/30 | 30/30 | 30/30 |
+| First attempt builds | 90% | 70% | 97% |
+| Median tokens-to-green | 24,340 | 22,032 | 22,396 |
+| Tokens against the primer (geometric mean) | 1.00 | 0.85 | 0.80 |
+| Mean API calls | 3.5 | 3.8 | 2.8 |
+| Mean cost | $0.047 | $0.051 | $0.046 |
+
+- **The short primer saves 1.7k tokens a call** but fails more first builds.
+  Episodes whose first build worked had a median of 17.7k against 24.2k;
+  each failure cost about 15k, mostly in output and cache writes, so it
+  saved tokens but not dollars. The misses were specific:
+  `trim_end_matches("\r")`, `to_f64`, `to_str`, `remove_key` on a map,
+  comparator lambdas in `sort_by`, and `split_once` used unhandled because
+  the short primer dropped its `?`.
+- **The chaining hint saves 0.7 calls an episode** and was cheapest in
+  tokens and dollars. Rust and Go already chain, so it should help Lacon
+  most; that isn't measured yet.
+- **The pilot's fixes held.** With the same primer, the median fell from
+  31.7k to 24.3k and first builds rose from 67% to 90%.
+- **`json-format` failed its first build in every run**, the pilot's
+  included: `"{}"` (by design, §13) and `"{\n"`, whose `{` is read as an
+  interpolation.
+
+The probes also found guesses with no hint or a misleading one, now fixed:
+`HashMap::new()`, `Vec::new()`, `HashSet::new()` and `String::new()` name
+their literal; `Counter`, `defaultdict`, `deque`, `float`, `divmod`,
+`.copy()`, `.cmp()` and the `trim_*_matches` methods get hints; `not xs`
+says there is no truthiness; and `any(x for x in xs)` gets the comprehension
+hint instead of a parse error.
+
+Next: add the short primer's misses back (about 60 tokens), read `"{\n"`
+as a literal brace, and rerun the short primer with the chaining hint.
 
 ---
 

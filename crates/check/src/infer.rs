@@ -1829,7 +1829,12 @@ impl<'p> Checker<'p> {
             _ => {
                 let ty = self.show(&r);
                 let what = if op == UnOp::Neg { "negate" } else { "apply `not` to" };
-                let hint = if op == UnOp::Neg && matches!(r, T::Str) { "; to sort descending, sort then `.rev()`" } else { "" };
+                let hint = match (&r, op) {
+                    (T::Str, UnOp::Neg) => "; to sort descending, sort then `.rev()`",
+                    (T::Str | T::List(_) | T::Map(..) | T::Set(_), UnOp::Not | UnOp::Bang) => "; no truthiness: test `x.is_empty()`",
+                    (T::Int(_) | T::Float, UnOp::Not) => "; no truthiness: test `n == 0`",
+                    _ => "",
+                };
                 self.err("E0301", span, format!("cannot {what} {ty}{hint}"));
                 T::Unknown
             }
