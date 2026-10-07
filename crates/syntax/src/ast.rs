@@ -36,6 +36,8 @@ pub struct FnDecl {
     pub body: Block,
     pub doc: Option<String>,
     pub span: Span,
+    /// From `fn` to the `=` before the body.
+    pub head: Span,
 }
 
 #[derive(Clone, Debug)]

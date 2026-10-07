@@ -1,0 +1,9 @@
+# A function defined twice is replaced where the parameter counts match;
+# the put is indented, and loses its indentation.
+
+fn area(r f64) f64 = 3.0 * r * r
+
+fn area(w f64, h f64) f64 = w * h
+
+fn main() =
+  print(area(1.0), area(2.0, 3.0))

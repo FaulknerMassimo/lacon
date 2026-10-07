@@ -1,0 +1,5 @@
+# Items that don't parse are put anyway, and the check reports them, so
+# `lacon fix` or another put can mend them.
+
+fn main() =
+  print(1)

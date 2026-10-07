@@ -1,0 +1,7 @@
+put takes top-level items (fn, type, enum, test or a constant), not `print`
+[exit 2]
+--- refused.lc
+# Stdin that starts with something other than an item is refused.
+
+fn main() =
+  print(1)

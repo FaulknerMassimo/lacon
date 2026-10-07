@@ -1,0 +1,13 @@
+fixed E0409 left.lc:7:3 xs = xs.sort()
+E0201 left.lc:5:3 `total` is not defined; declare it first | e.g. var total = 0
+E0201 left.lc:8:9 `totl` is not defined
+[exit 1]
+--- left.lc
+# What a fix can't do is left, and reported as `check` reports it: an
+# example of what to write (`| e.g.`) is not applied.
+
+fn main() =
+  total += 1
+  xs = [3, 1, 2]
+  xs = xs.sort()
+  print(totl, xs)

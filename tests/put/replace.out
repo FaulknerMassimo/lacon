@@ -1,0 +1,31 @@
+replaced fn parse
+replaced type User
+replaced LIMIT
+added fn shout
+replaced test "parses"
+ok
+[exit 0]
+--- replace.lc
+# Items replaced by name. A replacement without a doc comment keeps the
+# old one; with one, it replaces it. Comments between items stay.
+
+# A user, with an email.
+type User {name str, age int, email str = ""}
+
+LIMIT = 20
+
+# Parses "name,age".
+fn parse(line str) User! =
+  p = line.split(",").map(it.trim())
+  if p.len != 2: fail "bad line: {line}"
+  User{p[0], p[1].parse()?}
+
+# ---- output ----
+
+fn main()! =
+  u = parse("ann,30")?
+  print(u.name, LIMIT)
+
+test "parses": parse(" bo , 4 ")?.age == 4
+
+fn shout(u User) str = u.name.upper()

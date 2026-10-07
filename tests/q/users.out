@@ -1,0 +1,65 @@
+$ lacon q def users.lc parse_line
+# Parses "name,age".
+fn parse_line(line str) User! =
+  p = line.split(",").map(it.trim())
+  User{p[0], p[1].parse()?}
+[exit 0]
+$ lacon q def users.lc User main
+type User {name str, age int}
+
+fn main()! =
+  users = adults(io.lines())?
+  names = ["ann,30", "bo,4"].map(parse_line)
+  for u in users:
+    print(u.name, names.len)
+[exit 0]
+$ lacon q def users.lc nothing
+no item `nothing` in users.lc
+[exit 1]
+$ lacon q callers users.lc parse_line
+users.lc:15:9 in adults: u = parse_line(line)?
+users.lc:21:34 in main: names = ["ann,30", "bo,4"].map(parse_line)
+users.lc:25:16 in test "parses": test "parses": parse_line("bo, 4")?.age == 4
+[exit 0]
+$ lacon q callers users.lc main
+no callers of `main`
+[exit 0]
+$ lacon q callers users.lc nothing
+no function `nothing` in users.lc
+[exit 1]
+$ lacon q type users.lc parse_line
+fn parse_line(line str) User!  # pure: Parses "name,age".
+[exit 0]
+$ lacon q type users.lc User
+type User {name str, age int}
+[exit 0]
+$ lacon q type users.lc LIMIT
+LIMIT int
+[exit 0]
+$ lacon q type users.lc out
+no top-level `out` in users.lc; for a variable, give a position: users.lc:<line>:<col>
+[exit 1]
+$ lacon q type users.lc:15:5
+`u` User
+[exit 0]
+$ lacon q type users.lc:15:9
+`parse_line(line)` User!
+[exit 0]
+$ lacon q type users.lc:16:8
+`u` User
+[exit 0]
+$ lacon q type users.lc:21:3
+`names` [User!]
+[exit 0]
+$ lacon q type users.lc:22:7
+`u` User
+[exit 0]
+$ lacon q type users.lc:9:22
+`line.split(",").map(it.trim())` [str]
+[exit 0]
+$ lacon q type users.lc:9:33
+`it.trim()` str
+[exit 0]
+$ lacon q type users.lc:99:1
+users.lc has no line 99
+[exit 1]

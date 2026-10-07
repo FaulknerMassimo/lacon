@@ -25,7 +25,10 @@ from free lists rather than malloc, inlines lambdas given to `map`,
 `filter` and `sort_by`, and reads a list once before a loop that only
 assigns its elements. On seven benchmark programs it takes 1.0-2.6x
 Rust's time (geometric mean 1.4x). fib (2.6x) and knapsack (1.85x) are the
-slowest, and overflow checks are much of what they pay for.
+slowest, and overflow checks are much of what they pay for. `fix` applies
+the fixes diagnostics carry, `put` replaces a function by name, and `q`
+answers queries (an item's source, its callers, a type), though no
+harness run uses them yet.
 The design and build plan is in [PLAN.md](PLAN.md).
 
 ```
@@ -33,6 +36,9 @@ cargo build --release
 ./target/release/lacon run bench/tasks/rpn/solution.lc < bench/tasks/rpn/tests/1.in
 ./target/release/lacon test tests/unit/primer.lc     # run inline tests
 ./target/release/lacon check file.lc                 # syntax, name and type errors, one per line
+./target/release/lacon fix file.lc                   # apply the errors' fixes, then report what's left
+./target/release/lacon put file.lc < items.lc        # replace or add top-level items by name
+./target/release/lacon q def file.lc parse_line      # one item's source (also: q callers, q type)
 ./target/release/lacon build file.lc -o prog         # native executable, through cc
 ./target/release/lacon sig bench/tokens/users.lc     # signatures and effects
 ./target/release/lacon explain E0202                 # long form of a diagnostic

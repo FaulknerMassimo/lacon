@@ -1,0 +1,4 @@
+# Nothing to fix: the file is left as it is.
+
+fn main() =
+  print("hi")

@@ -40,6 +40,11 @@ impl Types {
     }
 }
 
+/// A type from `Types` as Lacon writes it.
+pub fn show(t: &T, prog: &Program) -> String {
+    types::Subst::default().show(t, prog)
+}
+
 /// Type-checks a resolved program. `src` is its source text, used for the
 /// snippets in messages and fixes. Records in `prog.parse_to` the type each
 /// `s.parse()` with a declared type reads.

@@ -1,0 +1,8 @@
+# What a fix can't do is left, and reported as `check` reports it: an
+# example of what to write (`| e.g.`) is not applied.
+
+fn main() =
+  total += 1
+  xs = [3, 1, 2]
+  xs.sort()
+  print(totl, xs)

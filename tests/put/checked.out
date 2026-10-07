@@ -1,0 +1,10 @@
+replaced fn double
+E0301 checked.lc:3:24 `double` returns int, got str
+[exit 1]
+--- checked.lc
+# After a put, the file is checked and its errors reported.
+
+fn double(n int) int = n * "2"
+
+fn main() =
+  print(double(2))

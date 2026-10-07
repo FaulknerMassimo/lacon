@@ -1,0 +1,10 @@
+replaced fn main
+E0120 broken.lc:5:3 no `let`: write `x = 1` (immutable) or `var x = 0` (mutable) | fix: n = 2
+[exit 1]
+--- broken.lc
+# Items that don't parse are put anyway, and the check reports them, so
+# `lacon fix` or another put can mend them.
+
+fn main() =
+  let n = 2
+  print(n)

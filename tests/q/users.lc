@@ -1,0 +1,25 @@
+# Queries on a small program.
+
+type User {name str, age int}
+
+LIMIT = 18
+
+# Parses "name,age".
+fn parse_line(line str) User! =
+  p = line.split(",").map(it.trim())
+  User{p[0], p[1].parse()?}
+
+fn adults(lines [str]) [User]! =
+  var out = []
+  for line in lines:
+    u = parse_line(line)?
+    if u.age >= LIMIT: out.push(u)
+  out
+
+fn main()! =
+  users = adults(io.lines())?
+  names = ["ann,30", "bo,4"].map(parse_line)
+  for u in users:
+    print(u.name, names.len)
+
+test "parses": parse_line("bo, 4")?.age == 4

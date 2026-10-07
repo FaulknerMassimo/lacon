@@ -1,0 +1,43 @@
+# Each fix `lacon fix` applies that no check test shows, and one that only
+# appears once an earlier fix lets the type checker run.
+
+type User {name str, age int}
+enum Shape = Circle(f64) | Square(f64)
+
+fn older(u Usr) Usr = User{u.name, u.age + 1}
+
+fn area(s Shape) f64 =
+  match s
+    Circel(r): 3.0 * r * r
+    Square: 0.0
+
+fn make() User = User{nme: "ann", age: 3}
+
+fn conversions(f f64, n int) =
+  m int = f
+  s str = n
+  print(m, s, s + n)
+
+fn count(s str) int! =
+  t int = s
+  t
+
+fn find(xs [int], x int) int? =
+  for i in 0..xs.len:
+    if xs[i] == x: return
+  none
+
+fn check(n int) int =
+  if n < 0: fail "negative"
+  n
+
+fn next(n int) =
+  return n + 1
+
+fn parsed(s str) int! =
+  let n = count(s)
+  n * 2
+
+fn main() =
+  print(older(make()), area(Circle(1.0)), find([1], 1), check(1), next(1), parsed("2"))
+  return 0

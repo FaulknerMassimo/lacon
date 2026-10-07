@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use lacon_syntax::ast::*;
 use lacon_syntax::fmtspec::FmtSpec;
-use lacon_syntax::{Diag, Span};
+use lacon_syntax::{Diag, Fix, Span};
 
 use crate::builtins::{hof_arg, is_method, is_mutator, is_str_method};
 use crate::ir::{self, Arm, Builtin, ConvTo, Ex, FnId, LambdaDef, PatIr, Place, Program, Recv, Root, Seg, St, StrPiece, Target, Ty};
@@ -261,8 +261,15 @@ impl<'a> Resolver<'a> {
         self.diags.push(Diag::new(code, span, msg));
     }
 
+    /// An error whose fix replaces `span`.
     fn err_fix(&mut self, code: &'static str, span: Span, msg: impl Into<String>, fix: impl Into<String>) {
         self.diags.push(Diag::new(code, span, msg).fix(fix));
+    }
+
+    /// An error with an example of what to write, which `lacon fix` leaves
+    /// alone.
+    fn err_eg(&mut self, code: &'static str, span: Span, msg: impl Into<String>, example: impl Into<String>) {
+        self.diags.push(Diag::new(code, span, msg).with_fix(Some(Fix::example(example))));
     }
 
     fn snippet(&self, span: Span) -> &str {
@@ -325,6 +332,7 @@ impl<'a> Resolver<'a> {
                         body: Ex::Lit(Value::Unit, f.name.span),
                         nslots: 0,
                         span: f.name.span,
+                        head: f.head,
                         sig: self.sig_text(f),
                         doc: f.doc.clone(),
                         io: false,
@@ -539,7 +547,7 @@ impl<'a> Resolver<'a> {
                 }
                 // Single uppercase letters are generic parameters someone forgot to declare.
                 if n.len() == 1 && n.chars().all(|c| c.is_ascii_uppercase()) {
-                    self.err_fix("E0204", id.span, format!("unknown type `{n}`; declare type parameters after the name"), format!("fn name[{n}](...)"));
+                    self.err_eg("E0204", id.span, format!("unknown type `{n}`; declare type parameters after the name"), format!("fn name[{n}](...)"));
                     return Ty::Any;
                 }
                 match type_hint(n) {
@@ -853,7 +861,7 @@ impl<'a> Resolver<'a> {
                 match self.lookup(n) {
                     None => {
                         if op.is_some() {
-                            self.err_fix("E0201", t.span, format!("`{n}` is not defined; declare it first"), format!("var {n} = 0"));
+                            self.err_eg("E0201", t.span, format!("`{n}` is not defined; declare it first"), format!("var {n} = 0"));
                             return None;
                         }
                         let slot = self.declare(n, false);
@@ -1335,7 +1343,7 @@ impl<'a> Resolver<'a> {
     fn struct_lit(&mut self, name: &Ident, fields: &[FieldInit], span: Span) -> Ex {
         let Some(&sid) = self.struct_ids.get(&name.name) else {
             if self.variants.contains_key(&name.name) {
-                self.err_fix("E0141", name.span, "variants take positional fields in parentheses", format!("{}(...)", name.name));
+                self.err_eg("E0141", name.span, "variants take positional fields in parentheses", format!("{}(...)", name.name));
             } else {
                 self.err("E0204", name.span, format!("unknown type `{}`", name.name));
             }
@@ -1345,6 +1353,7 @@ impl<'a> Resolver<'a> {
         let has_default: Vec<bool> = self.prog.structs[sid as usize].fields.iter().map(|f| f.default.is_some()).collect();
         let mut slots: Vec<Option<Ex>> = (0..defs.len()).map(|_| None).collect();
         let mut positional = Vec::new();
+        let mut unknown = false;
         for fi in fields {
             let named = match (&fi.name, &fi.value.kind) {
                 (Some(n), _) => Some((n.name.clone(), n.span)),
@@ -1361,6 +1370,7 @@ impl<'a> Resolver<'a> {
                         slots[i] = Some(self.expr(&fi.value));
                     }
                     None => {
+                        unknown = true;
                         let fix = closest(&n, defs.iter().map(|s| s.as_str())).map(|s| s.to_string());
                         let msg = format!("`{}` has no field `{n}`; fields: {}", name.name, defs.join(", "));
                         match fix {
@@ -1384,7 +1394,9 @@ impl<'a> Resolver<'a> {
             slots[next] = Some(self.expr(&fi.value));
         }
         let missing: Vec<&str> = slots.iter().zip(defs.iter()).zip(has_default.iter()).filter(|((s, _), d)| s.is_none() && !**d).map(|((_, n), _)| n.as_str()).collect();
-        if !missing.is_empty() {
+        // A field with an unknown name is usually the missing one misspelled,
+        // and that error comes first on the line.
+        if !missing.is_empty() && !unknown {
             self.err("E0207", span, format!("missing field(s) {} in `{}`", missing.join(", "), name.name));
         }
         Ex::Struct { id: sid, fields: slots, span }
@@ -1691,7 +1703,7 @@ impl<'a> Resolver<'a> {
                     return self.variant_ctor(eid, tag, args, span);
                 }
                 if self.struct_ids.contains_key(ns) && !self.fn_ids.contains_key(n) {
-                    self.err_fix("E0203", name.span, format!("no static methods; construct with braces: `{ns}{{...}}`"), format!("{ns}{{...}}"));
+                    self.err_eg("E0203", name.span, format!("no static methods; construct with braces: `{ns}{{...}}`"), format!("{ns}{{...}}"));
                     return Ex::Poison(span);
                 }
                 if conv_for(ns).is_some() && !self.fn_ids.contains_key(n) {

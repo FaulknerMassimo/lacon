@@ -7,7 +7,7 @@
 //! Lacon form as a hint.
 
 use crate::ast::*;
-use crate::diag::Diag;
+use crate::diag::{Diag, Fix};
 use crate::lexer::{describe, Lexer, StrPart, Tok, Token};
 use crate::span::Span;
 
@@ -127,10 +127,10 @@ impl<'a> Parser<'a> {
         self.diags.push(Diag::new("E0110", span, msg));
     }
 
+    /// A hint, with a fix that replaces the whole line `span` is on.
     fn hint(&mut self, code: &'static str, span: Span, msg: impl Into<String>, fix: Option<String>) {
-        let mut d = Diag::new(code, span, msg);
-        d.fix = fix;
-        self.diags.push(d);
+        let fix = fix.map(|f| Fix::at(self.line_span(span), f));
+        self.diags.push(Diag::new(code, span, msg).with_fix(fix));
     }
 
     fn expected(&mut self, what: &str) {
@@ -192,9 +192,17 @@ impl<'a> Parser<'a> {
     }
 
     fn line_of(&self, span: Span) -> &'a str {
+        let s = self.line_span(span);
+        &self.src[s.start as usize..s.end as usize]
+    }
+
+    /// The line `span` starts on, without its indentation or trailing space.
+    fn line_span(&self, span: Span) -> Span {
         let start = self.src[..span.start as usize].rfind('\n').map_or(0, |i| i + 1);
         let end = self.src[span.start as usize..].find('\n').map_or(self.src.len(), |i| span.start as usize + i);
-        self.src[start..end].trim()
+        let line = &self.src[start..end];
+        let lead = line.len() - line.trim_start().len();
+        Span::new(start + lead, start + lead + line.trim().len())
     }
 
     /// The comment line directly above `span`, used as a one-line doc.
@@ -468,8 +476,9 @@ impl<'a> Parser<'a> {
             self.expected("`=` before the function body");
             return Err(());
         }
+        let head = start.to(self.prev_span());
         let body = self.block()?;
-        Ok(FnDecl { name, generics, params, ret, body, doc, span: start })
+        Ok(FnDecl { name, generics, params, ret, body, doc, span: start, head })
     }
 
     /// After a parameter list, is `{` a map or set return type (`{str: int} =`)

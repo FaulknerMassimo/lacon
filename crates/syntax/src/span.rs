@@ -46,6 +46,15 @@ impl Source {
         (line + 1, col + 1)
     }
 
+    /// The byte offset of a 1-based line and column (in chars), if the
+    /// line exists; a column past the end gives the end of the line.
+    pub fn offset(&self, line: usize, col: usize) -> Option<u32> {
+        let start = *self.line_starts.get(line.checked_sub(1)?)?;
+        let text = self.line_text(line);
+        let at = text.char_indices().nth(col.saturating_sub(1)).map_or(text.len(), |(i, _)| i);
+        Some((start + at) as u32)
+    }
+
     pub fn line_text(&self, line: usize) -> &str {
         let start = self.line_starts[line - 1];
         let end = self.line_starts.get(line).copied().unwrap_or(self.text.len());

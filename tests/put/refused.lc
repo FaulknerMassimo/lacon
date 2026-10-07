@@ -1,0 +1,4 @@
+# Stdin that starts with something other than an item is refused.
+
+fn main() =
+  print(1)

@@ -1,22 +1,30 @@
 //! `lacon`: run, test and inspect Lacon programs. Output is short and
 //! line-oriented because its main reader is an agent.
 
+mod edit;
 mod explain;
+mod fix;
 mod native;
+mod query;
 
 use std::process::ExitCode;
 
 use lacon_interp::{eval::ty_name, run_main, run_tests, Interp, Out, Outcome, Panic, Program};
 use lacon_syntax::diag::{render_all, MAX_DIAGS};
-use lacon_syntax::Source;
+use lacon_syntax::{Diag, Source};
 
 const USAGE: &str = "\
 usage: lacon <command> [args]
   run <file.lc> [args...]   run main
   test <file.lc>... [-k s]  run inline tests; prints only failures
   check <file.lc>...        report errors without running
+  fix <file.lc>...          apply the errors' fixes, then report what's left
   build <file.lc> [-o exe]  compile to a native executable
   sig <file.lc>             signatures, docs and effects, no bodies
+  put <file.lc>             replace or add the items on stdin, by name
+  q def <file.lc> <name>... the source of named items
+  q callers <file.lc> <fn>  where a function is called
+  q type <file.lc>:<l>:<c>  the type of the expression there (or a name)
   explain <code>            long form of a diagnostic code, e.g. E0202";
 
 fn main() -> ExitCode {
@@ -54,6 +62,17 @@ fn real_main() -> ExitCode {
             }
         }
         "build" => build(rest),
+        "fix" => {
+            if rest.is_empty() {
+                return usage_err("fix needs a file");
+            }
+            fix::fix(rest)
+        }
+        "put" => match rest {
+            [file] => edit::put(file),
+            _ => usage_err("put takes one file and reads the items from stdin"),
+        },
+        "q" => query::query(rest),
         "sig" => match rest.first() {
             Some(f) => sig(f),
             None => usage_err("sig needs a file"),
@@ -89,15 +108,27 @@ fn usage_err(msg: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// Reads, parses and resolves a file, printing diagnostics. `None` on errors.
-fn load(path: &str) -> Option<(Source, Program, lacon_check::Types)> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
+/// A file parsed, resolved and type-checked, with its diagnostics.
+pub struct Analysis {
+    pub src: Source,
+    pub prog: Program,
+    pub types: lacon_check::Types,
+    pub diags: Vec<Diag>,
+}
+
+/// Reads a file, printing why if it can't.
+pub fn read(path: &str) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => Some(t),
         Err(e) => {
             eprintln!("cannot read {path}: {e}");
-            return None;
+            None
         }
-    };
+    }
+}
+
+/// Parses, resolves and checks `text` as the file `path`.
+pub fn analyze(path: &str, text: String) -> Analysis {
     let src = Source::new(path, text);
     let (mut prog, mut diags) = lacon_interp::load(&src);
     let mut types = lacon_check::Types::default();
@@ -109,13 +140,24 @@ fn load(path: &str) -> Option<(Source, Program, lacon_check::Types)> {
         types = t;
         diags.extend(tdiags.into_iter().filter(|d| !lines.contains(&src.line_col(d.span.start).0)));
     }
-    if !diags.is_empty() {
-        for line in render_all(&diags, &src, MAX_DIAGS) {
-            eprintln!("{line}");
-        }
+    Analysis { src, prog, types, diags }
+}
+
+/// Prints diagnostics as `check` does; false if there were any.
+pub fn report(a: &Analysis) -> bool {
+    for line in render_all(&a.diags, &a.src, MAX_DIAGS) {
+        eprintln!("{line}");
+    }
+    a.diags.is_empty()
+}
+
+/// Reads, parses and resolves a file, printing diagnostics. `None` on errors.
+fn load(path: &str) -> Option<(Source, Program, lacon_check::Types)> {
+    let a = analyze(path, read(path)?);
+    if !report(&a) {
         return None;
     }
-    Some((src, prog, types))
+    Some((a.src, a.prog, a.types))
 }
 
 fn render_panic(p: &Panic, src: &Source) -> Vec<String> {
@@ -281,34 +323,47 @@ fn sig(path: &str) -> ExitCode {
         return ExitCode::from(1);
     };
     for s in &prog.structs {
-        let fields: Vec<String> = s.fields.iter().map(|f| format!("{} {}", f.name, ty_name(&f.ty, &prog))).collect();
-        println!("type {} {{{}}}", s.name, fields.join(", "));
+        println!("{}", struct_line(s, &prog));
     }
     for e in &prog.enums {
-        let vs: Vec<String> = e
-            .variants
-            .iter()
-            .map(|v| {
-                if v.fields.is_empty() {
-                    v.name.clone()
-                } else {
-                    format!("{}({})", v.name, v.fields.iter().map(|t| ty_name(t, &prog)).collect::<Vec<_>>().join(", "))
-                }
-            })
-            .collect();
-        println!("enum {} = {}", e.name, vs.join(" | "));
+        println!("{}", enum_line(e, &prog));
     }
     for c in &prog.consts {
         println!("{} = ...", c.name);
     }
     let width = prog.fns.iter().map(|f| f.sig.len()).max().unwrap_or(0).min(48);
     for f in &prog.fns {
-        let effect = if f.io { "io" } else { "pure" };
-        let doc = f.doc.as_ref().map(|d| format!(": {d}")).unwrap_or_default();
-        println!("{:width$}  # {effect}{doc}", f.sig);
+        println!("{}", fn_line(f, width));
     }
     if !prog.tests.is_empty() {
         println!("# {} tests", prog.tests.len());
     }
     ExitCode::SUCCESS
+}
+
+fn struct_line(s: &lacon_interp::ir::StructDef, prog: &Program) -> String {
+    let fields: Vec<String> = s.fields.iter().map(|f| format!("{} {}", f.name, ty_name(&f.ty, prog))).collect();
+    format!("type {} {{{}}}", s.name, fields.join(", "))
+}
+
+fn enum_line(e: &lacon_interp::ir::EnumDef, prog: &Program) -> String {
+    let vs: Vec<String> = e
+        .variants
+        .iter()
+        .map(|v| {
+            if v.fields.is_empty() {
+                v.name.clone()
+            } else {
+                format!("{}({})", v.name, v.fields.iter().map(|t| ty_name(t, prog)).collect::<Vec<_>>().join(", "))
+            }
+        })
+        .collect();
+    format!("enum {} = {}", e.name, vs.join(" | "))
+}
+
+/// A function's signature, padded to `width`, its effect and its doc.
+fn fn_line(f: &lacon_interp::ir::FnDef, width: usize) -> String {
+    let effect = if f.io { "io" } else { "pure" };
+    let doc = f.doc.as_ref().map(|d| format!(": {d}")).unwrap_or_default();
+    format!("{:width$}  # {effect}{doc}", f.sig)
 }

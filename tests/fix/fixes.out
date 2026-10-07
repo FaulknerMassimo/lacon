@@ -1,0 +1,63 @@
+fixed E0204 fixes.lc:7:12 fn older(u User) User = User{u.name, u.age + 1}
+fixed E0204 fixes.lc:7:18 fn older(u User) User = User{u.name, u.age + 1}
+fixed E0205 fixes.lc:11:5 Circle(r): 3.0 * r * r
+fixed E0206 fixes.lc:12:5 Square(_): 0.0
+fixed E0208 fixes.lc:14:23 fn make() User = User{name: "ann", age: 3}
+fixed E0301 fixes.lc:17:11 m int = int(f)
+fixed E0301 fixes.lc:18:11 s str = str(n)
+fixed E0301 fixes.lc:19:15 print(m, s, "{s}{n}")
+fixed E0301 fixes.lc:22:11 t int = int(s)?
+fixed E0301 fixes.lc:27:20 if xs[i] == x: return none
+fixed E0302 fixes.lc:30:1 fn check(n int) int! =
+fixed E0305 fixes.lc:34:1 fn next(n int) int =
+fixed E0120 fixes.lc:38:3 n = count(s)
+fixed E0406 fixes.lc:39:3 n? * 2
+fixed E0406 fixes.lc:42:57 print(older(make()), area(Circle(1.0)), find([1], 1), check(1)?, next(1), parsed("2")?)
+fixed E0406 fixes.lc:42:77 print(older(make()), area(Circle(1.0)), find([1], 1), check(1)?, next(1), parsed("2")?)
+fixed E0305 fixes.lc:43:3 os.exit(0)
+ok
+[exit 0]
+--- fixes.lc
+# Each fix `lacon fix` applies that no check test shows, and one that only
+# appears once an earlier fix lets the type checker run.
+
+type User {name str, age int}
+enum Shape = Circle(f64) | Square(f64)
+
+fn older(u User) User = User{u.name, u.age + 1}
+
+fn area(s Shape) f64 =
+  match s
+    Circle(r): 3.0 * r * r
+    Square(_): 0.0
+
+fn make() User = User{name: "ann", age: 3}
+
+fn conversions(f f64, n int) =
+  m int = int(f)
+  s str = str(n)
+  print(m, s, "{s}{n}")
+
+fn count(s str) int! =
+  t int = int(s)?
+  t
+
+fn find(xs [int], x int) int? =
+  for i in 0..xs.len:
+    if xs[i] == x: return none
+  none
+
+fn check(n int) int! =
+  if n < 0: fail "negative"
+  n
+
+fn next(n int) int =
+  return n + 1
+
+fn parsed(s str) int! =
+  n = count(s)
+  n? * 2
+
+fn main() =
+  print(older(make()), area(Circle(1.0)), find([1], 1), check(1)?, next(1), parsed("2")?)
+  os.exit(0)

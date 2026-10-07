@@ -1,13 +1,32 @@
 use crate::span::{Source, Span};
 
 /// One diagnostic, rendered on one line:
-/// `<code> <file>:<line>:<col> <message> [| fix: <replacement>]`
+/// `<code> <file>:<line>:<col> <message> [| fix: <replacement>]`, or
+/// `| e.g. <example>` for a fix that is only a shape to follow.
 #[derive(Clone, Debug)]
 pub struct Diag {
     pub code: &'static str,
     pub span: Span,
     pub msg: String,
-    pub fix: Option<String>,
+    pub fix: Option<Fix>,
+}
+
+/// Text to write instead of the source at `at`, which `lacon fix` applies;
+/// with no `at`, an example of what to write (`fn name[T](...)`).
+#[derive(Clone, Debug)]
+pub struct Fix {
+    pub text: String,
+    pub at: Option<Span>,
+}
+
+impl Fix {
+    pub fn at(at: Span, text: impl Into<String>) -> Fix {
+        Fix { text: text.into(), at: Some(at) }
+    }
+
+    pub fn example(text: impl Into<String>) -> Fix {
+        Fix { text: text.into(), at: None }
+    }
 }
 
 impl Diag {
@@ -15,8 +34,14 @@ impl Diag {
         Diag { code, span, msg: msg.into(), fix: None }
     }
 
-    pub fn fix(mut self, fix: impl Into<String>) -> Diag {
-        self.fix = Some(fix.into());
+    /// A fix that replaces the diagnostic's own span.
+    pub fn fix(mut self, text: impl Into<String>) -> Diag {
+        self.fix = Some(Fix::at(self.span, text));
+        self
+    }
+
+    pub fn with_fix(mut self, fix: Option<Fix>) -> Diag {
+        self.fix = fix;
         self
     }
 
@@ -24,8 +49,8 @@ impl Diag {
         let (line, col) = src.line_col(self.span.start);
         let mut s = format!("{} {}:{}:{} {}", self.code, src.name, line, col, self.msg);
         if let Some(fix) = &self.fix {
-            s.push_str(" | fix: ");
-            s.push_str(fix);
+            s.push_str(if fix.at.is_some() { " | fix: " } else { " | e.g. " });
+            s.push_str(&fix.text);
         }
         s
     }

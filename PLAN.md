@@ -198,13 +198,17 @@ E0301 users.lc:5:22 want u32 got str | fix: p[1].parse()?
 - Errors caused by an earlier error are suppressed.
 - Output is capped (default 20) with a count of the rest.
 - Codes are stable; `lacon explain E0301` gives the long form on demand.
-- `lacon fix` applies the suggested fixes.
+- `lacon fix` applies the suggested fixes. A fix that is only a shape to
+  follow, which `lacon fix` leaves alone, reads `| e.g. fn name[T](...)`.
 
-**Edits by name.** `lacon put users.parse_line` replaces a function body read
-from stdin, and `lacon rename` and `lacon add-field` cover common refactors.
-The agent never has to quote the old code.
+**Edits by name.** `lacon put users.lc` reads top-level items from stdin and
+replaces each item of the same name, or adds it, and `lacon rename` and
+`lacon add-field` cover common refactors. The agent never has to quote the
+old code.
 
-**Queries.** `lacon q callers|type|impls <name>` with short output.
+**Queries.** `lacon q def|callers|type` with short output: an item's source,
+where a function is called, and the type of the expression at a position.
+Lacon has no traits, so there is no `impls`.
 
 **Tests.** `lacon test` prints only failures, each as a minimal diff.
 
@@ -334,7 +338,8 @@ An index in range now costs one compare, as in Rust, where it cost a sign
 test and a compare (§21): knapsack went from 2.3x Rust to 1.85x, and the
 geometric mean is 1.40x. Range facts reach little of what the three have
 left (§21), so Perceus reuse is next for speed.
-Mode checking, `fix`, `put` and `q` aren't started.
+`fix`, `put` and `q` are built (§22), but no harness run has used them
+yet. Mode checking isn't started.
 
 ### Phase 3 — Speed and scale
 
@@ -428,7 +433,8 @@ crates/interp    Phase 0 resolver and tree-walking interpreter
 crates/check     type checker over the resolved IR
 crates/cgen      C backend: IR to C, and the C runtime in runtime/
 crates/cli       the `lacon` binary
-tests/           golden tests: run/ (stdout), check/ (diagnostics), unit/ (`lacon test`)
+tests/           golden tests: run/ (stdout), check/ (diagnostics), unit/ (`lacon test`),
+                 fix/, put/ and q/ (the editing and query commands)
 bench/tokens/    the same program in Rust, Go, Python and Lacon, plus a token counter
 bench/tasks/     Phase 0 tasks (prompt, hidden tests, reference) and a checker
 bench/perf/      native speed: the same programs in Lacon and Rust, and a timer
@@ -1441,3 +1447,105 @@ memory. knapsack without its overflow checks on `+` and `-` would run at
 1.4x, so they are about a fifth of its time. Some of the rest is loads
 from the stack: gcc keeps the list's data pointer, `vi` and the write
 length there, and reads the pointer three times an element.
+
+---
+
+## 22. Phase 2: `fix`, `put` and `q`
+
+Phase 2 is done when an agent can finish tasks with Lacon's own tools.
+This section builds three of them. The harness doesn't offer them yet.
+
+**Fixes say what they replace.** A diagnostic's fix was a bare string.
+Most replaced the flagged code; the parser's replaced the whole line; four
+rewrote the function's signature (`fn half(s str) int! =`); and four were
+shapes with `...` (`fn name[T](...)`, `Circle(...)`, `User{...}`) or a
+declaration to add somewhere earlier (`var total = 0`). A fix now carries
+the range it replaces: the flagged span, the line without its
+indentation, or the signature from `fn` to `=`, which the parser now
+records. The shapes have no range and print as `| e.g. ...`, so `| fix:`
+always means text that replaces the code. One fix had the wrong range:
+`return 5` in `main` replaced only the keyword and left
+`os.exit(5) 5`. It now covers the value.
+
+**`lacon fix f.lc`** applies the fixes `check` would print (one per line),
+skipping any that overlap, then checks again, for up to five rounds.
+Fixing a syntax error lets the type checker run and find more:
+`let n = count(s)` becomes `n = count(s)`, and then `n * 2` becomes
+`n? * 2`. A fix for the same error at the place an earlier fix wrote is
+not applied again. It prints each fix as the line it left, then what
+still fails as `check` prints it, or `ok`:
+
+```
+fixed E0409 left.lc:7:3 xs = xs.sort()
+E0201 left.lc:5:3 `total` is not defined; declare it first | e.g. var total = 0
+E0201 left.lc:8:9 `totl` is not defined
+```
+
+On copies of the check tests it makes all 28 distinct fixes they show, and
+each is what its message proposed.
+
+**A misspelled field.** `User{nme: "ann", age: 3}` reported only
+`missing field(s) name`. Only one error shows per line, and that one came
+first, so the unknown field `nme` and its fix `name` were hidden. A
+literal with an unknown field no longer also reports missing ones.
+
+**`lacon put f.lc`** reads top-level items from stdin (functions, types,
+enums, tests and constants) and replaces each item of the same kind and
+name. Among functions of one name, it replaces the one with as many
+parameters. An item it doesn't find is added at the end. A replacement
+that has a doc comment replaces the old doc comment; without one, the old
+one stays. It prints `replaced fn parse` or `added fn shout` for each
+item, so a misspelled name shows up as an addition, then checks the
+file. Stdin is dedented first. Items that don't parse are put all the
+same, since `lacon fix` or another put can mend them in place; stdin that
+doesn't start with an item is refused. The first version refused stdin
+with any syntax error. Trying it on `rpn`, it refused a whole function
+whose one error was a `let`, which `lacon fix` mends in one call.
+
+`put` finds items from tokens rather than the parse tree, so it works on
+a file that doesn't parse (`crates/syntax/src/items.rs`). An item starts
+at an unindented token that begins a line, not one that continues the
+line before it, so a `}` at column 0 that closes a type stays in the
+type. It runs to its last line before the next item that isn't blank or
+an unindented comment, and a section comment between items stays put.
+
+**`lacon q`** answers in a few lines:
+
+- `q def f.lc name...` prints items' source with their doc comments: the
+  counterpart of `put`, so an agent reads one function, not the file.
+- `q callers f.lc name` prints each call of a function and each use of it
+  as a value, with the function it's in and the line.
+- `q type f.lc:line:col`, in the format diagnostics use, prints the type
+  of the innermost expression there, or of the variable a binding or
+  `for` there names. `q type f.lc name` prints a function's signature, a
+  type's declaration or a constant's type. It works on a file with type
+  errors, which is when it's needed.
+
+```
+$ lacon q callers users.lc parse_line
+users.lc:15:9 in adults: u = parse_line(line)?
+users.lc:21:34 in main: names = ["ann,30", "bo,4"].map(parse_line)
+$ lacon q type users.lc:21:3
+`names` [User!]
+```
+
+There is no `q impls`, since Lacon has no traits. cgen's walk over the IR
+moved next to the IR, in `lacon_interp::ir`, for `q` to use; the C it
+generates is byte for byte the same.
+
+`tests/fix/`, `tests/put/` and `tests/q/` are golden tests of each
+command, and `crates/syntax/tests/items.rs` tests item ranges. No other
+golden output changed.
+
+**A checker gap.** Trying the tools on `rpn` turned up a program the
+checker should reject. A stack `var st = []` filled by
+`st.push(int(tok))`, with no `?`, is a `[int!]`, and `a + b` on two of its
+elements passed, because the element type was still unknown at `a + b`,
+which comes before the `push`. `q type` showed it: `st` is `[int!]` and
+`b` is `int!`. It isn't fixed here.
+
+Not done: neither the harness nor either primer offers these commands,
+so no run has measured them, and `rename`, `add-field` and mode checking
+aren't built. Next: a harness mode in which Lacon episodes edit with
+`lacon put` and `lacon fix` and read with `lacon q` and `lacon sig`, in
+place of Write, Edit and Read, to see whether they cut tokens-to-green.

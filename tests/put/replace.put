@@ -1,0 +1,13 @@
+fn parse(line str) User! =
+  p = line.split(",").map(it.trim())
+  if p.len != 2: fail "bad line: {line}"
+  User{p[0], p[1].parse()?}
+
+# A user, with an email.
+type User {name str, age int, email str = ""}
+
+LIMIT = 20
+
+fn shout(u User) str = u.name.upper()
+
+test "parses": parse(" bo , 4 ")?.age == 4

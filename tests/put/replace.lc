@@ -1,0 +1,20 @@
+# Items replaced by name. A replacement without a doc comment keeps the
+# old one; with one, it replaces it. Comments between items stay.
+
+# A user.
+type User {name str, age int}
+
+LIMIT = 10
+
+# Parses "name,age".
+fn parse(line str) User! =
+  p = line.split(",")
+  User{p[0], p[1].parse()?}
+
+# ---- output ----
+
+fn main()! =
+  u = parse("ann,30")?
+  print(u.name, LIMIT)
+
+test "parses": parse("bo,4")?.age == 4

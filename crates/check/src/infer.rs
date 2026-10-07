@@ -14,7 +14,7 @@ use lacon_interp::builtins::is_method;
 use lacon_interp::ir::*;
 use lacon_interp::value::{Func, Value};
 use lacon_syntax::ast::{BinOp, CmpOp, Mode, UnOp};
-use lacon_syntax::{Diag, Span};
+use lacon_syntax::{Diag, Fix, Span};
 
 use crate::methods::NoSig;
 use crate::types::{Subst, T, INT};
@@ -50,6 +50,8 @@ enum Kind {
 pub(crate) struct FnCtx {
     name: String,
     sig: String,
+    /// The span of `sig` in the source, which signature fixes replace.
+    head: Span,
     ret: Option<T>,
     kind: Kind,
 }
@@ -180,7 +182,7 @@ impl<'p> Checker<'p> {
             s: Subst::default(),
             diags: Vec::new(),
             frames: Vec::new(),
-            ctx: FnCtx { name: String::new(), sig: String::new(), ret: None, kind: Kind::Const },
+            ctx: FnCtx { name: String::new(), sig: String::new(), head: Span::default(), ret: None, kind: Kind::Const },
             deferred: Vec::new(),
             consts: vec![T::Unknown; prog.consts.len()],
             tails: vec![None; prog.fns.len()],
@@ -199,7 +201,7 @@ impl<'p> Checker<'p> {
     pub fn run(&mut self) {
         let prog = self.prog;
         for (i, c) in prog.consts.iter().enumerate() {
-            self.ctx = FnCtx { name: c.name.clone(), sig: String::new(), ret: None, kind: Kind::Const };
+            self.ctx = FnCtx { name: c.name.clone(), sig: String::new(), head: Span::default(), ret: None, kind: Kind::Const };
             self.frames = vec![Frame::new(c.nslots, &mut self.s)];
             let t = self.expr(&c.value, None);
             self.solve(true);
@@ -232,7 +234,7 @@ impl<'p> Checker<'p> {
         // unchecked can't reach compiled code.
         let leaks = self.s.leaks;
         for t in &prog.tests {
-            self.ctx = FnCtx { name: t.name.clone(), sig: String::new(), ret: None, kind: Kind::Test };
+            self.ctx = FnCtx { name: t.name.clone(), sig: String::new(), head: Span::default(), ret: None, kind: Kind::Test };
             self.frames = vec![Frame::new(t.nslots, &mut self.s)];
             self.deferred.clear();
             self.expr(&t.body, None);
@@ -281,7 +283,7 @@ impl<'p> Checker<'p> {
         let fd = &self.prog.fns[id];
         let ret = fd.ret.as_ref().map(|t| self.s.from_ir(t, &[]));
         let kind = if self.prog.main == Some(id as FnId) { Kind::Main } else { Kind::Fn };
-        self.ctx = FnCtx { name: fd.name.clone(), sig: fd.sig.clone(), ret: ret.clone(), kind };
+        self.ctx = FnCtx { name: fd.name.clone(), sig: fd.sig.clone(), head: fd.head, ret: ret.clone(), kind };
         let mut frame = Frame::new(fd.nslots, &mut self.s);
         let mut params = Vec::new();
         for (i, p) in fd.params.iter().enumerate() {
@@ -344,10 +346,14 @@ impl<'p> Checker<'p> {
         self.diags.push(Diag::new(code, span, msg));
     }
 
+    /// An error whose fix, if any, replaces `span`.
     fn err_fix(&mut self, code: &'static str, span: Span, msg: impl Into<String>, fix: Option<String>) {
-        let mut d = Diag::new(code, span, msg);
-        d.fix = fix;
-        self.diags.push(d);
+        self.diags.push(Diag::new(code, span, msg).with_fix(fix.map(|f| Fix::at(span, f))));
+    }
+
+    /// An error whose fix rewrites the signature at `head`.
+    fn err_sig_fix(&mut self, code: &'static str, span: Span, msg: impl Into<String>, head: Span, sig: String) {
+        self.diags.push(Diag::new(code, span, msg).with_fix(Some(Fix::at(head, sig))));
     }
 
     pub fn snippet(&self, span: Span) -> &str {
@@ -439,13 +445,9 @@ impl<'p> Checker<'p> {
     fn err_unit(&mut self, fid: FnId, span: Span) {
         let fd = &self.prog.fns[fid as usize];
         let snip = self.snippet(span).to_string();
-        let fix = self.tails[fid as usize].clone().map(|t| format!("{} {} =", fd.sig, self.show(&t)));
-        self.err_fix(
-            "E0305",
-            span,
-            format!("`{}` declares no return type, so `{snip}` has no value; declare one: `{} T =`", fd.name, fd.sig),
-            fix,
-        );
+        let fix = self.tails[fid as usize].clone().map(|t| Fix::at(fd.head, format!("{} {} =", fd.sig, self.show(&t))));
+        let msg = format!("`{}` declares no return type, so `{snip}` has no value; declare one: `{} T =`", fd.name, fd.sig);
+        self.diags.push(Diag::new("E0305", span, msg).with_fix(fix));
     }
 
     /// Reports that `got` does not fit `want`.
@@ -2151,14 +2153,14 @@ impl<'p> Checker<'p> {
             return self.err("E0302", span, "`?` needs a function to pass the failure to; constants can't fail");
         }
         let sig = self.ctx.sig.clone();
-        let (msg, fix) = match self.ctx.ret.as_ref().map(|r| self.s.resolve(r)) {
-            None | Some(T::Unit) => (format!("`?` passes {} up, but `{name}` can't fail; declare it `{sig}!`", if opt { "`none`" } else { "the error" }), Some(format!("{sig}! ="))),
+        let msg = match self.ctx.ret.as_ref().map(|r| self.s.resolve(r)) {
+            None | Some(T::Unit) => format!("`?` passes {} up, but `{name}` can't fail; declare it `{sig}!`", if opt { "`none`" } else { "the error" }),
             Some(r) => {
                 let rs = self.show(&r);
-                (format!("`?` passes {} up, but `{name}` returns {rs}; make it `{rs}!` (or `{rs}?`)", if opt { "`none`" } else { "the error" }), Some(format!("{sig}! =")))
+                format!("`?` passes {} up, but `{name}` returns {rs}; make it `{rs}!` (or `{rs}?`)", if opt { "`none`" } else { "the error" })
             }
         };
-        self.err_fix("E0302", span, msg, fix);
+        self.err_sig_fix("E0302", span, msg, self.ctx.head, format!("{sig}! ="));
     }
 
     // ----- control flow -----
@@ -2419,7 +2421,7 @@ impl<'p> Checker<'p> {
                     } else if self.ctx.returns_optional(&self.s) {
                         self.err("E0302", *span, format!("`fail` needs a `T!` function, but `{name}` returns an optional; `return none` instead, or make it `T!`"));
                     } else {
-                        self.err_fix("E0302", *span, format!("`fail` needs a `T!` function; declare `{name}` with `!`"), Some(format!("{sig}! =")));
+                        self.err_sig_fix("E0302", *span, format!("`fail` needs a `T!` function; declare `{name}` with `!`"), self.ctx.head, format!("{sig}! ="));
                     }
                 }
                 true
@@ -2499,16 +2501,18 @@ impl<'p> Checker<'p> {
             (Some(e), None | Some(T::Unit)) => {
                 let t = self.infer(e);
                 if self.ctx.kind == Kind::Main && matches!(self.s.resolve(&t), T::Int(_)) {
-                    let fix = format!("os.exit({})", self.snippet(e.span()));
-                    self.err_fix("E0305", span, "`main` returns no value; to set the exit code, call `os.exit(code)`", Some(fix));
+                    // The fix replaces the whole `return x`; `span` is the keyword.
+                    let fix = Fix::at(span.to(e.span()), format!("os.exit({})", self.snippet(e.span())));
+                    self.diags.push(Diag::new("E0305", span, "`main` returns no value; to set the exit code, call `os.exit(code)`").with_fix(Some(fix)));
                 } else if !matches!(self.s.resolve(&t), T::Unit | T::Never | T::Unknown) && self.ctx.kind != Kind::Test {
                     let sig = self.ctx.sig.clone();
                     let ty = self.show(&t);
-                    self.err_fix(
+                    self.err_sig_fix(
                         "E0305",
                         e.span(),
                         format!("`{name}` declares no return type, so `return` takes no value; declare it: `{sig} {ty} =`"),
-                        Some(format!("{sig} {ty} =")),
+                        self.ctx.head,
+                        format!("{sig} {ty} ="),
                     );
                 }
             }
