@@ -64,13 +64,6 @@ static const char *op_symbol(int op) {
     return s[op];
 }
 
-static lc_v str_cat(lc_v a, lc_v b) {
-    lc_str *x = STR(a), *y = STR(b);
-    lc_buf buf = {0};
-    lc_buf_put(&buf, x->data, x->len);
-    lc_buf_put(&buf, y->data, y->len);
-    return lc_buf_finish(&buf);
-}
 
 static lc_v str_repeat(lc_str *s, int64_t n) {
     lc_buf b = {0};
@@ -173,7 +166,7 @@ lc_v lc_binop(int op, lc_v a, lc_v b, const char *site) {
         }
         lc_panic("E0301", site, "`%s` needs ints, got f64", op_symbol(op));
     }
-    if (op == OP_ADD && a.tag == T_STR && b.tag == T_STR) return str_cat(a, b);
+    if (op == OP_ADD && a.tag == T_STR && b.tag == T_STR) return lc_str_cat(STR(a), STR(b));
     if (op == OP_MUL && a.tag == T_STR && b.tag == T_INT) return str_repeat(STR(a), b.u.i > 0 ? b.u.i : 0);
     if (op == OP_MUL && a.tag == T_INT && b.tag == T_STR) return str_repeat(STR(b), a.u.i > 0 ? a.u.i : 0);
     if (op == OP_ADD && a.tag == T_LIST && b.tag == T_LIST) {
@@ -371,6 +364,15 @@ bool lc_compare(int op, lc_v a, lc_v b, const char *site) {
     case CMP_GT: return c > 0;
     default: return c >= 0;
     }
+}
+
+int64_t lc_len_slow(lc_v o, int field_id, const char *site) {
+    bool found;
+    lc_v r = lc_field(o, field_id, "len", &found, site);
+    if (!found) r = lc_field_fallback(o, "len", M_len, site);
+    int64_t n = lc_unbox_int(r, site);
+    lc_release(r);
+    return n;
 }
 
 _Noreturn void lc_unbox_fail(lc_v v, const char *want, const char *site) {
@@ -1127,7 +1129,6 @@ lc_v *lc_place_index(lc_v *p, lc_v key, int viv, lc_v zero, int method, const ch
 
 /* ----- iteration ----- */
 
-enum { IT_RANGE, IT_VEC, IT_KEYS, IT_PAIRS, IT_STR };
 
 void lc_iter_init(lc_iter *it, lc_v v, bool keys_only, const char *site) {
     char k[64];

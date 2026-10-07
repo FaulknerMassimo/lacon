@@ -134,6 +134,8 @@ lc_v lc_buf_finish(lc_buf *b);
 lc_v lc_str_new(const char *s, int64_t len);
 lc_v lc_cstr(const char *s);
 lc_v lc_str_lit(const char *s, int64_t len);
+lc_v lc_str_cat(lc_str *a, lc_str *b);
+int lc_fmt_int(char *buf, int64_t v);
 lc_v lc_display(lc_v v);
 lc_v lc_repr(lc_v v);
 int64_t lc_str_nchars(lc_str *s);
@@ -267,6 +269,7 @@ typedef struct {
     int64_t start, step;
     lc_v sorted;
 } lc_iter;
+enum { IT_RANGE, IT_VEC, IT_KEYS, IT_PAIRS, IT_STR };
 void lc_iter_init(lc_iter *it, lc_v v, bool keys_only, const char *site);
 bool lc_iter_next(lc_iter *it, lc_v *out);
 void lc_iter_done(lc_iter *it);
@@ -369,6 +372,31 @@ static inline __attribute__((always_inline)) lc_v lc_arith_own(int op, lc_v a, l
     lc_v r = lc_binop_own(op, a, b, site);
     lc_release(b);
     return r;
+}
+/* The next element of a list being looped over, else the general case. */
+static inline __attribute__((always_inline)) bool lc_iter_next_fast(lc_iter *it, lc_v *out) {
+    if (it->kind == IT_VEC) {
+        if (it->i >= it->n) return false;
+        *out = lc_retain(VEC(it->src)->items[it->i++]);
+        return true;
+    }
+    return lc_iter_next(it, out);
+}
+/* `xs[i]` with an unboxed index; borrows `o`. */
+static inline __attribute__((always_inline)) lc_v lc_index_int(lc_v o, int64_t i, const char *site) {
+    if (o.tag == T_LIST || o.tag == T_TUPLE) {
+        lc_vec *v = VEC(o);
+        int64_t k = i < 0 ? v->len + i : i;
+        if (k >= 0 && k < v->len) return lc_retain(v->items[k]);
+    }
+    return lc_index(o, lc_int(i), site);
+}
+/* `o.len`, which is a struct's field if it has one; borrows `o`. */
+int64_t lc_len_slow(lc_v o, int field_id, const char *site);
+static inline __attribute__((always_inline)) int64_t lc_len(lc_v o, int field_id, const char *site) {
+    if (o.tag == T_LIST) return VEC(o)->len;
+    if (o.tag == T_STR) return STR(o)->nchars;
+    return lc_len_slow(o, field_id, site);
 }
 /* `xs[i]` on a list with an int index in range, else the general case. */
 static inline __attribute__((always_inline)) lc_v lc_index_fast(lc_v o, lc_v i, const char *site) {

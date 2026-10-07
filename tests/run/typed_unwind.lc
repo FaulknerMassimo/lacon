@@ -1,0 +1,10 @@
+# `return` in a lambda ends the first named function it unwinds to, which
+# may hold its result unboxed; the value is checked as any return value is.
+fn apply(f fn(int) int, x int) f64 = f(x) + 0.5
+fn g(x int) int! =
+  r = apply(|v| if v > 0: return 3 else: v, x)
+  print(r)
+  4
+fn main()! =
+  print(g(-1)?)
+  print(g(1)?)

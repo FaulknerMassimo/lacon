@@ -1565,6 +1565,7 @@ impl<'p> Gen<'p> {
             Ex::Unary { op: UnOp::Neg | UnOp::Bang, e: x, .. } => self.rep(x) == Rep::Int,
             Ex::If { els: Some(_), .. } | Ex::Block(_, Some(_)) | Ex::Match { .. } => true,
             Ex::CallFn { fns, args, .. } => self.direct_entry(fns, args).is_some_and(|en| en.ret == Rep::Int),
+            Ex::Field { .. } | Ex::Method { .. } => self.is_len(e),
             _ => false,
         }
     }
@@ -1592,8 +1593,138 @@ impl<'p> Gen<'p> {
         }
     }
 
+    /// Does `e` already have declared type `ty` exactly, so a boundary check
+    /// would neither convert nor reject it?
+    fn exact(&self, ty: &Ty, e: &Ex) -> bool {
+        if !self.typed {
+            return false;
+        }
+        match (ty, self.types.of(e)) {
+            (Ty::Int { min, max, .. }, Some(T::Int(_))) => *min == i64::MIN && *max == i64::MAX,
+            (Ty::Bool, Some(T::Bool)) | (Ty::Str, Some(T::Str)) => true,
+            (Ty::Float, _) => self.rep(e) == Rep::Float,
+            (Ty::Struct(a, _), Some(T::Struct(b, _))) | (Ty::Enum(a, _), Some(T::Enum(b, _))) => a == b,
+            _ => false,
+        }
+    }
+
+    /// The struct and position of field `name` of `obj`, when the checker
+    /// knows `obj` is a struct with that field.
+    fn struct_field(&self, obj: &Ex, name: &str) -> Option<(u32, usize)> {
+        if !self.typed {
+            return None;
+        }
+        let Some(T::Struct(id, _)) = self.types.of(obj) else { return None };
+        let k = self.prog.structs[*id as usize].fields.iter().position(|f| f.name == name)?;
+        Some((*id, k))
+    }
+
+    /// An expression statement whose value is dropped, in a sound program:
+    /// an `if` or a block becomes C control flow without building a value.
+    /// Only a value typed other than `()` can be an ignored error.
+    fn effect(&mut self, e: &Ex, site: &str) -> String {
+        match e {
+            Ex::If { cond, then, els, span } => {
+                let csite = self.site(if cond.span() == Span::default() { *span } else { cond.span() });
+                let c = self.cond_at(cond, &csite);
+                let t = self.effect(then, site);
+                let f = els.as_ref().map_or(String::new(), |x| self.effect(x, site));
+                format!("if ({c}) {{ {t}}} else {{ {f}}} ")
+            }
+            Ex::Block(stmts, tail) => {
+                let mut code = String::from("{ ");
+                for s in stmts {
+                    code.push_str(&self.stmt(s));
+                }
+                if let Some(t) = tail {
+                    code.push_str(&self.effect(t, site));
+                }
+                code.push_str("} ");
+                code
+            }
+            _ => match self.rep(e) {
+                Rep::Int if self.int_native(e) => format!("(void)({}); ", self.int(e)),
+                Rep::Bool if self.bool_native(e) => format!("(void)({}); ", self.boolean(e)),
+                Rep::Float if self.float_native(e) => format!("(void)({}); ", self.float(e)),
+                _ => {
+                    let v = self.expr(e);
+                    if matches!(self.types.of(e), Some(T::Unit | T::Never)) {
+                        format!("lc_release({v}); ")
+                    } else {
+                        let t = self.t();
+                        format!("{{ lc_v {t} = {v}; lc_check_ignored({t}, {site}); lc_release({t}); }} ")
+                    }
+                }
+            },
+        }
+    }
+
+    /// An expression that reads but changes nothing (no statements, calls
+    /// or methods), so a value it reads can be borrowed across it.
+    fn pure(&self, e: &Ex) -> bool {
+        match e {
+            Ex::Lit(..) | Ex::Local(..) | Ex::Up(..) => true,
+            Ex::Binary { l, r, .. } => self.pure(l) && self.pure(r),
+            Ex::Unary { e, .. } => self.pure(e),
+            _ => false,
+        }
+    }
+
+    /// A boxed variable read without taking a reference: the C lvalue.
+    fn borrowed(&mut self, e: &Ex) -> Option<String> {
+        match e {
+            Ex::Local(s, _) if self.slot_rep(*s) == Rep::Boxed => Some(self.slot(0, *s)),
+            Ex::Up(d, s, _) => Some(self.slot(*d, *s)),
+            _ => None,
+        }
+    }
+
+    /// Is `e` a `len` that `len_fast` computes?
+    fn is_len(&self, e: &Ex) -> bool {
+        let ok = match e {
+            Ex::Field { name, user: None, .. } => &**name == "len",
+            Ex::Method { recv: Recv::Value(_), name, user: None, args, .. } => &**name == "len" && args.is_empty(),
+            Ex::Method { recv: Recv::Place(p), name, user: None, args, .. } => {
+                &**name == "len" && args.is_empty() && p.path.is_empty() && matches!(p.root, Root::Local(s) if self.slot_rep(s) == Rep::Boxed)
+            }
+            _ => false,
+        };
+        ok && self.rep(e) == Rep::Int
+    }
+
+    /// `o.len` for a list or a string, without the method call. `None` when
+    /// `e` is something else.
+    fn len_fast(&mut self, e: &Ex) -> Option<String> {
+        if !self.is_len(e) {
+            return None;
+        }
+        let (obj, span) = match e {
+            Ex::Field { obj, name, user: None, span } if &**name == "len" => (&**obj, *span),
+            Ex::Method { recv: Recv::Value(obj), name, user: None, args, span } if &**name == "len" && args.is_empty() => (&**obj, *span),
+            Ex::Method { recv: Recv::Place(p), name, user: None, args, span } if &**name == "len" && args.is_empty() && p.path.is_empty() => {
+                let Root::Local(s) = p.root else { return None };
+                let site = self.site(*span);
+                let fid = self.field_id("len");
+                let o = self.slot(0, s);
+                return Some(format!("lc_len({o}, {fid}, {site})"));
+            }
+            _ => return None,
+        };
+        let site = self.site(span);
+        let fid = self.field_id("len");
+        if let Some(o) = self.borrowed(obj) {
+            return Some(format!("lc_len({o}, {fid}, {site})"));
+        }
+        let (o, n) = (self.t(), self.t());
+        let ov = self.expr(obj);
+        Some(format!("({{ lc_v {o} = {ov}; int64_t {n} = lc_len({o}, {fid}, {site}); lc_release({o}); {n}; }})"))
+    }
+
     /// `e`, typed int by the checker, as a C `int64_t`.
     fn int(&mut self, e: &Ex) -> String {
+        if let Some(c) = self.len_fast(e) {
+            return c;
+        }
         match e {
             Ex::Lit(Value::Int(n), _) => {
                 if *n == i64::MIN {
@@ -1884,6 +2015,10 @@ impl<'p> Gen<'p> {
                             }
                         }
                     };
+                    if fe.as_ref().is_some_and(|x| self.exact(&fd.ty, x)) {
+                        let _ = write!(code, "{arr}[{i}] = {v}; ");
+                        continue;
+                    }
                     let site = self.site(fe.as_ref().map_or(*span, |x| if x.span() == Span::default() { *span } else { x.span() }));
                     let ty = self.ty(&fd.ty);
                     let _ = write!(code, "{arr}[{i}] = lc_coerce_field({v}, {ty}, {}, {}, false, {site}); ", cstr(&fd.name), cstr(&sd.name));
@@ -1903,6 +2038,22 @@ impl<'p> Gen<'p> {
                 }
                 let _ = write!(code, "lc_rec_new(T_VARIANT, {id}, {tag}, {}, {arr}); }})", args.len());
                 code
+            }
+            Ex::Field { obj, name, user: None, span } if self.struct_field(obj, name).is_some() => {
+                // A field of a struct the checker knows: by position.
+                let (id, k) = self.struct_field(obj, name).unwrap_or_default();
+                let site = self.site(*span);
+                let (o, r, found) = (self.t(), self.t(), self.t());
+                let fid = self.field_id(name);
+                let mid = method_id(name).map_or(-1, |m| m as i64);
+                let (init, release) = match self.borrowed(obj) {
+                    Some(b) => (b, String::new()),
+                    None => (self.expr(obj), format!("lc_release({o}); ")),
+                };
+                format!(
+                    "({{ lc_v {o} = {init}; lc_v {r}; if ({o}.tag == T_STRUCT && REC({o})->ty == {id}) {r} = lc_retain(REC({o})->f[{k}]); else {{ bool {found}; {r} = lc_field({o}, {fid}, {n}, &{found}, {site}); if (!{found}) {{ {r} = lc_field_fallback({o}, {n}, {mid}, {site}); if (lc_unwinding) UNWIND; }} }} {release}{r}; }})",
+                    n = cstr(name)
+                )
             }
             Ex::Field { obj, name, user, span } => {
                 let site = self.site(*span);
@@ -1927,6 +2078,19 @@ impl<'p> Gen<'p> {
                 let mid = method_id(name).map_or(-1, |m| m as i64);
                 let _ = write!(code, "{r} = lc_field_fallback({o}, {}, {mid}, {site}); if (lc_unwinding) UNWIND; {close}}} lc_release({o}); {r}; }})", cstr(name));
                 code
+            }
+            Ex::Index { obj, index, span } if self.rep(index) == Rep::Int => {
+                let site = self.site(*span);
+                if self.pure(index) {
+                    if let Some(o) = self.borrowed(obj) {
+                        let i = self.int(index);
+                        return format!("lc_index_int({o}, {i}, {site})");
+                    }
+                }
+                let (o, r) = (self.t(), self.t());
+                let ov = self.expr(obj);
+                let i = self.int(index);
+                format!("({{ lc_v {o} = {ov}; lc_v {r} = lc_index_int({o}, {i}, {site}); lc_release({o}); {r}; }})")
             }
             Ex::Index { obj, index, span } => {
                 let site = self.site(*span);
@@ -2541,6 +2705,10 @@ impl<'p> Gen<'p> {
 
     fn stmt(&mut self, s: &St) -> String {
         match s {
+            St::Expr(e, span) if self.typed => {
+                let site = self.site(*span);
+                self.effect(e, &site)
+            }
             St::Expr(e, span) => {
                 match self.rep(e) {
                     Rep::Int if self.int_native(e) => return format!("(void)({}); ", self.int(e)),
@@ -2718,7 +2886,7 @@ impl<'p> Gen<'p> {
                     b.push_str(&self.stmt(s));
                 }
                 format!(
-                    "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, {keys_only}, {site}); lc_release({iv}); lc_v {x}; while (lc_iter_next(&{it}, &{x})) {{ {bind}{b}}} lc_iter_done(&{it}); }} "
+                    "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, {keys_only}, {site}); lc_release({iv}); lc_v {x}; while (lc_iter_next_fast(&{it}, &{x})) {{ {bind}{b}}} lc_iter_done(&{it}); }} "
                 )
             }
             St::While { cond, body, .. } => {

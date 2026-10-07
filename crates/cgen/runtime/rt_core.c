@@ -121,6 +121,37 @@ lc_v lc_str_new(const char *s, int64_t len) {
 
 lc_v lc_cstr(const char *s) { return lc_str_new(s, (int64_t)strlen(s)); }
 
+/* `a` then `b` as a new string, in one allocation. */
+lc_v lc_str_cat(lc_str *a, lc_str *b) {
+    int64_t len = a->len + b->len;
+    lc_str *x = xmalloc(sizeof(lc_str) + len + 1);
+    x->rc = 1;
+    x->len = len;
+    x->cap = len;
+    memcpy(x->data, a->data, a->len);
+    memcpy(x->data + a->len, b->data, b->len);
+    x->data[len] = 0;
+    x->nchars = a->nchars + b->nchars;
+    return lc_obj_v(T_STR, x);
+}
+
+/* The decimal digits of `v` into `buf` (at least 21 bytes), returning the
+ * length; what `%lld` gives, without printf. */
+int lc_fmt_int(char *buf, int64_t v) {
+    char t[24];
+    int n = 0;
+    uint64_t u = v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v;
+    do {
+        t[n++] = (char)('0' + u % 10);
+        u /= 10;
+    } while (u);
+    int len = 0;
+    if (v < 0) buf[len++] = '-';
+    while (n) buf[len++] = t[--n];
+    buf[len] = 0;
+    return len;
+}
+
 lc_v lc_str_lit(const char *s, int64_t len) {
     lc_v v = lc_str_new(s, len);
     v.u.o->rc = LC_IMMORTAL;
@@ -702,9 +733,40 @@ static void merge_sort(lc_kv *xs, lc_kv *tmp, int64_t n) {
 
 /* Sorts pairs by key. Returns false (with the kinds in a and b) when two
  * keys can't be compared. */
+/* `merge_sort` for int keys, which always compare: the same stable order. */
+static void merge_sort_ints(lc_kv *xs, lc_kv *tmp, int64_t n) {
+    if (n <= 16) {
+        for (int64_t i = 1; i < n; i++) {
+            lc_kv x = xs[i];
+            int64_t j = i;
+            while (j > 0 && x.key.u.i < xs[j - 1].key.u.i) {
+                xs[j] = xs[j - 1];
+                j--;
+            }
+            xs[j] = x;
+        }
+        return;
+    }
+    int64_t m = n / 2;
+    merge_sort_ints(xs, tmp, m);
+    merge_sort_ints(xs + m, tmp, n - m);
+    int64_t i = 0, j = m, k = 0;
+    while (i < m && j < n) tmp[k++] = xs[j].key.u.i < xs[i].key.u.i ? xs[j++] : xs[i++];
+    while (i < m) tmp[k++] = xs[i++];
+    while (j < n) tmp[k++] = xs[j++];
+    memcpy(xs, tmp, sizeof(lc_kv) * n);
+}
+
 bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b) {
     lc_kv *tmp = xmalloc(sizeof(lc_kv) * (n ? n : 1));
     g_sort_ok = true;
+    bool ints = true;
+    for (int64_t i = 0; i < n && ints; i++) ints = xs[i].key.tag == T_INT;
+    if (ints) {
+        merge_sort_ints(xs, tmp, n);
+        free(tmp);
+        return true;
+    }
     merge_sort(xs, tmp, n);
     free(tmp);
     if (!g_sort_ok) {
@@ -858,10 +920,11 @@ void lc_buf_repr(lc_buf *b, lc_v v) {
     case T_UNIT: lc_buf_puts(b, "()"); break;
     case T_NONE: lc_buf_puts(b, "none"); break;
     case T_BOOL: lc_buf_puts(b, v.u.i ? "true" : "false"); break;
-    case T_INT:
-        snprintf(t, sizeof t, "%lld", (long long)v.u.i);
-        lc_buf_puts(b, t);
+    case T_INT: {
+        int n = lc_fmt_int(t, v.u.i);
+        lc_buf_put(b, t, n);
         break;
+    }
     case T_FLOAT: lc_fmt_float(b, v.u.f); break;
     case T_STR: {
         lc_str *s = STR(v);
@@ -992,6 +1055,10 @@ void lc_buf_display(lc_buf *b, lc_v v) {
 
 lc_v lc_display(lc_v v) {
     if (v.tag == T_STR) return lc_retain(v);
+    if (v.tag == T_INT) {
+        char t[24];
+        return lc_str_new(t, lc_fmt_int(t, v.u.i));
+    }
     lc_buf b = {0};
     lc_buf_display(&b, v);
     return lc_buf_finish(&b);
