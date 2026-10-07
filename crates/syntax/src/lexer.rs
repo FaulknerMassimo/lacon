@@ -365,9 +365,14 @@ impl<'a> Lexer<'a> {
                     || self.src[self.pos..].starts_with("||")
                     || starts_word(&self.src[self.pos..], "and")
                     || starts_word(&self.src[self.pos..], "or");
+                // An `elif` or `else` indented past the current block can only
+                // continue a one-line `if` above it: `r = if a: x` then
+                // `    else: y`.
+                let deeper_branch = (starts_word(&self.src[self.pos..], "elif") || starts_word(&self.src[self.pos..], "else"))
+                    && col > *self.indents.last().unwrap();
                 let after_opener = matches!(last, Some(Tok::Colon) | Some(Tok::Assign));
                 let cont = !first_line
-                    && (last.as_ref().is_some_and(continues_line) || (leading_cont && !after_opener));
+                    && (last.as_ref().is_some_and(continues_line) || ((leading_cont || deeper_branch) && !after_opener));
                 first_line = false;
                 if !cont {
                     if !self.out.is_empty() && !matches!(last, Some(Tok::Newline)) {

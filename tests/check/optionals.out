@@ -9,4 +9,5 @@ E0406 optionals.lc:26:3 error ignored: `parse("5")` may fail; add `?` to pass it
 E0407 optionals.lc:27:12 `"k=v".split_once("=")` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: "k=v".split_once("=")?
 E0407 optionals.lc:28:12 `"abc".find("b")` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: "abc".find("b") ?? 0
 E0407 optionals.lc:29:6 `m.get("z")` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (m.get("z") ?? 0)
+E0406 optionals.lc:37:10 `int(p[1])` may be an error; add `?` to pass the error up | fix: int(p[1])?
 [exit 1]

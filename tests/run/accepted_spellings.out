@@ -1,2 +1,10 @@
 Counter{count: 2, name: "a", hits: [7]}
+20 -1 2 none
+3 9 3 18
+a, b
+one word: c
+some 2
+half 2
+error odd
+[[], [2], []] [-1, -1, -1]
 [exit 0]

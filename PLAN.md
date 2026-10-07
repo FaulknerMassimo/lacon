@@ -433,7 +433,11 @@ overturn.
   parser accepts `->`, `&&`, `||`, `!`, `else if`, `name: Type`, `f"..."`,
   `case` and `=>` in match arms, `loop:`, `User(a, b)`, `var`/`mut`/`pub`
   before a field, `p mut P` for `mut p P`, `f(mut x)` at a call site, `pass`,
-  and Rust no-ops like `.iter()`, `.collect()` and `.clone()`. It rejects
+  Rust's `Some(x)`, `Ok(x)`, `Err(e)` and `None` in patterns (and `some(x)`),
+  `x ?? fail "msg"`, `?? return` and `?? continue`, an `elif` or `else`
+  indented under a one-line `if`, a literal given to `map` as every
+  element's value (`(0..n).map([])`), and Rust no-ops like `.iter()`,
+  `.collect()` and `.clone()`. It rejects
   `let`, `//`, `del`, braces, `::`, `:=`, `++`, `if let`, comprehensions and
   macros, each with a one-line hint. This breaks §8's "no second way to do anything" on purpose: accepting
   costs no retry, and a formatter can rewrite aliases to the canonical form.
@@ -763,8 +767,20 @@ guesses that nothing catches yet:
 - `int(s)`, an `int!`, inside a returned tuple, in one. The error names the
   whole tuple's type rather than the element, and has no fix.
 
-Next: those five, and the separate run and submit calls, which cost about a
-call in a third of Lacon's episodes.
+All five are fixed, each with a golden test. `fail`, `return`, `break` and
+`continue` are expressions that never yield a value, so `??` takes them.
+`some(p)` matches anything but `none`, and `Some`, `Ok`, `Err` and `None`
+resolve to Lacon's patterns unless the program has a variant of that name. A
+literal given to `map` becomes a lambda, but only for `map`, since
+`s.find("?")` and `s.count("a")` share their names with list methods that
+take a function. An `elif` or `else` line indented past its block
+continues the line above. A tuple that fails a declared type only because
+an element is unhandled is reported on that element, with its fix. Five of
+the six first attempts now build and pass every hidden test unchanged; the
+sixth has the real bug the clearer error names, and its fix passes.
+
+Next: the separate run and submit calls, which cost about a call in a third
+of Lacon's episodes.
 
 ---
 

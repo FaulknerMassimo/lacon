@@ -1597,6 +1597,19 @@ impl<'a> Parser<'a> {
             }
             Tok::If => return self.if_expr(),
             Tok::Match => return self.match_expr(),
+            // `x ?? fail "msg"` and `m.get(k) ?? continue`, Kotlin's
+            // `?: throw`: a statement that leaves is a value that never comes.
+            Tok::Fail | Tok::Return | Tok::Break | Tok::Continue => {
+                let kw = self.bump().tok;
+                let stmt = match kw {
+                    Tok::Fail => Stmt::Fail(self.expr()?, span),
+                    Tok::Return => Stmt::Return(if self.starts_expr() { Some(self.expr()?) } else { None }, span),
+                    Tok::Break => Stmt::Break(span),
+                    _ => Stmt::Continue(span),
+                };
+                let span = span.to(self.prev_span());
+                return Ok(Expr { kind: ExprKind::Block(Block { stmts: vec![stmt], span }), span });
+            }
             Tok::Pipe | Tok::PipePipe => {
                 let mut params = Vec::new();
                 if self.bump().tok == Tok::Pipe {
@@ -1951,10 +1964,11 @@ impl<'a> Parser<'a> {
                     return Ok(Pat::Wild(span));
                 }
                 let id = Ident { name: name.clone(), span };
-                if matches!(name.as_str(), "Some" | "Ok" | "Err" | "None") {
+                // `Some(x)`, `Ok(x)`, `Err(e)` and `None` mean what they do in
+                // Rust and are resolved as such; a bare `Some` has no meaning.
+                if matches!(name.as_str(), "Some" | "Ok" | "Err") && !self.at(&Tok::LParen) {
                     let msg = match name.as_str() {
                         "Some" => "no `Some`: an optional is the value itself or `none`; match `none` first, then bind a name",
-                        "None" => "write `none`",
                         "Ok" => "no `Ok`: a result is the value itself or an error; match `err(e)` first, then bind a name",
                         _ => "write `err(e)` to match an error",
                     };

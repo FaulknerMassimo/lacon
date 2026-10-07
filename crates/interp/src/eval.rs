@@ -1262,6 +1262,7 @@ impl<'p> Interp<'p> {
                 _ => false,
             },
             PatIr::Ok(p) => !matches!(v, Value::Err(_)) && self.match_pat(p, v, f),
+            PatIr::Some(p) => !matches!(v, Value::None) && self.match_pat(p, v, f),
         }
     }
 

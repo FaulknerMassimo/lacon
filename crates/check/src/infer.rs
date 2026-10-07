@@ -411,6 +411,29 @@ impl<'p> Checker<'p> {
     /// Reports that `got` does not fit `want`.
     pub(crate) fn mismatch(&mut self, site: Site, got: &T, want: &T, span: Span, e: Option<&Ex>) {
         let (g, w) = (self.s.resolve(got), self.s.resolve(want));
+        // `(name, int(s), n)` where `(str, int, int)` is wanted: report the
+        // unhandled element, with its fix, rather than the whole tuple.
+        if let (T::Tuple(gs), Some(Ex::Tuple(xs, _))) = (&g, e.map(last_value)) {
+            let inner = match &w {
+                T::Opt(x) | T::Res(x) => self.s.resolve(x),
+                w => w.clone(),
+            };
+            if let T::Tuple(ws) = inner {
+                if ws.len() == gs.len() && xs.len() == gs.len() {
+                    let mut reported = false;
+                    for ((x, gt), wt) in xs.iter().zip(gs).zip(&ws) {
+                        let gt = self.s.resolve(gt);
+                        if matches!(gt, T::Res(_) | T::Opt(_)) && !matches!(self.s.resolve(wt), T::Res(_) | T::Opt(_)) {
+                            self.mismatch(Site::Plain, &gt, wt, x.span(), Some(x));
+                            reported = true;
+                        }
+                    }
+                    if reported {
+                        return;
+                    }
+                }
+            }
+        }
         match (&g, &w) {
             (T::Res(inner), w) if !matches!(w, T::Res(_)) => return self.err_res(span, inner, false),
             (T::Opt(inner), w) if !matches!(w, T::Opt(_) | T::Res(_)) => return self.err_opt(span, inner, false),
@@ -2587,6 +2610,19 @@ impl<'p> Checker<'p> {
                 };
                 self.pattern(p, &inner, scrut_span, span);
             }
+            PatIr::Some(p) => {
+                let inner = match &r {
+                    T::Opt(x) => (**x).clone(),
+                    T::Var(_) => {
+                        let inner = self.s.fresh();
+                        self.s.unify(&r, &T::opt(inner.clone()));
+                        inner
+                    }
+                    // After a `none:` arm the value is already narrowed.
+                    _ => r.clone(),
+                };
+                self.pattern(p, &inner, scrut_span, span);
+            }
         }
     }
 }
@@ -2637,9 +2673,14 @@ fn covers_err(p: &PatIr) -> bool {
 
 /// The span of the value a block ends with, for return mismatches.
 fn last_value_span(e: &Ex) -> Span {
+    last_value(e).span()
+}
+
+/// The expression a block ends with.
+fn last_value(e: &Ex) -> &Ex {
     match e {
-        Ex::Block(_, Some(t)) => last_value_span(t),
-        e => e.span(),
+        Ex::Block(_, Some(t)) => last_value(t),
+        e => e,
     }
 }
 

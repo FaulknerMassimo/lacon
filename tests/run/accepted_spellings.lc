@@ -7,6 +7,34 @@ fn bump(c mut Counter) =
 fn add_hit(c: mut Counter, n int) =
   c.hits.push(n)
 
+# `?? fail`, `?? return` and `?? continue`, Kotlin's `?: throw` and `?: return`.
+fn top(st [int]) int! =
+  var s = st
+  b = s.pop() ?? fail "underflow"
+  b * 10
+
+fn plus_one(m {str: int}, k str) int? =
+  v = m.get(k) ?? return none
+  v + 1
+
+fn sum_known(m {str: int}, ks [str]) int =
+  var t = 0
+  for k in ks:
+    v = m.get(k) ?? continue
+    t += v
+  t
+
+fn half(n int) int! =
+  if n % 2 != 0: fail "odd"
+  n / 2
+
+# An `elif` or `else` indented under a one-line `if` continues it.
+fn op(t str, a int, b int) int =
+  r = if t == "+": a + b
+    elif t == "-": a - b
+    else: a * b
+  r
+
 fn main() =
   var c = Counter{0, "a", []}
   bump(mut c)
@@ -15,3 +43,21 @@ fn main() =
   if c.count > 5:
     pass
   print(c)
+  print(top([1, 2]) ?? -1, top([]) ?? -1, plus_one({"a": 1}, "a"), plus_one({"a": 1}, "z"))
+  print(sum_known({"a": 1, "b": 2}, ["a", "x", "b"]), op("+", 6, 3), op("-", 6, 3), op("*", 6, 3))
+  # Rust's and Python's patterns for optionals and results.
+  for line in ["a b", "c"]:
+    match line.split_once(" ")
+      none: print("one word: {line}")
+      some((a, b)): print("{a}, {b}")
+  match plus_one({"a": 1}, "a")
+    Some(n): print("some {n}")
+    None: print("none")
+  for n in [4, 5]:
+    match half(n)
+      Ok(v): print("half {v}")
+      Err(e): print("error {e}")
+  # A literal given to `map` is every element's value.
+  var adj = (0..3).map([]).to_list()
+  adj[1].push(2)
+  print(adj, (0..3).map(-1).to_list())

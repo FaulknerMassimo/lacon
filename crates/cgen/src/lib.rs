@@ -1552,6 +1552,10 @@ impl<'p> Gen<'p> {
                 let sub = self.pat(sp, v);
                 format!("({v}.tag != T_ERR && {sub})")
             }
+            PatIr::Some(sp) => {
+                let sub = self.pat(sp, v);
+                format!("({v}.tag != T_NONE && {sub})")
+            }
         }
     }
 

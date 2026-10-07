@@ -319,4 +319,6 @@ pub enum PatIr {
     None,
     Err(Box<PatIr>),
     Ok(Box<PatIr>),
+    /// `some(p)`: anything but `none`, matched against `p`.
+    Some(Box<PatIr>),
 }

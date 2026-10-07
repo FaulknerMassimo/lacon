@@ -177,6 +177,24 @@ fn closest<'b>(name: &str, cands: impl Iterator<Item = &'b str>) -> Option<&'b s
         .map(|(_, c)| c)
 }
 
+/// A literal value, which is never a function.
+fn is_literal(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Str(_)
+        | ExprKind::Bool(_)
+        | ExprKind::None
+        | ExprKind::List(_)
+        | ExprKind::Map(_)
+        | ExprKind::Set(_)
+        | ExprKind::Tuple(_)
+        | ExprKind::StructLit { .. } => true,
+        ExprKind::Unary { expr, .. } => is_literal(expr),
+        _ => false,
+    }
+}
+
 /// Visits direct sub-expressions; stops early when `f` returns true.
 fn any_child(e: &Expr, f: &mut dyn FnMut(&Expr) -> bool) -> bool {
     fn block(b: &Block, f: &mut dyn FnMut(&Expr) -> bool) -> bool {
@@ -956,6 +974,7 @@ impl<'a> Resolver<'a> {
     fn pattern(&mut self, p: &Pat, binds: &mut HashMap<String, u32>) -> PatIr {
         match p {
             Pat::Wild(_) => PatIr::Wild,
+            Pat::Name(id) if id.name == "None" && !self.variants.contains_key("None") => PatIr::None,
             Pat::Name(id) => {
                 if let Some(vs) = self.variants.get(&id.name).cloned() {
                     let (eid, tag) = vs[0];
@@ -1000,6 +1019,19 @@ impl<'a> Resolver<'a> {
                     })
                 });
                 PatIr::List { items, rest }
+            }
+            // Rust's and Python's spellings, unless the program has a variant
+            // of that name: `some(x)` and `Some(x)` match a value that isn't
+            // `none`, `Ok(x)` one that isn't an error, `Err(e)` an error.
+            Pat::Variant { name, qualifier: None, args }
+                if args.len() == 1 && matches!(name.name.as_str(), "some" | "Some" | "Ok" | "Err") && !self.variants.contains_key(&name.name) =>
+            {
+                let inner = Box::new(self.pattern(&args[0], binds));
+                match name.name.as_str() {
+                    "Ok" => PatIr::Ok(inner),
+                    "Err" => PatIr::Err(inner),
+                    _ => PatIr::Some(inner),
+                }
             }
             Pat::Variant { name, qualifier, args } => {
                 let Some((eid, tag)) = self.variant_named(name, qualifier.as_ref()) else {
@@ -1702,6 +1734,12 @@ impl<'a> Resolver<'a> {
             None => Recv::Value(Box::new(self.expr(obj))),
         };
         let args = args.iter().enumerate().map(|(i, a)| {
+            // `(0..n).map([])` gives `n` empty lists: a literal can't be a
+            // function, so it is every element's value. Only `map`, since
+            // `s.find("?")` and `s.count("a")` take a value.
+            if n == "map" && i == 0 && user.is_none() && is_literal(a) {
+                return self.lambda(&[Ident { name: "it".into(), span: a.span }], a);
+            }
             let f = self.method_param_is_fn(n, i);
             self.arg(a, f)
         });
