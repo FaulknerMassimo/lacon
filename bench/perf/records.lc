@@ -3,7 +3,7 @@ type Person {name str, age int, score int}
 fn main() =
   var people = []
   var seed = 7
-  for i in 0..600000:
+  for i in 0..1500000:
     seed = (seed * 1103515245 + 12345) % 2147483648
     people.push(Person{"p{i}", seed % 90, seed / 7 % 1000})
   adults = people.filter(it.age >= 18).sort_by(-it.score)

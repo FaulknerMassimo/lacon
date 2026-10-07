@@ -6,7 +6,7 @@ fn main() {
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut counts: Vec<(String, i64)> = Vec::new();
     let mut seed: i64 = 1;
-    for _ in 0..2_000_000 {
+    for _ in 0..6_000_000 {
         seed = (seed * 1103515245 + 12345) % 2147483648;
         let w = format!("{}{}", words[(seed % 8) as usize], seed / 8 % 50);
         match index.get(&w) {

@@ -10,7 +10,7 @@ fn steps(start: i64) -> i64 {
 
 fn main() {
     let (mut best, mut arg) = (0, 0);
-    for i in 1..300_000 {
+    for i in 1..2_000_000 {
         let s = steps(i);
         if s > best {
             best = s;

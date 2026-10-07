@@ -2,7 +2,7 @@ fn main() =
   words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
   var counts = {}
   var seed = 1
-  for i in 0..2000000:
+  for i in 0..6000000:
     seed = (seed * 1103515245 + 12345) % 2147483648
     w = words[seed % 8] + str(seed / 8 % 50)
     counts[w] += 1

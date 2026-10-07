@@ -1,5 +1,5 @@
 fn main() {
-    let size = 400;
+    let size = 2000;
     let mut inside = 0;
     for py in 0..size {
         for px in 0..size {

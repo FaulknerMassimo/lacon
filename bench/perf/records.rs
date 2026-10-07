@@ -8,7 +8,7 @@ struct Person {
 fn main() {
     let mut people = Vec::new();
     let mut seed: i64 = 7;
-    for i in 0..600_000 {
+    for i in 0..1_500_000 {
         seed = (seed * 1103515245 + 12345) % 2147483648;
         people.push(Person { name: format!("p{i}"), age: seed % 90, score: seed / 7 % 1000 });
     }

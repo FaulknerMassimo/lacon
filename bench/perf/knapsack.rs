@@ -1,5 +1,5 @@
 fn main() {
-    let (n, cap) = (2000usize, 5000usize);
+    let (n, cap) = (8000usize, 50000usize);
     let (mut w, mut v) = (Vec::new(), Vec::new());
     let mut seed: i64 = 42;
     for _ in 0..n {

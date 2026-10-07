@@ -1,5 +1,5 @@
 fn main() {
-    let n = 5_000_000usize;
+    let n = 50_000_000usize;
     let mut composite = vec![false; n + 1];
     let mut count = 0;
     for i in 2..=n {

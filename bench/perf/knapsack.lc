@@ -1,6 +1,6 @@
 fn main() =
-  n = 2000
-  cap = 5000
+  n = 8000
+  cap = 50000
   var w = []
   var v = []
   var seed = 42

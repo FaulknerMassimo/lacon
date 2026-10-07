@@ -1,5 +1,5 @@
 fn main() =
-  size = 400
+  size = 2000
   var inside = 0
   for py in 0..size:
     for px in 0..size:

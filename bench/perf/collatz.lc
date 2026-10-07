@@ -9,7 +9,7 @@ fn steps(start int) int =
 fn main() =
   var best = 0
   var arg = 0
-  for i in 1..300000:
+  for i in 1..2000000:
     s = steps(i)
     if s > best:
       best = s
