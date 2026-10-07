@@ -276,9 +276,11 @@ reference and a Lacon solution each (`bench/tasks/`), and the harness that has
 Claude solve them (`bench/harness/`), through the API or through Claude Code
 (`claude -p`, no API key needed). A pilot run, all 30 tasks in Lacon and
 Python, is in §13: every episode passed, but Lacon took 2.92x Python's tokens
-and 67% of its first attempts built. A smoke run against Rust and Go and a
-primer experiment follow it in §13. Not done yet: the full Rust and Go runs
-and several trials. See §12 for the
+and 67% of its first attempts built. After fixes and a short primer
+(`docs/primer-short.md`, 1,356 tokens), a run against Python, Rust and Go
+(§13) had 97% of Lacon's first attempts build, and Lacon took 1.37-1.49x
+their tokens but 0.76-0.93x their cost. Not done yet: more trials of Python,
+Rust and Go, and deciding how cached tokens count. See §12 for the
 semantics the interpreter settled on and §13 for what writing the tasks and
 the runs taught.
 
@@ -703,6 +705,66 @@ as a literal brace, and rerun the short primer with the chaining hint.
   `remove_key` and a two-parameter lambda in `sort_by`, `min_by` or `max_by`
   now get hints too; the lambda had been told it "takes 2 arguments, but gets
   one int".
+
+### Against Python, Rust and Go
+
+With those fixes, three runs, all with the chaining hint
+(`bench/results/20261007-113217-*`, not committed): Lacon with each primer,
+three trials of all 30 tasks; then Python, Rust and Go, one trial of all 30
+plus a second of 11, where the run was stopped to save credits.
+
+**The short primer wins.** Both primers reached 97% first builds; the short
+one took 0.76x the full one's tokens (median 17.5k against 22.3k) and 0.97x
+its cost. It is the one to use from here.
+
+| | Lacon | Python | Rust | Go |
+|---|---|---|---|---|
+| Passed | 90/90 | 34/34 | 34/34 | 33/33 |
+| First attempt builds | 97% | 100% | 97% | 97% |
+| Median tokens-to-green | 17,470 | 9,330 | 10,154 | 10,290 |
+| Mean output tokens | 1,102 | 1,107 | 1,380 | 1,430 |
+| Mean API calls | 2.6 | 2.1 | 2.1 | 2.2 |
+| Mean cost | $0.038 | $0.040 | $0.048 | $0.049 |
+
+| Lacon against | Tokens | Cost |
+|---|---|---|
+| Python | 1.49x | 0.93x |
+| Rust | 1.40x | 0.78x |
+| Go | 1.37x | 0.76x |
+
+(Geometric means of the per-task ratios. Lacon's first trial alone gives
+1.33-1.41x the tokens.)
+
+- **Phase 0's first-build bar (90%) is met.** Its token bar, beating Rust and
+  Go, is met in cost but not in raw tokens. The smoke run's gap was
+  2.5-2.9x.
+- **Lacon writes the least.** Its output is 20-23% below Rust's and Go's and
+  level with Python's.
+- **The gap is cached reads:** 13.5k an episode against 7.6-8.3k. Each Lacon
+  call reads 5.2k against about 3.5k, which is the primer, and Lacon takes
+  more calls. 29 of the 90 Lacon episodes built first time, ran once and
+  submitted once, but did the run and the submission in separate calls
+  despite the chaining hint; Python, Rust and Go did that in a handful.
+- **Cached reads cost a tenth of input**, so they are most of Lacon's tokens
+  and little of its cost. Whether tokens-to-green weighs them at full price
+  decides whether Lacon passes Phase 0 at this task size. `report.py` now
+  prints both ratios.
+
+The six first builds that failed, three in each Lacon run, were natural
+guesses that nothing catches yet:
+
+- `st.pop() ?? fail "underflow"`, Kotlin's `?: throw`, in three: `fail`
+  isn't an expression.
+- `some((a, b)):` as an arm of a match on an optional, in one.
+- `(0..n).map([])` and `.map(-1)` for a list of copies, in one. The error
+  reads "the function given to `map` must return fn(int) _".
+- An `elif` on an indented line continuing a one-line `if` expression, in
+  one.
+- `int(s)`, an `int!`, inside a returned tuple, in one. The error names the
+  whole tuple's type rather than the element, and has no fix.
+
+Next: those five, and the separate run and submit calls, which cost about a
+call in a third of Lacon's episodes.
 
 ---
 

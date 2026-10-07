@@ -79,27 +79,33 @@ def main() -> int:
         ])
     print(table(rows, args.md))
 
-    # Mean tokens-to-green per (task, language) over passing trials.
+    # Mean tokens-to-green and cost per (task, language) over passing trials.
+    # Cost weighs cached reads at their price, a tenth of uncached input.
     green: dict[tuple[str, str], float] = {}
+    green_cost: dict[tuple[str, str], float] = {}
     tasks = sorted({r["task"] for r in recs})
     for t in tasks:
         for lang in langs:
-            xs = [r["tokens"]["total"] for r in by_lang[lang] if r["task"] == t and r["passed"]]
-            if xs:
-                green[(t, lang)] = statistics.mean(xs)
+            passed = [r for r in by_lang[lang] if r["task"] == t and r["passed"]]
+            if passed:
+                green[(t, lang)] = statistics.mean(r["tokens"]["total"] for r in passed)
+            if passed and all(r.get("cost_usd") for r in passed):
+                green_cost[(t, lang)] = statistics.mean(r["cost_usd"] for r in passed)
 
     if "lacon" in langs and len(langs) > 1:
         print()
-        rows = [["Lacon vs", "tasks both solved", "Lacon tokens relative", "Lacon saves"]]
+        rows = [["Lacon vs", "tasks both solved", "Lacon tokens relative", "Lacon saves", "Lacon cost relative"]]
         for other in langs:
             if other == "lacon":
                 continue
             both = [t for t in tasks if (t, "lacon") in green and (t, other) in green and green[(t, other)] > 0]
             if not both:
-                rows.append([other, "0", "-", "-"])
+                rows.append([other, "0", "-", "-", "-"])
                 continue
             ratio = math.exp(statistics.mean(math.log(green[(t, "lacon")] / green[(t, other)]) for t in both))
-            rows.append([other, str(len(both)), f"{ratio:.2f}x", f"{1 - ratio:.0%}"])
+            priced = [t for t in both if (t, "lacon") in green_cost and (t, other) in green_cost]
+            cost = math.exp(statistics.mean(math.log(green_cost[(t, "lacon")] / green_cost[(t, other)]) for t in priced)) if priced else None
+            rows.append([other, str(len(both)), f"{ratio:.2f}x", f"{1 - ratio:.0%}", f"{cost:.2f}x" if cost else "-"])
         print(table(rows, args.md))
         lacon_builds = [r["first_build_ok"] for r in by_lang["lacon"] if r["first_build_ok"] is not None]
         if lacon_builds:
