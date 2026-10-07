@@ -319,8 +319,12 @@ are now packed (§17): sieve went from 4.5x Rust to 1.8x and knapsack from
 wordfreq is within the 1.5x bar.
 Strings, lists, structs and the rest now come from a small-object
 allocator (§18): records went from 2.5x Rust to 1.7x and wordfreq from
-1.09x to 1.03x. Next: Perceus reuse, and the cost of a closure call per
-element in `sort_by` and `map`, which is most of what records has left.
+1.09x to 1.03x. The benchmarks now run long enough for their ratios to
+hold between runs, and a lambda given to `map`, `filter` or `sort_by` runs
+inlined over a list, with int keys sorted by radix (§19): records went
+from 1.8x Rust to 1.0x, and the geometric mean is 1.9x. records, wordfreq
+and sieve are within the 1.5x bar. Next: fib (5.7x) and knapsack (3.2x),
+the furthest from it, and Perceus reuse.
 Mode checking, `fix`, `put` and `q` aren't started.
 
 ### Phase 3 — Speed and scale
@@ -1162,3 +1166,86 @@ is unchanged: 123 MB, against Rust's 88 MB.
 What's left in records is mostly not allocation: `sort_by` takes about half
 its time and `map(it.score).sum()` a quarter, each a closure call per
 element.
+
+---
+
+## 19. Phase 2: longer benchmarks, inlined lambdas and a radix sort
+
+**Longer benchmarks.** Rust ran fib in 4 ms, knapsack in 5 ms and mandel in
+9 ms, short enough that a millisecond moved a ratio by a fifth: fib was
+3.9x Rust in §17 and 5.1x on a later run. Each input is now large enough
+that Rust takes 0.17-0.29 s: collatz to 2,000,000, fib(41), knapsack of
+8,000 items into 50,000, mandel at 2,000 pixels a side, 1,500,000 records,
+a sieve to 50,000,000 and 6,000,000 words. Two runs of the set agree to
+0.1x. The longer runs moved two ratios on their own: sieve is 1.4x, not
+1.9x, and knapsack 3.2x, not 2.8x. `run.py --interp` takes minutes on them.
+
+**Where records' time went.** §18 put it on a closure call per element.
+Timing records in stages said otherwise for `sort_by`: its 1,200,000 key
+calls took 0.017 s, and the merge sort of the pairs 0.086 s. For `map` it
+said yes, for a reason particular to the sorted list: `map(it.score)` reads
+the structs in sorted order, so each read misses the cache, and a closure
+call, which retains and releases its argument between misses, took 0.08 s
+where the same loop written out in C took 0.023 s.
+
+**A radix sort for int keys.** When every key is an int, `sort_by` and
+`sort` of a boxed list now sort their pairs with a stable LSD radix sort,
+11 bits a pass on each key's offset from the smallest, so keys within 2,048
+of each other take one pass. It is used from 4,096 pairs, or from 256 when
+the keys span less than 2^22; below that, merge sort was faster in a
+microbenchmark at every range of keys. Values are also retained in list
+order as the keys are made, rather than in sorted order as the result is
+built, so the sort no longer writes to each struct at random.
+
+**Inlined lambdas.** A lambda written as the argument of `map`, `filter` or
+`sort_by` is also compiled as `I{n}(P1, x)`, a C function the compiler must
+inline, and when the receiver is a list at run time, generated code loops
+over it and calls that instead of handing a closure to the runtime. A
+range, map, set, string or tuple goes through the closure as before, so
+the lambda is compiled twice. The loop:
+
+- borrows each element: a parameter the body only reads, which every
+  lambda parameter is since they are immutable (`only_read` checks), takes
+  the element as the list holds it, without a retain and a release;
+- counts toward the depth limit as a lambda call does: one lambda frame for
+  the whole loop, pushed only when the list isn't empty, so traces and the
+  stack-overflow error are unchanged;
+- passes on `?` and `return` as the closure would, releasing what it holds.
+
+Lambdas of two parameters, which take tuples apart, and lambdas holding a
+lambda aren't inlined; nor are the other methods that take one (`any`,
+`count`, `min_by` and the rest).
+
+Verified as before: every golden program, task input and benchmark program
+gives the same stdout, stderr and exit code from the interpreter and from
+native code (141 programs; the benchmarks at their old sizes, which the
+interpreter can run), typed and with `LACON_BOXED=1`, each also under
+AddressSanitizer and UndefinedBehaviorSanitizer. LeakSanitizer reports
+leaks in 18 of the programs, on error paths; it reported 20 before this
+change. `inline_lambdas.lc` covers each method on a list and on the other
+receivers, captures through an enclosing lambda, `?` and `return`, keys of
+other types, each of the four ways int keys are sorted with the order
+checked for stability, and an error inside an inlined lambda.
+
+Generated C for the 30 tasks is 8% larger (529 KB from 488 KB) and takes
+8% longer to build (5.9 s from 5.5 s for all 30).
+
+**Results**, on §17's machine, pinned, best of seven runs, both compilers
+on the longer benchmarks:
+
+| Program | Before | After |
+|---|---|---|
+| collatz | 2.0x | 2.0x |
+| fib | 5.6x | 5.7x |
+| knapsack | 3.2x | 3.2x |
+| mandel | 2.1x | 2.0x |
+| records | 1.8x | 1.0x |
+| sieve | 1.4x | 1.4x |
+| wordfreq | 1.0x | 1.0x |
+| geometric mean | 2.1x | 1.9x |
+
+Only records uses the changed paths; the others moved within the 0.1x two
+runs differ by. records takes 0.23 s from 0.39 s: its filter and sort
+0.064 s from 0.136 s, and its `map` and `sum` 0.027 s from 0.08-0.10 s.
+What it has left is building its 1,500,000 structs and their strings,
+0.086 s, and freeing them all as `main` returns, 0.056 s.

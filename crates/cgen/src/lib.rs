@@ -513,6 +513,22 @@ fn pinned_slots(prog: &Program, body: &Ex) -> std::collections::HashSet<u32> {
     out
 }
 
+/// Whether the frame whose body is `body` only reads its slot `s`: never
+/// binds it, assigns it (compound assignments too), changes it in place or
+/// reaches it by pointer. Such a parameter can borrow its argument.
+fn only_read(prog: &Program, body: &Ex, s: u32) -> bool {
+    if pinned_slots(prog, body).contains(&s) || frame_writes(body).iter().any(|(w, _)| *w == s) {
+        return false;
+    }
+    let mut assigned = false;
+    walk_ex(body, 0, &mut |n, d| {
+        if let (Node::St(St::Assign { place: Place { root: Root::Local(r), .. }, .. }), 0) = (n, d) {
+            assigned |= *r == s;
+        }
+    });
+    !assigned
+}
+
 impl<'p> Gen<'p> {
     fn new(prog: &'p Program, src: &'p Source, types: &'p Types) -> Gen<'p> {
         Gen {
@@ -2682,7 +2698,13 @@ impl<'p> Gen<'p> {
             format!("{a}{r} = lc_method({m}, {rv}, {}, {arr}, {site}); {rel}if (lc_unwinding) UNWIND; ", args.len())
         };
         match user {
-            None => code.push_str(&builtin_call(self)),
+            None => match self.inline_loop(name, args, &rv, &r, &site) {
+                Some(l) => {
+                    let b = builtin_call(self);
+                    let _ = write!(code, "if ({rv}.tag == T_LIST) {{ {l}}} else {{ {b}}} ");
+                }
+                None => code.push_str(&builtin_call(self)),
+            },
             Some(ids) => {
                 let k = self.t();
                 let pick = self.pick(ids, &rv, args.len() + 1);
@@ -2773,6 +2795,78 @@ impl<'p> Gen<'p> {
         let _ = writeln!(self.statics, "static lc_v L{n}(lc_fn *self, int argc, lc_v *args, const char *site);");
         self.funcs.push_str(&f);
         format!("lc_closure_new(L{n}, {}, 1, (lc_v[]){{lc_retain(lc_obj_v(T_FRAME, FR))}})", def.params.len())
+    }
+
+    /// A lambda of one parameter, and no lambda of its own, as a C function
+    /// `I{n}(P1, x)` that the loop calling it inlines. It is the closure's
+    /// code without the closure: `P1` is the frame that made it, and a
+    /// parameter the body only reads borrows `x`, which the list holds.
+    fn inline_lambda(&mut self, def: &LambdaDef) -> Option<String> {
+        if def.params.len() != 1 || has_lambda(&def.body) {
+            return None;
+        }
+        self.lambda_n += 1;
+        let n = self.lambda_n;
+        let reps = self.frame_reps(&def.body, def.nslots, &[], &def.params, &[]);
+        let saved = std::mem::replace(&mut self.cx, Cx::new(reps));
+        let body = self.expr(&def.body);
+        let max_up = self.cx.max_up.max(1);
+        let natives = self.native_decls();
+        let lsite = self.site(def.span);
+        let p = def.params[0];
+        let borrow = self.slot_rep(p) == Rep::Boxed && only_read(self.prog, &def.body, p);
+        let param = if borrow { format!("S[{p}] = x; ") } else { self.store(p, "lc_retain(x)", &lsite) };
+        self.cx = saved;
+        let mut f = String::new();
+        f.push_str(Self::macros(Kind::Nested));
+        let _ = writeln!(f, "static inline __attribute__((always_inline)) lc_v I{n}(lc_frame *P1, lc_v x) {{");
+        for d in 2..=max_up {
+            let _ = writeln!(f, "    lc_frame *P{d} = P{}->parent;", d - 1);
+        }
+        let (setup, teardown) = Self::frame_setup(def.nslots, false, "P1");
+        let _ = writeln!(f, "    lc_v ret = LC_UNIT;");
+        f.push_str(&setup);
+        f.push_str(&natives);
+        let _ = writeln!(f, "    {param}");
+        let _ = writeln!(f, "    ret = {body};\n    goto out;\nout:");
+        if borrow {
+            let _ = writeln!(f, "    S[{p}] = LC_UNIT;");
+        }
+        f.push_str(&teardown);
+        f.push_str("    return ret;\n}\n\n");
+        // Emitted before the function that calls it.
+        let _ = writeln!(self.statics, "static inline __attribute__((always_inline)) lc_v I{n}(lc_frame *P1, lc_v x);");
+        self.funcs.push_str(&f);
+        Some(format!("I{n}"))
+    }
+
+    /// `map`, `filter` or `sort_by` on the list `rv`, given a lambda: a loop
+    /// that runs the lambda inlined on each element, into `r`, where the
+    /// runtime would call a closure. The lambda's entry counts toward the
+    /// depth limit, as `lc_call` counts it. None for other methods and
+    /// arguments.
+    fn inline_loop(&mut self, name: &str, args: &[Ex], rv: &str, r: &str, site: &str) -> Option<String> {
+        let ([Ex::Lambda(def)], "map" | "filter" | "sort_by") = (args, name) else {
+            return None;
+        };
+        let f = self.inline_lambda(def)?;
+        let (v, n, i, x, y) = (self.t(), self.t(), self.t(), self.t(), self.t());
+        let unwind = format!("if (lc_unwinding) {{ lc_release({r}); lc_release({rv}); UNWIND; }} ");
+        let (init, step, done) = match name {
+            "map" => (format!("{r} = lc_list_new({n}); "), format!("lc_vec_push({r}, {y}); "), unwind),
+            "filter" => (format!("{r} = lc_list_new(0); "), format!("if (lc_pred({y}, {site})) lc_vec_push({r}, lc_retain({x})); "), unwind),
+            _ => {
+                let kv = self.t();
+                (
+                    format!("lc_kv *{kv} = lc_pairs_new({n}); "),
+                    format!("{kv}[{i}] = (lc_kv){{{y}, lc_retain({x})}}; "),
+                    format!("if (lc_unwinding) {{ lc_pairs_free({kv}, {i}); lc_release({rv}); UNWIND; }} {r} = lc_sorted_pairs({kv}, {n}, true, {site}); "),
+                )
+            }
+        };
+        Some(format!(
+            "lc_vec *{v} = VEC({rv}); int64_t {n} = {v}->len, {i} = 0; {init}if ({n} > 0) lc_enter_lambda({site}); for (; {i} < {n}; {i}++) {{ lc_v {x} = lc_vget({v}, {i}); lc_v {y} = {f}(FR, {x}); if (lc_unwinding) break; {step}}} if ({n} > 0) lc_depth--; {done}"
+        ))
     }
 
     // ----- patterns -----

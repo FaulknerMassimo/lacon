@@ -873,7 +873,6 @@ uint64_t lc_hash(lc_v v) {
 }
 
 /* A stable merge sort; sets *bad on incomparable items. */
-typedef struct { lc_v key, val; } lc_kv;
 static char g_bad_a[64], g_bad_b[64];
 static bool g_sort_ok;
 
@@ -902,8 +901,6 @@ static void merge_sort(lc_kv *xs, lc_kv *tmp, int64_t n) {
     memcpy(xs, tmp, sizeof(lc_kv) * n);
 }
 
-/* Sorts pairs by key. Returns false (with the kinds in a and b) when two
- * keys can't be compared. */
 /* `merge_sort` for int keys, which always compare: the same stable order. */
 static void merge_sort_ints(lc_kv *xs, lc_kv *tmp, int64_t n) {
     if (n <= 16) {
@@ -926,6 +923,41 @@ static void merge_sort_ints(lc_kv *xs, lc_kv *tmp, int64_t n) {
     while (i < m) tmp[k++] = xs[i++];
     while (j < n) tmp[k++] = xs[j++];
     memcpy(xs, tmp, sizeof(lc_kv) * n);
+}
+
+/* A stable LSD radix sort of pairs with int keys, by each key's offset from
+ * the smallest, 11 bits a pass. Returns false, sorting nothing, when
+ * `merge_sort_ints` would be faster: below 4096 pairs, unless there are at
+ * least 256 and the keys span fewer than 2^22. */
+#define RADIX_BITS 11
+static bool radix_sort_ints(lc_kv *xs, lc_kv *tmp, int64_t n) {
+    if (n < 256) return false;
+    int64_t lo = xs[0].key.u.i, hi = lo;
+    for (int64_t i = 1; i < n; i++) {
+        int64_t k = xs[i].key.u.i;
+        if (k < lo) lo = k;
+        if (k > hi) hi = k;
+    }
+    uint64_t range = (uint64_t)hi - (uint64_t)lo;
+    if (n < 4096 && range >> (2 * RADIX_BITS)) return false;
+    const uint64_t mask = (1 << RADIX_BITS) - 1;
+    lc_kv *src = xs, *dst = tmp;
+    for (int shift = 0; shift < 64 && range >> shift; shift += RADIX_BITS) {
+        int64_t at[1 << RADIX_BITS] = {0};
+        for (int64_t i = 0; i < n; i++) at[((uint64_t)src[i].key.u.i - (uint64_t)lo) >> shift & mask]++;
+        int64_t sum = 0;
+        for (int d = 0; d < 1 << RADIX_BITS; d++) {
+            int64_t c = at[d];
+            at[d] = sum;
+            sum += c;
+        }
+        for (int64_t i = 0; i < n; i++) dst[at[((uint64_t)src[i].key.u.i - (uint64_t)lo) >> shift & mask]++] = src[i];
+        lc_kv *t = src;
+        src = dst;
+        dst = t;
+    }
+    if (src != xs) memcpy(xs, src, sizeof(lc_kv) * n);
+    return true;
 }
 
 /* Sorts plain ints in place; equal ints are alike, so any order of them is
@@ -959,13 +991,15 @@ void lc_sort_ints(int64_t *xs, int64_t n) {
     free(tmp);
 }
 
+/* Sorts pairs by key, stably. Returns false (with the kinds in a and b) when
+ * two keys can't be compared. */
 bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b) {
     lc_kv *tmp = xmalloc(sizeof(lc_kv) * (n ? n : 1));
     g_sort_ok = true;
     bool ints = true;
     for (int64_t i = 0; i < n && ints; i++) ints = xs[i].key.tag == T_INT;
     if (ints) {
-        merge_sort_ints(xs, tmp, n);
+        if (!radix_sort_ints(xs, tmp, n)) merge_sort_ints(xs, tmp, n);
         free(tmp);
         return true;
     }
@@ -976,6 +1010,31 @@ bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b) {
         strcpy(b, g_bad_b);
     }
     return g_sort_ok;
+}
+
+lc_kv *lc_pairs_new(int64_t n) { return xmalloc(sizeof(lc_kv) * (n ? n : 1)); }
+
+void lc_pairs_free(lc_kv *kv, int64_t n) {
+    for (int64_t i = 0; i < n; i++) {
+        lc_release(kv[i].key);
+        lc_release(kv[i].val);
+    }
+    free(kv);
+}
+
+lc_v lc_sorted_pairs(lc_kv *kv, int64_t n, bool by, const char *site) {
+    char a[64], b[64];
+    if (!lc_sort_kv(kv, n, a, b)) {
+        if (by) lc_panic("E0301", site, "cannot sort: keys %s and %s are not comparable", a, b);
+        lc_panic("E0301", site, "cannot sort: %s and %s are not comparable", a, b);
+    }
+    lc_v out = lc_list_new(n);
+    for (int64_t i = 0; i < n; i++) {
+        lc_vec_push(out, kv[i].val);
+        lc_release(kv[i].key);
+    }
+    free(kv);
+    return out;
 }
 
 lc_v lc_heap_sorted(lc_v h) {

@@ -11,8 +11,6 @@
 #include <time.h>
 #include <unistd.h>
 
-typedef struct { lc_v key, val; } lc_kv;
-bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b);
 lc_v lc_heap_sorted(lc_v h);
 lc_v lc_map_remove(lc_v map, lc_v k, bool *found);
 void lc_fmt_float_display(lc_buf *b, double f);

@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-typedef struct { lc_v key, val; } lc_kv;
 bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b);
 void lc_sort_ints(int64_t *xs, int64_t n);
 lc_v lc_heap_sorted(lc_v h);
@@ -145,15 +144,19 @@ static bool norm_index(int64_t n, int64_t len, int64_t *out) {
     return true;
 }
 
-static bool pred(lc_v f, lc_v x, const char *site, bool *stop) {
+bool lc_pred(lc_v r, const char *site) {
     char k[64];
+    if (r.tag != T_BOOL) lc_panic("E0301", site, "predicate must return bool, got %s", lc_kind(r, k));
+    return r.u.i != 0;
+}
+
+static bool pred(lc_v f, lc_v x, const char *site, bool *stop) {
     lc_v r = lc_call(f, 1, &x, site);
     if (lc_unwinding) {
         *stop = true;
         return false;
     }
-    if (r.tag != T_BOOL) lc_panic("E0301", site, "predicate must return bool, got %s", lc_kind(r, k));
-    return r.u.i != 0;
+    return lc_pred(r, site);
 }
 
 static lc_v str_from(const char *s, int64_t n) { return lc_str_new(s, n); }
@@ -1005,30 +1008,19 @@ static lc_v iter_method(int m, lc_v recv, int argc, lc_v *args, const char *site
             lc_sort_ints(VEC(out)->ints, v->len);
             break;
         }
-        lc_kv *kv = malloc(sizeof(lc_kv) * (v->len ? v->len : 1));
+        lc_kv *kv = lc_pairs_new(v->len);
         lc_v f = m == M_sort_by ? arg(argc, args, 0, m, site) : LC_UNIT;
         for (int64_t i = 0; i < v->len; i++) {
             lc_v x = lc_vget(v, i);
             lc_v key = m == M_sort_by ? lc_call(f, 1, &x, site) : lc_retain(x);
             if (lc_unwinding) {
-                for (int64_t j = 0; j < i; j++) lc_release(kv[j].key);
-                free(kv);
+                lc_pairs_free(kv, i);
                 lc_release(xs);
                 return LC_UNIT;
             }
-            kv[i] = (lc_kv){key, x};
+            kv[i] = (lc_kv){key, lc_retain(x)};
         }
-        char a[64], b[64];
-        if (!lc_sort_kv(kv, v->len, a, b)) {
-            if (m == M_sort) lc_panic("E0301", site, "cannot sort: %s and %s are not comparable", a, b);
-            lc_panic("E0301", site, "cannot sort: keys %s and %s are not comparable", a, b);
-        }
-        out = lc_list_new(v->len);
-        for (int64_t i = 0; i < v->len; i++) {
-            lc_vec_push(out, lc_retain(kv[i].val));
-            lc_release(kv[i].key);
-        }
-        free(kv);
+        out = lc_sorted_pairs(kv, v->len, m == M_sort_by, site);
         break;
     }
     case M_rev: {

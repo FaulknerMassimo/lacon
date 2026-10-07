@@ -316,6 +316,17 @@ lc_v lc_items(lc_v v, const char *site);
 /* ----- calls ----- */
 
 lc_v lc_call(lc_v f, int argc, lc_v *args, const char *site);
+/* A predicate's result as a C bool; anything but a bool is an error. */
+bool lc_pred(lc_v r, const char *site);
+
+/* Pairs of a sort key and a value, for `sort` and `sort_by`. */
+typedef struct { lc_v key, val; } lc_kv;
+lc_kv *lc_pairs_new(int64_t n);
+/* Releases the first `n` pairs and frees them all. */
+void lc_pairs_free(lc_kv *kv, int64_t n);
+/* Sorts `n` pairs stably by key and gives their values as a list, taking
+ * the pairs. `by` is true for `sort_by`, whose error names the keys. */
+lc_v lc_sorted_pairs(lc_kv *kv, int64_t n, bool by, const char *site);
 
 /* ----- formatting ----- */
 
