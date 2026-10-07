@@ -182,11 +182,13 @@ void lc_enter_slow(int fn_id);
 typedef struct { int fn; const char *site; } lc_call_rec;
 extern lc_call_rec *lc_frames;
 extern int64_t lc_frames_cap;
+/* The frame array never holds more than the depth limit, so one bound check
+ * covers both. */
 static inline __attribute__((always_inline)) void lc_enter(int fn_id) {
-    if (lc_depth < lc_frames_cap && lc_depth < 20000) {
-        lc_frames[lc_depth].fn = fn_id;
-        lc_frames[lc_depth].site = lc_callsite;
-        lc_depth++;
+    int64_t d = lc_depth;
+    if (__builtin_expect(d < lc_frames_cap, 1)) {
+        lc_frames[d] = (lc_call_rec){fn_id, lc_callsite};
+        lc_depth = d + 1;
     } else {
         lc_enter_slow(fn_id);
     }

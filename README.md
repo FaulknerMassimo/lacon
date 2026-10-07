@@ -19,8 +19,10 @@ Phase 1 adds a static type checker and a C backend. `run`, `test` and `check`
 report type errors before anything runs, each on one line with a fix where
 there is one. `build` compiles a program to a native executable through C;
 its output matches the interpreter's byte for byte on every golden program
-and task, and it runs 2-15x faster. Typed representations, which close the
-rest of the gap to Rust, come next. The design and build plan is in
+and task. Phase 2 has started: native code holds the ints, bools and floats
+the checker proves as C scalars, and on seven benchmark programs takes
+1.3-7.6x Rust's time (geometric mean 3.0x, down from 9.7x). Typed lists and
+cheaper allocation come next. The design and build plan is in
 [PLAN.md](PLAN.md).
 
 ```
@@ -34,6 +36,7 @@ cargo build --release
 cargo test                                           # golden tests in tests/
 uv run bench/tasks/check.py                          # task solutions vs hidden tests
 uv run bench/tasks/check.py --native                 # the same, compiled with `lacon build`
+uv run bench/perf/run.py                             # native speed against the same programs in Rust
 uv run bench/harness/run.py --agent claude-code      # Claude solves the tasks, through Claude Code (Opus 5.5)
 uv run bench/harness/run.py --langs lacon,python     # the same through the API (needs an API key)
 uv run bench/harness/report.py bench/results/<run>   # tokens-to-green per language

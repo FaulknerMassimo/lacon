@@ -1103,22 +1103,25 @@ lc_call_rec *lc_frames;
 int64_t lc_frames_cap;
 #define frames lc_frames
 
+/* Room for one more frame, at most MAX_DEPTH in all. */
+static void grow_frames(void) {
+    if (lc_depth == lc_frames_cap) {
+        int64_t cap = lc_frames_cap ? lc_frames_cap * 2 : 256;
+        lc_frames_cap = cap < MAX_DEPTH ? cap : MAX_DEPTH;
+        lc_frames = xrealloc(lc_frames, sizeof(lc_call_rec) * lc_frames_cap);
+    }
+}
+
 void lc_enter_slow(int fn_id) {
     if (lc_depth >= MAX_DEPTH)
         lc_panic("E0408", lc_callsite ? lc_callsite : "", "stack overflow: recursion deeper than %d calls (in `%s`)", MAX_DEPTH, lc_prog->fn_names[fn_id]);
-    if (lc_depth == lc_frames_cap) {
-        lc_frames_cap = lc_frames_cap ? lc_frames_cap * 2 : 256;
-        lc_frames = xrealloc(lc_frames, sizeof(lc_call_rec) * lc_frames_cap);
-    }
+    grow_frames();
     lc_frames[lc_depth++] = (lc_call_rec){fn_id, lc_callsite};
 }
 
 void lc_enter_lambda(const char *site) {
     if (lc_depth >= MAX_DEPTH) lc_panic("E0408", site, "stack overflow");
-    if (lc_depth == lc_frames_cap) {
-        lc_frames_cap = lc_frames_cap ? lc_frames_cap * 2 : 256;
-        lc_frames = xrealloc(lc_frames, sizeof(lc_call_rec) * lc_frames_cap);
-    }
+    grow_frames();
     /* No site: traces leave lambdas out. */
     lc_frames[lc_depth++] = (lc_call_rec){-1, NULL};
 }

@@ -224,7 +224,8 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
 ```
 
 - **Now:** the parser, the resolver (to an IR of slots and explicit lambdas),
-  the type checker, then either the interpreter or the C backend. Mode
+  the type checker, then either the interpreter or the C backend, which
+  unboxes the ints, bools and floats the checker proves (§16). Mode
   checking, RC insertion and reuse analysis are not built yet.
 - **Backends, in order:**
   1. **C** first. That's how Koka, Nim and Lean work, and it's the fastest way
@@ -297,9 +298,8 @@ The C backend (`crates/cgen`, §15) compiles the resolved IR to C against a
 runtime that mirrors the interpreter, so native output matches the
 interpreter's byte for byte on every golden program and every task input.
 `lacon run` still interprets; `lacon build` makes an executable. Native code
-is 2-15x faster than the interpreter but well short of Rust, because every
-value is still a tagged, reference-counted cell; typed representations belong
-with Phase 2's memory model.
+was 2-15x faster than the interpreter but well short of Rust, because every
+value was a tagged, reference-counted cell; Phase 2 starts there (§16).
 
 ### Phase 2 — Memory model and agent tooling
 
@@ -308,6 +308,14 @@ Mode checking, Perceus reference counting with reuse, `sig`, `fix`, `put`,
 
 **Done when** runtime is within 1.5× of Rust on the benchmarks and an agent
 finishes tasks using only Lacon's tools.
+
+**Status.** Started with representations (§16): in native code, the ints,
+bools and floats the checker proves are C scalars, and functions get typed
+entries. On the seven programs in `bench/perf/`, native code takes 1.3-7.6x
+Rust's time (geometric mean 3.0x, from 9.7x); wordfreq is within the 1.5x
+bar and mandel close to it.
+Next: typed lists, then allocation (Perceus reuse). Mode checking, `fix`,
+`put` and `q` aren't started.
 
 ### Phase 3 — Speed and scale
 
@@ -404,6 +412,7 @@ crates/cli       the `lacon` binary
 tests/           golden tests: run/ (stdout), check/ (diagnostics), unit/ (`lacon test`)
 bench/tokens/    the same program in Rust, Go, Python and Lacon, plus a token counter
 bench/tasks/     Phase 0 tasks (prompt, hidden tests, reference) and a checker
+bench/perf/      native speed: the same programs in Lacon and Rust, and a timer
 bench/harness/   has Claude solve the tasks in each language and reports tokens-to-green
 bench/results/   harness runs (created by the harness)
 ```
@@ -896,11 +905,120 @@ still a tagged cell, every operation a runtime call with a type check, and
 every read of a variable a reference count. The next step is the one §3.3 and
 Phase 2 describe: representations from the checker's types (unboxed ints and
 floats, typed lists and structs), then Perceus-style RC insertion and reuse.
-The checker has to record a type for every expression for that, which it
-doesn't yet.
+§16 takes the first of those steps.
 
 Build time is the other gap: a 109-line program becomes 77 KB of C and takes
 1.2 s (0.3 s for a small one), against §6's 1 s for 10,000 lines. Programs
 compile at `-O1`, which runs as fast as `-O2` on this code in 60% of the time;
 the runtime is compiled once at `-O2` and cached. The generated C is verbose;
 a less wordy generator or Cranelift (Phase 3) would cut the rest.
+
+---
+
+## 16. Phase 2: unboxed values
+
+Phase 1's native code held every value as a tagged, reference-counted
+`lc_v`. Now the ints, bools and floats the checker proves are C scalars.
+
+**What the checker records.** The type of every expression and of every
+slot of every function, lambda, constant and default, once inference is
+done, and whether those types are *sound*: whether a value typed `int` is
+always an int at run time. The checker is lenient (§14), so they aren't
+always: an `any` value flowing into an `int` place, an operation that never
+learned its receiver's type, and the guess that an unknown operand of `+`
+has the other's type all let a wrong type through. Each now counts as a
+leak, and a program with any leak outside its tests compiles as before,
+fully boxed. 58 of the 60 golden, task and benchmark programs are sound;
+the other two use `"12".parse() ?? 0` (below).
+
+**Representations.** In a sound program:
+
+- An int or bool expression is an `int64_t` or a C `bool`, and so is a local
+  typed int or bool, unless a lambda captures it (it lives in the heap frame)
+  or something reaches it by pointer: an assignment to a field or element
+  through it, a mutating method, a `mut` argument.
+- Arithmetic on unboxed ints checks overflow, division by zero and shift
+  ranges with the runtime's messages. Comparisons, `and`, `or`, `not`,
+  conditions, `if`, `match` and blocks stay unboxed, and a range written in a
+  `for` loop is a C loop.
+- A function without generics, `mut` parameters, defaults or lambdas gets a
+  typed entry `FT{id}` that takes and returns unboxed values. Direct calls use
+  it, checking arguments as the runtime does and in the same order, a sized
+  int's range included. `F{id}` stays, as a wrapper, for calls through values,
+  overloads and method syntax.
+- A boxed value going into an unboxed place (a list element, a field, the
+  result of a call through a value) is checked: a value of another kind is a
+  checker bug, reported as E0000 rather than computed with.
+
+**Floats** can't be unboxed by the checker's types, because an `f64` can hold
+an int at run time: `if c: 1 else: 2.5`, `var t = 0` widened by `t += x`
+(which prints `0` if the loop never runs), `z = n` into a float variable, an
+int assigned to an `f64` field, and `x f64 = 1`, since a declared binding
+doesn't convert. Each prints as an int. So a float is unboxed only where it
+is one for certain: a float literal, `f64(n)`, `sqrt` and the other float
+functions, a declared `f64` parameter or result (the runtime converts those),
+and arithmetic between such a float and any number. An `f64` local is a
+`double` when everything written to it is; starting from all of them, those
+with a write that may be an int are dropped until none is left. Ordering NaN
+is still the runtime's error, and programs compile with `-ffp-contract=off`
+so no multiply-add is fused where the interpreter rounds twice.
+
+Writing it found:
+
+- **`"12".parse() ?? 0` is typed int by its use,** but without a declared type
+  `parse` reads whichever number the text is (§12), so `"2.5".parse() ?? 0`
+  is a float typed int. The unboxing check caught it in
+  `declared_types.lc`. Such a `parse` now counts as a leak.
+- **`n ** k` and `n.pow(k)` on ints** are typed int but give a float for a
+  negative `k`; unless `k` is a literal, they count as a leak.
+- **`n.round(d)` on an int** is typed `f64` but gives the int. Harmless here,
+  since floats aren't taken from the checker's types.
+- **A runtime bug:** a lambda call counted toward the depth limit without
+  writing a frame, so an error trace could read an uninitialized or stale
+  frame (an ASan crash in `lambda_error.lc`). Lambdas now write a frame
+  without a site, which traces skip without breaking a run of identical
+  frames, as the interpreter's do.
+
+Also: a list read with an unboxed index borrows the variable's list instead
+of taking a reference; `xs.len` on a list or a string skips the method call;
+a known struct's field is read by position; an `if` used as a statement is C
+control flow; ints format without `snprintf`; sorting by int keys compares
+ints directly; string `+` allocates once; and a struct field whose value the
+checker proves has its declared type isn't checked again.
+
+Verified as before (§15): every golden program, task input and benchmark
+program gives the same stdout, stderr and exit code from the interpreter and
+from native code (137 runs), also under AddressSanitizer and
+UndefinedBehaviorSanitizer.
+
+**Results.** `bench/perf/` holds seven programs in Lacon and Rust, and
+`run.py` times them (best of seven runs on a shared four-core VM; a ratio
+moves by up to a fifth between runs):
+
+| Program | Work | Before | After |
+|---|---|---|---|
+| collatz | int loops | 13.6x | 2.1x |
+| fib | recursive calls | 5.9x | 3.7x |
+| knapsack | DP over a list of ints | 17.0x | 4.3x |
+| mandel | float loops | 32.9x | 1.7x |
+| records | 600,000 structs filtered, sorted, summed | 4.6x | 3.9x |
+| sieve | 5,000,000 bools in a list | 12.6x | 7.6x |
+| wordfreq | strings counted in a map | 3.1x | 1.3x |
+| geometric mean | | 9.7x | 3.0x |
+
+(Native time as a multiple of Rust's, `rustc -O`. The interpreter takes
+1.5-10 s on each, 2-95x native's time.)
+
+What's left:
+
+- **sieve** is memory-bound: a list of 5,000,000 bools takes 16 bytes an
+  element against Rust's one. Typed lists, from the checker's element types
+  (`[int]` as `int64_t`, `[bool]` as bytes), are next.
+- **records** and **wordfreq** allocate: each string, struct and list is its
+  own `malloc`. A small-object allocator and Perceus-style reuse (§3.3) would
+  remove most of it.
+- **fib** records each call's function and site for error traces, two stores
+  and a bound check that Rust doesn't pay.
+
+Typed C is also smaller and builds faster: `json-format`'s C went from 81.5
+KB to 75.7 KB and its build from 1.5 s to 1.3 s.
