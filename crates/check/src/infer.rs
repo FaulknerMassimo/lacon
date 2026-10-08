@@ -146,6 +146,24 @@ struct Deferred {
 
 type Key = (usize, u32);
 
+/// A struct field reached from a slot through fields: `r.ms` or `r.a.ms`.
+type FieldKey = (Key, Vec<Rc<str>>);
+
+/// Something known not to be `none`: a slot, or a field reached from one.
+#[derive(Clone, PartialEq)]
+enum Fact {
+    Slot(Key),
+    Field(FieldKey),
+}
+
+/// What narrowing knows at a point: per frame, the slots known not to be
+/// `none`, and the fields.
+#[derive(Clone)]
+struct Narrow {
+    slots: Vec<Vec<bool>>,
+    fields: Vec<FieldKey>,
+}
+
 pub struct Checker<'p> {
     pub prog: &'p Program,
     src: &'p str,
@@ -162,6 +180,9 @@ pub struct Checker<'p> {
     widen_hit: bool,
     /// Per enclosing loop: whether it has a `break`.
     loops: Vec<bool>,
+    /// Optional fields known not to be `none` here, as `Frame::narrowed`
+    /// knows slots: `if r.ms == none: continue` makes `r.ms` an int after.
+    fields: Vec<FieldKey>,
     /// `s.parse()` calls with a declared type to parse to, for
     /// `Program::parse_to`.
     pub parse_to: Vec<(Span, ConvTo)>,
@@ -196,6 +217,7 @@ impl<'p> Checker<'p> {
             widen: HashSet::new(),
             widen_hit: false,
             loops: Vec::new(),
+            fields: Vec::new(),
             parse_to: Vec::new(),
             opt_map: Vec::new(),
             ex_log: Vec::new(),
@@ -212,6 +234,7 @@ impl<'p> Checker<'p> {
         for (i, c) in prog.consts.iter().enumerate() {
             self.ctx = FnCtx { name: c.name.clone(), sig: String::new(), head: Span::default(), ret: None, kind: Kind::Const };
             self.frames = vec![Frame::new(c.nslots, &mut self.s)];
+            self.fields.clear();
             let t = self.expr(&c.value, None);
             self.solve(true);
             self.consts[i] = self.s.zonk(&t);
@@ -245,6 +268,7 @@ impl<'p> Checker<'p> {
         for t in &prog.tests {
             self.ctx = FnCtx { name: t.name.clone(), sig: String::new(), head: Span::default(), ret: None, kind: Kind::Test };
             self.frames = vec![Frame::new(t.nslots, &mut self.s)];
+            self.fields.clear();
             self.deferred.clear();
             self.expr(&t.body, None);
             self.solve(true);
@@ -262,9 +286,11 @@ impl<'p> Checker<'p> {
     /// Checks a default value, which sees no locals.
     fn thunk(&mut self, d: &LambdaDef, want: &T, site: Site) {
         let saved = std::mem::replace(&mut self.frames, vec![Frame::new(d.nslots, &mut self.s)]);
+        let fields = std::mem::take(&mut self.fields);
         self.check(&d.body, want, site);
         self.log_frame(&d.body);
         self.frames = saved;
+        self.fields = fields;
     }
 
     fn check_fn(&mut self, id: usize) {
@@ -307,6 +333,7 @@ impl<'p> Checker<'p> {
             }
         }
         self.frames = vec![frame];
+        self.fields.clear();
         self.deferred.clear();
         self.loops.clear();
         let body = &fd.body;
@@ -565,6 +592,8 @@ impl<'p> Checker<'p> {
         f.decl[slot as usize] = t;
         f.narrowed[slot as usize] = false;
         f.from[slot as usize] = None;
+        let key = (self.frames.len() - 1, slot);
+        self.forget_fields(key, &[]);
     }
 
     fn key_of(&self, e: &Ex) -> Option<Key> {
@@ -575,13 +604,94 @@ impl<'p> Checker<'p> {
         }
     }
 
-    /// Slots known not to be `none` when `e` is true, and when it is false.
-    fn facts(&self, e: &Ex) -> (Vec<Key>, Vec<Key>) {
+    fn root_key(&self, r: &Root) -> Key {
+        match *r {
+            Root::Local(s) => (self.frames.len() - 1, s),
+            Root::Up(d, s) => (self.frame_index(d), s),
+        }
+    }
+
+    /// `e` as a slot, or a field reached from one through fields.
+    fn fact_of(&self, e: &Ex) -> Option<Fact> {
+        match e {
+            Ex::Field { .. } => self.field_key(e).map(Fact::Field),
+            _ => self.key_of(e).map(Fact::Slot),
+        }
+    }
+
+    /// `r.a.ms` as the slot `r` and the fields `a`, `ms`.
+    fn field_key(&self, e: &Ex) -> Option<FieldKey> {
+        match e {
+            Ex::Field { obj, name, user: None, .. } => {
+                let (key, mut path) = match &**obj {
+                    Ex::Field { .. } => self.field_key(obj)?,
+                    o => (self.key_of(o)?, Vec::new()),
+                };
+                path.push(name.clone());
+                Some((key, path))
+            }
+            _ => None,
+        }
+    }
+
+    /// A place whose steps are all fields, as a `FieldKey`.
+    fn place_field_key(&self, p: &Place) -> Option<FieldKey> {
+        let mut path = Vec::new();
+        for seg in &p.path {
+            match seg {
+                Seg::Field(name, _) => path.push(name.clone()),
+                Seg::Index(..) => return None,
+            }
+        }
+        (!path.is_empty()).then(|| (self.root_key(&p.root), path))
+    }
+
+    /// The fields of a place before its first index: what a store to it,
+    /// or a call that changes it, may change under.
+    fn place_prefix(p: &Place) -> Vec<Rc<str>> {
+        p.path
+            .iter()
+            .map_while(|seg| match seg {
+                Seg::Field(name, _) => Some(name.clone()),
+                Seg::Index(..) => None,
+            })
+            .collect()
+    }
+
+    /// Forgets what is known about the fields of slot `key` under the
+    /// fields `prefix`, or above them.
+    fn forget_fields(&mut self, key: Key, prefix: &[Rc<str>]) {
+        self.fields.retain(|(k, path)| *k != key || !(path.starts_with(prefix) || prefix.starts_with(path)));
+    }
+
+    /// Forgets what is known about place `p` and what's inside it, after
+    /// a store to it or a call that changes it.
+    fn forget_place(&mut self, p: &Place) {
+        let key = self.root_key(&p.root);
+        self.forget_fields(key, &Self::place_prefix(p));
+    }
+
+    /// A field's type `t`, as narrowing knows it: an optional known not to
+    /// be `none` is its inner type.
+    fn narrowed_field(&self, key: Option<FieldKey>, t: T) -> T {
+        if let Some(k) = key {
+            if self.fields.contains(&k) {
+                if let T::Opt(inner) = self.s.resolve(&t) {
+                    return *inner;
+                }
+            }
+        }
+        t
+    }
+
+    /// Slots and fields known not to be `none` when `e` is true, and when
+    /// it is false.
+    fn facts(&self, e: &Ex) -> (Vec<Fact>, Vec<Fact>) {
         let is_none = |x: &Ex| matches!(x, Ex::Lit(Value::None, _));
         match e {
             Ex::Compare { first, rest, .. } if rest.len() == 1 && matches!(rest[0].0, CmpOp::Eq | CmpOp::Ne) => {
                 let (a, b) = (&**first, &rest[0].1);
-                let key = if is_none(b) { self.key_of(a) } else if is_none(a) { self.key_of(b) } else { None };
+                let key = if is_none(b) { self.fact_of(a) } else if is_none(a) { self.fact_of(b) } else { None };
                 match (key, rest[0].0) {
                     (Some(k), CmpOp::Ne) => (vec![k], vec![]),
                     (Some(k), _) => (vec![], vec![k]),
@@ -602,10 +712,11 @@ impl<'p> Checker<'p> {
                 let (bt, bf) = self.facts(b);
                 (at.into_iter().filter(|k| bt.contains(k)).collect(), af.into_iter().chain(bf).collect())
             }
-            Ex::Method { recv: Recv::Place(p), name, args, .. } if p.path.is_empty() && args.is_empty() => {
-                let key = match p.root {
-                    Root::Local(s) => (self.frames.len() - 1, s),
-                    Root::Up(d, s) => (self.frame_index(d), s),
+            Ex::Method { recv: Recv::Place(p), name, args, .. } if args.is_empty() => {
+                let key = match self.place_field_key(p) {
+                    Some(k) => Fact::Field(k),
+                    None if p.path.is_empty() => Fact::Slot(self.root_key(&p.root)),
+                    None => return (vec![], vec![]),
                 };
                 match &**name {
                     "is_some" => (vec![key], vec![]),
@@ -617,48 +728,61 @@ impl<'p> Checker<'p> {
         }
     }
 
-    fn apply(&mut self, keys: &[Key]) {
-        for &(f, s) in keys {
-            if let Some(fr) = self.frames.get_mut(f) {
-                fr.narrowed[s as usize] = true;
+    fn apply(&mut self, facts: &[Fact]) {
+        for fact in facts {
+            match fact {
+                Fact::Slot((f, s)) => {
+                    if let Some(fr) = self.frames.get_mut(*f) {
+                        fr.narrowed[*s as usize] = true;
+                    }
+                }
+                Fact::Field(k) => {
+                    if !self.fields.contains(k) {
+                        self.fields.push(k.clone());
+                    }
+                }
             }
         }
     }
 
-    fn narrow_state(&self) -> Vec<Vec<bool>> {
-        self.frames.iter().map(|f| f.narrowed.clone()).collect()
+    fn narrow_state(&self) -> Narrow {
+        Narrow { slots: self.frames.iter().map(|f| f.narrowed.clone()).collect(), fields: self.fields.clone() }
     }
 
-    fn set_narrow_state(&mut self, st: &[Vec<bool>]) {
-        for (f, n) in self.frames.iter_mut().zip(st) {
+    fn set_narrow_state(&mut self, st: &Narrow) {
+        for (f, n) in self.frames.iter_mut().zip(&st.slots) {
             f.narrowed.clone_from(n);
         }
+        self.fields.clone_from(&st.fields);
     }
 
-    fn merge_states(states: &[Vec<Vec<bool>>]) -> Option<Vec<Vec<bool>>> {
+    fn merge_states(states: &[Narrow]) -> Option<Narrow> {
         let mut it = states.iter();
         let mut acc = it.next()?.clone();
         for st in it {
-            for (a, b) in acc.iter_mut().zip(st) {
+            for (a, b) in acc.slots.iter_mut().zip(&st.slots) {
                 for (x, y) in a.iter_mut().zip(b) {
                     *x = *x && *y;
                 }
             }
+            acc.fields.retain(|k| st.fields.contains(k));
         }
         Some(acc)
     }
 
-    /// Forgets what is known about slots a loop body assigns, since the
-    /// body may run again after the assignment.
+    /// Forgets what is known about slots a loop body assigns, and their
+    /// fields, since the body may run again after the assignment.
     fn forget_assigned(&mut self, body: &[St]) {
         let mut out = HashSet::new();
         assigned_stmts(body, &mut out);
+        let fi = self.frames.len() - 1;
         let f = self.frames.last_mut().unwrap();
-        for s in out {
+        for &s in &out {
             if let Some(n) = f.narrowed.get_mut(s as usize) {
                 *n = false;
             }
         }
+        self.fields.retain(|((f, s), _)| *f != fi || !out.contains(s));
     }
 
     // ----- deferred operations -----
@@ -896,7 +1020,8 @@ impl<'p> Checker<'p> {
             Ex::Variant { id, tag, args, span } => self.variant(*id, *tag, args, *span, exp),
             Ex::Field { obj, name, user, span } => {
                 let t = self.infer(obj);
-                self.field_type(&t, name, user.as_ref(), obj.span(), *span)
+                let ft = self.field_type(&t, name, user.as_ref(), obj.span(), *span);
+                self.narrowed_field(self.field_key(e), ft)
             }
             Ex::Index { obj, index, span } => {
                 let t = self.infer(obj);
@@ -910,7 +1035,18 @@ impl<'p> Checker<'p> {
                 }
                 self.slice_type(&t, obj.span(), *span)
             }
-            Ex::CallFn { fns, args, span, .. } => self.call_fn(fns, args, *span),
+            Ex::CallFn { fns, args, places, span } => {
+                let t = self.call_fn(fns, args, *span);
+                // What a `mut` argument's place was known to hold, it may not now.
+                for (i, p) in places.iter().enumerate() {
+                    if let Some(p) = p {
+                        if fns.iter().any(|&id| self.prog.fns[id as usize].params.get(i).is_some_and(|p| p.mode == Mode::Mut)) {
+                            self.forget_place(p);
+                        }
+                    }
+                }
+                t
+            }
             Ex::CallValue { f, args, span } => self.call_value(f, args, *span),
             Ex::CallBuiltin { f, args, span } => self.builtin(*f, args, *span, exp),
             Ex::Method { recv, name, user, args, span } => {
@@ -930,6 +1066,11 @@ impl<'p> Checker<'p> {
                 let r = self.method_on(t.clone(), rspan, name, user.as_ref(), &args, *span);
                 if loose && n == 0 && matches!(self.s.resolve(&t), T::Str | T::Var(_)) {
                     self.loose_parses.push(r.clone());
+                }
+                if let (Recv::Place(p), Some(ids)) = (recv, user) {
+                    if ids.iter().any(|&id| self.prog.fns[id as usize].params.first().is_some_and(|p| p.mode == Mode::Mut)) {
+                        self.forget_place(p);
+                    }
                 }
                 r
             }
@@ -1204,10 +1345,25 @@ impl<'p> Checker<'p> {
         };
         let mut t = if write && p.path.is_empty() { self.decl_type(depth, slot) } else { self.slot_type(depth, slot) };
         let mut prev_span = Span { start: p.span.start, end: p.span.start + p.name.len() as u32 };
-        for seg in &p.path {
+        // The fields so far, while every step is one: a read sees them
+        // narrowed, and a store the declared type of the last.
+        let mut fields = Some((self.root_key(&p.root), Vec::new()));
+        let n = p.path.len();
+        for (i, seg) in p.path.iter().enumerate() {
             t = match seg {
-                Seg::Field(name, sp) => self.field_type(&t, name, None, prev_span, Span { start: p.span.start, end: sp.end }),
+                Seg::Field(name, sp) => {
+                    let ft = self.field_type(&t, name, None, prev_span, Span { start: p.span.start, end: sp.end });
+                    if let Some((_, path)) = fields.as_mut() {
+                        path.push(name.clone());
+                    }
+                    if write && i + 1 == n {
+                        ft
+                    } else {
+                        self.narrowed_field(fields.clone(), ft)
+                    }
+                }
                 Seg::Index(e, sp) => {
+                    fields = None;
                     let it = self.infer(e);
                     let whole = Span { start: p.span.start, end: sp.end.max(e.span().end + 1) };
                     self.index_type(&t, &it, Some(e), prev_span, whole, write)
@@ -1774,6 +1930,8 @@ impl<'p> Checker<'p> {
         self.loops = saved_loops;
         self.log_frame(&def.body);
         self.frames.pop();
+        let n = self.frames.len();
+        self.fields.retain(|((f, _), _)| *f < n);
         T::func(outer.unwrap_or(ptys), body)
     }
 
@@ -2425,6 +2583,8 @@ impl<'p> Checker<'p> {
                             }
                             if p.path.is_empty() {
                                 self.note_assigned(p, &pt);
+                            } else {
+                                self.note_field_assigned(p, &want, &pt);
                             }
                         }
                     }
@@ -2511,6 +2671,7 @@ impl<'p> Checker<'p> {
         let decl_opt = matches!(self.s.resolve(&self.frames[fi].decl[slot as usize]), T::Opt(_));
         let val_opt = matches!(self.s.resolve(value), T::Opt(_) | T::Var(_) | T::Unknown);
         self.frames[fi].narrowed[slot as usize] = decl_opt && !val_opt;
+        self.forget_fields((fi, slot), &[]);
     }
 
     fn assign(&mut self, place: &Place, op: Option<BinOp>, value: &Ex, span: Span) {
@@ -2556,6 +2717,22 @@ impl<'p> Checker<'p> {
         }
         if place.path.is_empty() {
             self.note_assigned(place, &got);
+        } else {
+            self.note_field_assigned(place, &want, &got);
+        }
+    }
+
+    /// Records what a store to a field says about `none`: an optional field
+    /// given a value that isn't one is known not to be `none`, and what was
+    /// known about the place, or inside it, is forgotten.
+    fn note_field_assigned(&mut self, p: &Place, want: &T, got: &T) {
+        self.forget_place(p);
+        if let Some(k) = self.place_field_key(p) {
+            let decl_opt = matches!(self.s.resolve(want), T::Opt(_));
+            let val_opt = matches!(self.s.resolve(got), T::Opt(_) | T::Var(_) | T::Unknown);
+            if decl_opt && !val_opt {
+                self.fields.push(k);
+            }
         }
     }
 

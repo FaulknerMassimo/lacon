@@ -650,6 +650,18 @@ static inline __attribute__((always_inline)) lc_view lc_view_of(lc_v o, int kind
     lc_vec *v = VEC(o);
     return (lc_view){v->data, v->len, o.u.o->rc == 1 ? v->len : 0};
 }
+/* Whether a view's list holds only structs `ty`, and when the loop
+ * assigns their fields (`writes`), nothing else holds the list or any of
+ * them. A loop that only reads and assigns such fields in place keeps a
+ * clean list clean, so generated code runs a copy of it that tests only
+ * each access's bounds. */
+static inline bool lc_view_clean(lc_view w, uint32_t ty, bool writes) {
+    if (writes && w.wlen != w.len) return false;
+    const lc_v *e = (const lc_v *)w.data;
+    for (int64_t i = 0; i < w.len; i++)
+        if (e[i].tag != T_STRUCT || REC(e[i])->ty != ty || (writes && e[i].u.o->rc != 1)) return false;
+    return true;
+}
 /* `lc_get_int` and the rest through a view of the list in slot `o`. */
 #define LC_VIEW_GET(name, type, get)                                                                    \
     static inline __attribute__((always_inline)) type name(lc_view w, int64_t i, lc_v *o, const char *site) { \

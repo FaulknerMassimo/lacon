@@ -509,10 +509,7 @@ impl<'p> Interp<'p> {
                 let (v, frame) = self.call_frame(fid, argv, *span)?;
                 for &i in &muts {
                     let nv = frame.get(i as u32);
-                    self.with_place(places[i].as_ref().unwrap(), f, Viv::No, |s| {
-                        *s = nv;
-                        Ok(())
-                    })?;
+                    self.write_back(places[i].as_ref().unwrap(), f, nv)?;
                 }
                 Ok(v)
             }
@@ -879,14 +876,21 @@ impl<'p> Interp<'p> {
             argv[0] = Value::Unit;
             argv[0] = self.with_place(p, f, Viv::No, |s| Ok(std::mem::replace(s, Value::Unit)))?;
             let (v, frame) = self.call_frame(fid, argv, span)?;
-            let nv = frame.get(0);
-            self.with_place(p, f, Viv::No, |s| {
-                *s = nv;
-                Ok(())
-            })?;
+            self.write_back(p, f, frame.get(0))?;
             return Ok(v);
         }
         self.call_fid(fid, argv, span)
+    }
+
+    /// Puts a `mut` argument's value back in its place after the call. A
+    /// struct field or a variable declared with a type takes that type, as
+    /// with any store: a generic `mut v T` can hand an int back to an
+    /// `f64` field.
+    fn write_back(&self, p: &Place, f: &Rc<Frame>, v: Value) -> R<()> {
+        self.with_place_decl(p, f, Viv::No, |s, decl| {
+            *s = self.conform(v, decl, p.span)?;
+            Ok(())
+        })
     }
 
     fn read_place(&self, p: &Place, f: &Rc<Frame>) -> R<Value> {

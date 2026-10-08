@@ -1,0 +1,10 @@
+[7, 0, 1, 2] 42 3.0
+P{x: 2.0, n: 5} [1, 7, 3] {"a": 10}
+[1, 2, 5] 105
+2 [7, 0, 1]
+[7, 0, 1, 0]
+[7, 0, 1, 0]
+P{x: 2.0, n: 8} P{x: 2.0, n: 8}
+E0402 mut_entries.lc:30:6 index 10 out of range for length 4
+  in `bad`, called at mut_entries.lc:63:3
+[exit 1]

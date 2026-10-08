@@ -232,8 +232,10 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
   unboxes the ints, bools and floats the checker proves (§16), packs
   lists of them (§17), takes small values from free lists (§18), reads
   a list once before a loop that only assigns its elements (§20) or their
-  fields, and reads struct fields in place (§23). Mode checking, RC
-  insertion and reuse analysis are not built yet.
+  fields, reads struct fields in place (§23), and checks a list of
+  structs once before a loop that only reads and assigns their fields,
+  then runs a copy of the loop without per-element tests (§27). Mode
+  checking, RC insertion and reuse analysis are not built yet.
 - **Backends, in order:**
   1. **C** first. That's how Koka, Nim and Lean work, and it's the fastest way
      to native speed and portability.
@@ -367,6 +369,15 @@ all of it the primer, at 0.83x Go's and 0.85x Rust's cost and 1.05x
 Python's. Two guesses whose fixes made things worse are fixed: E0406
 now points at a `T!` binding rather than each use, and `map` on an
 optional is accepted.
+nbody's tests on each field access are gone (§27): a loop that only
+reads and assigns struct fields of a list's elements checks the list
+once as it starts, then runs a copy of itself that tests only bounds,
+and functions with `mut` parameters get typed entries. nbody went from
+4.5x Rust to 1.87x, and the nine programs' geometric mean from 1.51x to
+1.37x, under the 1.5x bar. Both of Phase 2's done-when criteria are now
+met; mode checking and Perceus reuse are not built. A `mut` argument
+written back to an `f64` field could leave an int there, in both the
+interpreter and native code; it now takes the field's type.
 
 ### Phase 3 — Speed and scale
 
@@ -1948,7 +1959,8 @@ means:
 
 - `if r.ms == none: continue` narrows a local but not a field: `r.ms`
   stays `int?` after it, and the solution reads it into a local first.
-  An agent adding an optional field would meet this.
+  An agent adding an optional field would meet this. (Fields narrow now;
+  see §27.)
 - `lacon sig` prints `type Parser {toks [Tok], pos int}`, without the
   default of `pos int = 0`, so `Parser{toks}` looks invalid to a reader.
 - `put` adds an item it doesn't find at the end of the file, not where it
@@ -2066,3 +2078,118 @@ task.
 
 Next: the primer, which is now nearly all of the gap, about 1,400
 tokens on every call. A second trial would firm up the ratios.
+
+---
+
+## 27. Phase 2: struct lists checked once a loop, and `mut` parameters by pointer
+
+nbody was the one benchmark far from Rust (4.5x), and the nine programs'
+geometric mean sat at the 1.5x bar (§23). §23 put nbody's cost in the
+tests on each field access. To see which tests matter before changing
+the compiler, its generated C was edited by hand and timed (pinned to
+one performance core, best of eleven; Rust 0.158 s):
+
+| Version of nbody's C | Time |
+|---|---|
+| As generated | 0.711 s |
+| Without the test of each field's tag | 0.604 s |
+| ... and a store's general path written as ending in an error (on a `main` that holds no element, so no store needs that path) | 0.433 s |
+| Written by hand on the same layout, without tests | 0.228 s |
+
+Two more measurements: 6,000,000 calls of an empty `advance` took
+0.056 s, and 0.018 s with the list passed by pointer; and neither the
+bounds tests nor `lc_pos` cost anything in the hand-written version,
+where gcc can see the loop bounds. What the generated loop paid for was
+the tests on each element (its tag, its struct, that nothing else holds
+it) and a general path that returns to the loop, after which gcc knows
+nothing about the list. Three changes follow.
+
+**A bug first.** A `mut` argument's value went back to its place after
+the call without the conversion every other store makes (§23), so a
+generic `fn set[T](mut v T, w T)` called as `set(p.x, 3)` left an int in
+an `f64` field: the interpreter then printed `p.x / 2` as `1`, and native
+code stopped with E0000. The write-back, for a call and for a `mut`
+receiver, now stores as `=` does: a struct field or a variable declared
+with a type takes that type, and a sized int is range-checked
+(`mut_writeback.lc`).
+
+**No field tag tests.** Since every store converts, a field declared
+`f64`, an int type or `bool` of a struct the checker knows holds one of
+those, so reading it in place, and updating an `f64` or `int` field in
+place, no longer tests its tag. The struct's own type is still tested.
+nbody: 0.711 s to 0.604 s.
+
+**Typed entries for `mut` parameters.** Functions with `mut` parameters
+had no typed entry (§16): every call boxed its arguments into an array,
+and the list went from the caller's slot through the array to the
+callee's slot and back, with store-forwarding stalls on the way. A `mut`
+parameter is now a pointer: the callee moves the value into its slot and
+puts it back when it returns. A variable of the caller is passed by its
+own slot; any other place (`p.items`, `xs[0]`, `m[k]`) is taken into a
+temporary first and written back after, as before. Arguments are still
+evaluated, then checked, in order. The boxed wrapper `F{id}` checks a
+`mut` argument in place and passes it by pointer too, so calls through
+values and method calls write back as they did (`mut_entries.lc`).
+nbody: 0.604 s to 0.573 s.
+
+**Clean views.** A loop that uses a list of structs only to read
+elements' fields declared `f64`, an int type or `bool`, to assign the
+fields that `assign_field` updates in place, and to read `len`, can't
+share or replace an element. So if, when it starts, the list holds only
+structs of the expected type and, when it assigns any, nothing else
+holds the list or any element, that stays true until it ends.
+`lc_view_clean` tests this once, when the loop opens its view (§20), and
+the loop is generated twice: a copy that trusts the view, whose every
+access tests only its bounds and whose general path can only report an
+index out of range, and the usual loop for a list that isn't clean. A
+loop inside one generated twice, or with a lambda in it, is generated
+once. nbody: 0.573 s to 0.300 s. A list shared with another variable,
+an element held elsewhere, and a loop that reads an element whole take
+the usual loop, which copies what it must (`clean_views.lc`); the
+existing `field_far.lc` reads one past the end through the copy.
+
+**Field narrowing.** §25 found that `if r.ms == none: continue` narrowed
+a local but not a field. The checker now knows fields reached from a
+variable through fields (`r.ms`, `p.a.ms`) as it knows variables: `==`
+and `!=` with `none`, `is_some` and `is_none` narrow them, branches merge
+what they know, and a store to the field, to anything above it or to the
+variable, a `mut` argument or receiver, and a loop that assigns the
+variable all end it (`narrow_fields.lc`, run and check). A field typed
+by narrowing is read boxed and unboxed with a test, as a narrowed local
+is, so a checker bug would show as E0000 rather than a wrong value.
+
+Verified as before: every golden program and task input gives the same
+stdout, stderr and exit code from the interpreter and from native code,
+typed and with `LACON_BOXED=1`, each also under AddressSanitizer and
+UndefinedBehaviorSanitizer. LeakSanitizer reports leaks in the same five
+golden programs as before, and `bench/tasks/check.py`, interpreted and
+`--native`, passes every task. Generated C for the 30 tasks is 1.3%
+larger (510 KB from 504 KB), mostly `calc` and `json-format`, whose `mut`
+functions now have a typed entry beside their wrapper.
+
+**Results**, on §17's machine, pinned, best of seven runs. Before is
+§23's compiler:
+
+| Program | Before | After |
+|---|---|---|
+| collatz | 1.58x | 1.58x |
+| fib | 2.60x | 2.61x |
+| knapsack | 1.83x | 1.83x |
+| mandel | 1.05x | 1.05x |
+| nbody | 4.52x | 1.87x |
+| records | 1.04x | 1.04x |
+| sieve | 1.11x | 1.11x |
+| trees | 1.02x | 1.01x |
+| wordfreq | 0.99x | 1.00x |
+| geometric mean | 1.51x | 1.37x |
+
+(Native time as a multiple of Rust's, `rustc -O`.) The nine are under
+Phase 2's 1.5x bar. nbody's 0.300 s against the hand-written 0.228 s is
+mostly each access recomputing `lc_pos` and its bounds, since gcc can't
+tell that the loop's bound is the view's length; proving `i + 1` can't
+overflow, so that `j` is known non-negative, changed nothing. fib,
+knapsack and collatz still pay for overflow checks (§20, §21).
+
+Next: with both of Phase 2's criteria met, the primer (§26) is the
+larger lever on tokens-to-green, and Perceus reuse the remaining piece
+of Phase 2's memory model.

@@ -123,22 +123,42 @@ struct Cx {
     /// The enclosing loops' views (`lc_view`) of list slots: slot, C name,
     /// kind.
     views: Vec<(u32, String, Rep)>,
+    /// The views of lists of structs that the loop being generated may
+    /// trust: slot and struct. Its list and elements were found clean
+    /// when it started, and it keeps them so (`keeps_clean`).
+    clean: Vec<(u32, u32)>,
+    /// Inside a loop generated twice (`versioned`), which isn't done again.
+    versioned: bool,
     /// The checker's type of each slot, in a sound program.
     tys: Vec<T>,
 }
 
 impl Cx {
     fn new(slots: Vec<Rep>, tys: Vec<T>) -> Cx {
-        Cx { max_up: 0, slots, ret: Rep::Boxed, viewable: HashMap::new(), views: Vec::new(), tys }
+        Cx { max_up: 0, slots, ret: Rep::Boxed, viewable: HashMap::new(), views: Vec::new(), clean: Vec::new(), versioned: false, tys }
     }
 }
 
 /// A named function's typed entry `FT{id}`: parameters and result held as
 /// the checker proved them, so direct calls skip boxing and argument arrays.
+/// A `mut` parameter is a pointer to a boxed value, which the callee moves
+/// into its slot and puts back when it returns.
 #[derive(Clone)]
 struct Entry {
     params: Vec<Rep>,
+    muts: Vec<bool>,
     ret: Rep,
+}
+
+impl Entry {
+    /// The C type of parameter `i`.
+    fn param_c(&self, i: usize) -> &'static str {
+        if self.muts[i] {
+            "lc_v *"
+        } else {
+            c_type(self.params[i])
+        }
+    }
 }
 
 fn c_type(r: Rep) -> &'static str {
@@ -282,12 +302,29 @@ fn has_lambda(e: &Ex) -> bool {
     found
 }
 
+/// Do statements contain a lambda anywhere inside them?
+fn stmts_have_lambda(body: &[St]) -> bool {
+    let mut found = false;
+    walk_stmts(body, 0, &mut |n, _| {
+        if let Node::Ex(Ex::Lambda(_)) = n {
+            found = true;
+        }
+    });
+    found
+}
+
 /// A function's parameter slots, and those of them declared `f64`, which
 /// the runtime converts to floats on entry.
 fn param_slots(fd: &FnDef) -> (Vec<u32>, Vec<u32>) {
     let all = (0..fd.params.len() as u32).collect();
     let floats = fd.params.iter().enumerate().filter(|(_, p)| matches!(p.ty, Ty::Float)).map(|(i, _)| i as u32).collect();
     (all, floats)
+}
+
+/// A function's `mut` parameter slots, which stay boxed: their values go
+/// back to the caller.
+fn mut_slots(fd: &FnDef) -> Vec<u32> {
+    fd.params.iter().enumerate().filter(|(_, p)| p.mode == Mode::Mut).map(|(i, _)| i as u32).collect()
 }
 
 /// The slots a pattern binds.
@@ -805,7 +842,7 @@ impl<'p> Gen<'p> {
         for (id, fd) in prog.fns.iter().enumerate() {
             let _ = writeln!(self.statics, "static lc_v F{id}(lc_v *a);");
             if let Some(en) = &self.entries[id] {
-                let ps: Vec<String> = en.params.iter().map(|r| c_type(*r).to_string()).collect();
+                let ps: Vec<String> = (0..en.params.len()).map(|i| en.param_c(i).to_string()).collect();
                 let ps = if ps.is_empty() { "void".to_string() } else { ps.join(", ") };
                 let _ = writeln!(self.statics, "static {} FT{id}({ps});", c_type(en.ret));
             }
@@ -932,24 +969,26 @@ impl<'p> Gen<'p> {
     }
 
     /// The typed entry of function `id`, if it gets one: any function but
-    /// `main` without generics, `mut` parameters, defaults or lambdas.
+    /// `main` without generics, defaults or lambdas.
     fn entry_of(&mut self, id: FnId) -> Option<Entry> {
         let fd = &self.prog.fns[id as usize];
         if !self.typed || self.prog.main == Some(id) || !fd.generics.is_empty() || has_lambda(&fd.body) {
             return None;
         }
-        if fd.params.iter().any(|p| p.mode == Mode::Mut || p.default.is_some()) {
+        if fd.params.iter().any(|p| p.default.is_some()) {
             return None;
         }
         let (params, floats) = param_slots(fd);
-        let reps = self.frame_reps(&fd.body, fd.nslots, &[], &params, &floats);
+        let muts = mut_slots(fd);
+        let reps = self.frame_reps(&fd.body, fd.nslots, &muts, &params, &floats);
         let ret = match &fd.ret {
             Some(Ty::Int { .. }) => Rep::Int,
             Some(Ty::Bool) => Rep::Bool,
             Some(Ty::Float) => Rep::Float,
             _ => Rep::Boxed,
         };
-        Some(Entry { params: reps[..fd.params.len()].to_vec(), ret })
+        let muts = fd.params.iter().map(|p| p.mode == Mode::Mut).collect();
+        Some(Entry { params: reps[..fd.params.len()].to_vec(), muts, ret })
     }
 
     /// Checks parameter `i` of `fd`, given the C value `v` (an `lc_v` when
@@ -994,7 +1033,8 @@ impl<'p> Gen<'p> {
     fn typed_fn(&mut self, id: FnId, en: &Entry) -> String {
         let fd = &self.prog.fns[id as usize];
         let (params, floats) = param_slots(fd);
-        let mut cx = Cx::new(self.frame_reps(&fd.body, fd.nslots, &[], &params, &floats), self.slot_tys(&fd.body));
+        let muts = mut_slots(fd);
+        let mut cx = Cx::new(self.frame_reps(&fd.body, fd.nslots, &muts, &params, &floats), self.slot_tys(&fd.body));
         cx.ret = en.ret;
         cx.viewable = self.viewable(&fd.body);
         let saved = std::mem::replace(&mut self.cx, cx);
@@ -1016,7 +1056,7 @@ impl<'p> Gen<'p> {
         // function with a boxed value, checked like any return value.
         let _ = writeln!(f, "#undef RETURN\n#undef UNWIND\n#define RETURN(v) {{ ret = (v); goto out; }}");
         let _ = writeln!(f, "#define UNWIND {{ unw = lc_unwind_val; unwound = true; lc_unwinding = 0; goto out; }}");
-        let ps: Vec<String> = en.params.iter().enumerate().map(|(i, r)| format!("{} P{i}", c_type(*r))).collect();
+        let ps: Vec<String> = (0..en.params.len()).map(|i| format!("{} P{i}", en.param_c(i))).collect();
         let ps = if ps.is_empty() { "void".to_string() } else { ps.join(", ") };
         let zero = if en.ret == Rep::Boxed { "LC_UNIT" } else { "0" };
         let _ = writeln!(f, "static {rt} FT{id}({ps}) {{\n    {rt} ret = {zero};\n    lc_v unw = LC_UNIT;\n    bool unwound = false;\n    (void)unw; (void)unwound;");
@@ -1024,6 +1064,9 @@ impl<'p> Gen<'p> {
         f.push_str(&natives);
         for (i, r) in en.params.iter().enumerate() {
             match r {
+                Rep::Boxed if en.muts[i] => {
+                    let _ = writeln!(f, "    S[{i}] = lc_take(P{i});");
+                }
                 Rep::Boxed => {
                     let _ = writeln!(f, "    S[{i}] = P{i};");
                 }
@@ -1065,13 +1108,24 @@ impl<'p> Gen<'p> {
                 let _ = writeln!(f, "    if (unwound) ret = unw;");
             }
         }
+        for i in (0..en.params.len()).filter(|&i| en.muts[i]) {
+            let _ = writeln!(f, "    *P{i} = lc_take(&S[{i}]);");
+        }
         f.push_str(&teardown);
         f.push_str("    return ret;\n}\n\n");
-        // The boxed entry, for calls through values and overloads.
+        // The boxed entry, for calls through values and overloads. A `mut`
+        // argument is checked in place and handed back in `a`.
         let _ = writeln!(f, "static lc_v F{id}(lc_v *a) {{\n    const char *cs = lc_callsite ? lc_callsite : \"\";\n    (void)cs;");
         let mut args = Vec::new();
         for (i, r) in en.params.iter().enumerate() {
             let v = self.check_param(fd, i, *r, &format!("a[{i}]"), true, "cs");
+            if en.muts[i] {
+                if v != format!("a[{i}]") {
+                    let _ = writeln!(f, "    a[{i}] = {v};");
+                }
+                args.push(format!("&a[{i}]"));
+                continue;
+            }
             let _ = writeln!(f, "    {} Q{i} = {v};", c_type(*r));
             args.push(format!("Q{i}"));
         }
@@ -1090,13 +1144,32 @@ impl<'p> Gen<'p> {
     }
 
     /// A call to typed entry `FT{id}`, giving a value of `en.ret`'s rep.
-    fn typed_call(&mut self, id: FnId, en: &Entry, args: &[Ex], span: Span) -> String {
+    /// A `mut` argument passes a pointer: to the variable's own slot when
+    /// it is one of this frame's and no other `mut` argument reaches into
+    /// it, else to a value taken from its place and written back after.
+    fn typed_call(&mut self, id: FnId, en: &Entry, args: &[Ex], places: &[Option<Place>], span: Span) -> String {
         let site = self.site(span);
         let fd = &self.prog.fns[id as usize];
         let mut code = String::from("({ ");
-        // Arguments in order, then their checks in order, as `F` does.
+        let place = |i: usize| places.get(i).and_then(|p| p.as_ref()).filter(|_| en.muts[i]);
+        let mut roots: HashMap<u32, usize> = HashMap::new();
+        for i in 0..args.len() {
+            if let Some(Place { root: Root::Local(s), .. }) = place(i) {
+                *roots.entry(*s).or_default() += 1;
+            }
+        }
+        let direct: Vec<Option<&Place>> = (0..args.len())
+            .map(|i| place(i).filter(|p| matches!(p.root, Root::Local(s) if p.path.is_empty() && roots[&s] == 1 && self.slot_rep(s) == Rep::Boxed)))
+            .collect();
+        // Arguments in order (a variable passed by its slot isn't read
+        // here), then the values `mut` arguments take from their places,
+        // then the checks in order, as `F` does.
         let mut vals = Vec::new();
-        for (a, r) in args.iter().zip(&en.params) {
+        for (i, (a, r)) in args.iter().zip(&en.params).enumerate() {
+            if direct[i].is_some() {
+                vals.push((String::new(), false));
+                continue;
+            }
             let t = self.t();
             // An int passed for an `f64` is converted, as the runtime does.
             let int_to_float = *r == Rep::Float && self.rep(a) == Rep::Int;
@@ -1111,8 +1184,34 @@ impl<'p> Gen<'p> {
             let _ = write!(code, "{ty} {t} = {v}; ");
             vals.push((t, native));
         }
+        let mut backs = Vec::new();
+        for (i, d) in direct.iter().enumerate() {
+            if let (Some(p), None) = (place(i), d) {
+                let (kc, keys) = self.place_keys(p);
+                code.push_str(&kc);
+                backs.push((i, p, keys));
+            }
+        }
+        for (i, p, keys) in &backs {
+            let (t, p1) = (&vals[*i].0, self.t());
+            let w1 = self.place_walk(p, keys, &p1, "VIV_NO", "LC_UNIT", 0);
+            let _ = write!(code, "lc_release({t}); {{ {w1}{t} = lc_take({p1}); }} ");
+        }
         let mut pass = Vec::new();
         for (i, ((t, native), r)) in vals.iter().zip(&en.params).enumerate() {
+            if en.muts[i] {
+                let cell = match direct[i] {
+                    Some(Place { root: Root::Local(s), .. }) => self.slot(0, *s),
+                    _ => t.clone(),
+                };
+                let q = self.t();
+                let v = self.check_param(fd, i, *r, &q, true, &site);
+                if v != q {
+                    let _ = write!(code, "{{ lc_v {q} = lc_take(&{cell}); {cell} = {v}; }} ");
+                }
+                pass.push(format!("&{cell}"));
+                continue;
+            }
             let v = self.check_param(fd, i, *r, t, !native, &site);
             if v == *t {
                 pass.push(t.clone());
@@ -1123,7 +1222,27 @@ impl<'p> Gen<'p> {
             }
         }
         let (d, r) = (self.t(), self.t());
-        let _ = write!(code, "int64_t {d} = lc_push({id}, {site}); {} {r} = FT{id}({}); lc_depth = {d}; {r}; }})", c_type(en.ret), pass.join(", "));
+        let _ = write!(code, "int64_t {d} = lc_push({id}, {site}); {} {r} = FT{id}({}); lc_depth = {d}; ", c_type(en.ret), pass.join(", "));
+        // What the callee left goes back: a variable declared with a type
+        // takes that type, as `write_back` does for the other places.
+        for p in direct.iter().flatten() {
+            if let (Root::Local(s), Some(t)) = (&p.root, &p.decl) {
+                if !matches!(t, Ty::Any | Ty::Param(_)) {
+                    let (cell, x, psite) = (self.slot(0, *s), self.t(), self.site(p.span));
+                    let v = self.conform_var(p, &x, &psite);
+                    let _ = write!(code, "{{ lc_v {x} = lc_take(&{cell}); {cell} = {v}; }} ");
+                }
+            }
+        }
+        for (i, p, keys) in &backs {
+            let back = self.write_back(p, keys, &vals[*i].0);
+            code.push_str(&back);
+            code.push_str(&Self::release_all(keys));
+        }
+        for i in (0..args.len()).filter(|&i| en.muts[i] && place(i).is_none()) {
+            let _ = write!(code, "lc_release({}); ", vals[i].0);
+        }
+        let _ = write!(code, "{r}; }})");
         code
     }
 
@@ -1133,7 +1252,7 @@ impl<'p> Gen<'p> {
         }
         let fd = &self.prog.fns[id as usize];
         // `mut` parameters are copied back out of their slots.
-        let muts: Vec<u32> = fd.params.iter().enumerate().filter(|(_, p)| p.mode == Mode::Mut).map(|(i, _)| i as u32).collect();
+        let muts = mut_slots(fd);
         let (params, floats) = param_slots(fd);
         let reps = self.frame_reps(&fd.body, fd.nslots, &muts, &params, &floats);
         let tys = self.slot_tys(&fd.body);
@@ -1413,6 +1532,27 @@ impl<'p> Gen<'p> {
                 let old = self.t();
                 let new = self.conform_var(p, &format!("lc_arith_own({opc}, {old}, {v}, {site})"), site);
                 format!("{{ {kc}{walk}lc_v {old} = lc_take({ptr}); *{ptr} = {new}; {rk}}} ")
+            }
+        }
+    }
+
+    /// Statements that put the owned `lc_v` `v` back in place `p` after a
+    /// call with a `mut` parameter, its keys already evaluated. A struct
+    /// field or a variable declared with a type takes that type, as with
+    /// any store.
+    fn write_back(&mut self, p: &Place, keys: &[String], v: &str) -> String {
+        let ptr = self.t();
+        let site = self.site(p.span);
+        match p.path.last() {
+            Some(Seg::Field(name, sp)) => {
+                let (fsite, fid) = (self.site(*sp), self.field_id(name));
+                let walk = self.place_walk_to(p, keys, &ptr, "VIV_NO", "LC_UNIT", 0, p.path.len() - 1);
+                format!("{{ {walk}lc_store_field({ptr}, {fid}, {}, {v}, {fsite}, {site}); }} ", cstr(name))
+            }
+            _ => {
+                let walk = self.place_walk(p, keys, &ptr, "VIV_NO", "LC_UNIT", 0);
+                let v = if p.path.is_empty() { self.conform_var(p, v, &site) } else { v.to_string() };
+                format!("{{ {walk}lc_set({ptr}, {v}); }} ")
             }
         }
     }
@@ -1702,9 +1842,9 @@ impl<'p> Gen<'p> {
                 code
             }
             Ex::Match { scrut, arms, span } => self.match_native(scrut, arms, *span, Rep::Float),
-            Ex::CallFn { fns, args, span, .. } => {
+            Ex::CallFn { fns, args, places, span } => {
                 let en = self.direct_entry(fns, args).unwrap();
-                self.typed_call(fns[0], &en, args, *span)
+                self.typed_call(fns[0], &en, args, places, *span)
             }
             Ex::CallBuiltin { args, .. } => self.num(&args[0]),
             Ex::Field { obj, name, span, .. } => self.field_scalar(obj, name, *span, Rep::Float),
@@ -1812,11 +1952,7 @@ impl<'p> Gen<'p> {
     fn field_scalar(&mut self, obj: &Ex, name: &str, span: Span, rep: Rep) -> String {
         let (id, k, _) = self.scalar_field(obj, name).unwrap_or((0, 0, rep));
         let site = self.site(span);
-        let (ct, unbox) = match rep {
-            Rep::Float => ("double", "lc_unbox_float"),
-            Rep::Int => ("int64_t", "lc_unbox_int"),
-            _ => ("bool", "lc_unbox_bool"),
-        };
+        let (ct, _, member) = scalar_c(rep);
         // On a list of these structs, the general read can only end in an
         // error (an index out of range, or a checker bug): written so, the
         // C compiler knows nothing else happens there, and can share the
@@ -1824,33 +1960,40 @@ impl<'p> Gen<'p> {
         let list = matches!(obj, Ex::Index { obj: lst, .. } if matches!(self.types.of(lst), Some(T::List(_))));
         if let (Ex::Index { obj: lst, index, .. }, true) = (obj, list) {
             if self.rep(index) == Rep::Int && self.pure(index) {
-                if let Some((_, w, Rep::Boxed)) = self.view(lst) {
+                if let Some((s, w, Rep::Boxed)) = self.view(lst) {
                     let i = self.int(index);
                     let (j, el, r) = (self.t(), self.t(), self.t());
-                    let slow = self.field_scalar_read(obj, name, id, k, ct, unbox, &site);
+                    let slow = self.field_scalar_read(obj, name, id, k, rep, &site);
+                    if self.clean_view(s, id) {
+                        // Every element is struct `id`: only the bounds to test.
+                        return format!(
+                            "({{ uint64_t {j} = lc_pos({i}, {w}.len); {ct} {r}; if ({j} < (uint64_t){w}.len) {r} = REC(((lc_v *){w}.data)[{j}])->f[{k}].{member}; else {{ (void){slow}; lc_unbox_fail(LC_UNIT, {}, {site}); }} {r}; }})",
+                            cstr(&format!("a struct with field `{name}`"))
+                        );
+                    }
                     return format!(
-                        "({{ uint64_t {j} = lc_pos({i}, {w}.len); lc_v *{el}; {ct} {r}; if ({j} < (uint64_t){w}.len && ({el} = (lc_v *){w}.data + {j})->tag == T_STRUCT && REC(*{el})->ty == {id}) {r} = {unbox}(REC(*{el})->f[{k}], {site}); else {{ (void){slow}; lc_unbox_fail(LC_UNIT, {}, {site}); }} {r}; }})",
+                        "({{ uint64_t {j} = lc_pos({i}, {w}.len); lc_v *{el}; {ct} {r}; if ({j} < (uint64_t){w}.len && ({el} = (lc_v *){w}.data + {j})->tag == T_STRUCT && REC(*{el})->ty == {id}) {r} = REC(*{el})->f[{k}].{member}; else {{ (void){slow}; lc_unbox_fail(LC_UNIT, {}, {site}); }} {r}; }})",
                         cstr(&format!("a struct with field `{name}`"))
                     );
                 }
                 if let Some(l) = self.borrowed(lst) {
                     let i = self.int(index);
                     let (o, v, j, r) = (self.t(), self.t(), self.t(), self.t());
-                    let slow = self.field_scalar_read(obj, name, id, k, ct, unbox, &site);
+                    let slow = self.field_scalar_read(obj, name, id, k, rep, &site);
                     return format!(
-                        "({{ lc_v {o} = {l}; lc_vec *{v}; uint64_t {j}; {ct} {r}; if ({o}.tag == T_LIST && ({v} = VEC({o}))->kind == K_BOXED && ({j} = lc_pos({i}, {v}->len)) < (uint64_t){v}->len && {v}->boxed[{j}].tag == T_STRUCT && REC({v}->boxed[{j}])->ty == {id}) {r} = {unbox}(REC({v}->boxed[{j}])->f[{k}], {site}); else {{ (void){slow}; lc_unbox_fail(LC_UNIT, {}, {site}); }} {r}; }})",
+                        "({{ lc_v {o} = {l}; lc_vec *{v}; uint64_t {j}; {ct} {r}; if ({o}.tag == T_LIST && ({v} = VEC({o}))->kind == K_BOXED && ({j} = lc_pos({i}, {v}->len)) < (uint64_t){v}->len && {v}->boxed[{j}].tag == T_STRUCT && REC({v}->boxed[{j}])->ty == {id}) {r} = REC({v}->boxed[{j}])->f[{k}].{member}; else {{ (void){slow}; lc_unbox_fail(LC_UNIT, {}, {site}); }} {r}; }})",
                         cstr(&format!("a struct with field `{name}`"))
                     );
                 }
             }
         }
-        self.field_scalar_read(obj, name, id, k, ct, unbox, &site)
+        self.field_scalar_read(obj, name, id, k, rep, &site)
     }
 
     /// `field_scalar` for any `obj`: in place when it is struct `id`, else
     /// as the boxed read does it.
-    #[allow(clippy::too_many_arguments)]
-    fn field_scalar_read(&mut self, obj: &Ex, name: &str, id: u32, k: usize, ct: &str, unbox: &str, site: &str) -> String {
+    fn field_scalar_read(&mut self, obj: &Ex, name: &str, id: u32, k: usize, rep: Rep, site: &str) -> String {
+        let (ct, unbox, member) = scalar_c(rep);
         let (o, r, found, b) = (self.t(), self.t(), self.t(), self.t());
         let fid = self.field_id(name);
         let mid = method_id(name).map_or(-1, |m| m as i64);
@@ -1859,7 +2002,7 @@ impl<'p> Gen<'p> {
             None => (self.expr(obj), format!("lc_release({o}); ")),
         };
         format!(
-            "({{ lc_v {o} = {init}; {ct} {r}; if ({o}.tag == T_STRUCT && REC({o})->ty == {id}) {r} = {unbox}(REC({o})->f[{k}], {site}); else {{ bool {found}; lc_v {b} = lc_field({o}, {fid}, {n}, &{found}, {site}); if (!{found}) {{ {b} = lc_field_fallback({o}, {n}, {mid}, {site}); if (lc_unwinding) UNWIND; }} {r} = {unbox}({b}, {site}); }} {release}{r}; }})",
+            "({{ lc_v {o} = {init}; {ct} {r}; if ({o}.tag == T_STRUCT && REC({o})->ty == {id}) {r} = REC({o})->f[{k}].{member}; else {{ bool {found}; lc_v {b} = lc_field({o}, {fid}, {n}, &{found}, {site}); if (!{found}) {{ {b} = lc_field_fallback({o}, {n}, {mid}, {site}); if (lc_unwinding) UNWIND; }} {r} = {unbox}({b}, {site}); }} {release}{r}; }})",
             n = cstr(name)
         )
     }
@@ -1876,11 +2019,7 @@ impl<'p> Gen<'p> {
         let n = place.path.len();
         let Some(T::Struct(id, _)) = self.place_type(place, n - 1) else { return None };
         let k = self.prog.structs[id as usize].fields.iter().position(|f| *f.name == **name)?;
-        let float = match (&self.prog.structs[id as usize].fields[k].ty, self.rep(value)) {
-            (Ty::Float, Rep::Float | Rep::Int) => true,
-            (Ty::Int { min, max, .. }, Rep::Int) if *min == i64::MIN && *max == i64::MAX => false,
-            _ => return None,
-        };
+        let float = self.in_place_field(id, k, op, value)?;
         let (v, ptr, f) = (self.t(), self.t(), self.t());
         let new = match (op, float) {
             (None, _) => v.clone(),
@@ -1890,11 +2029,10 @@ impl<'p> Gen<'p> {
                 BinOp::Mul => format!("{f}->u.f * {v}"),
                 BinOp::Div => format!("{f}->u.f / {v}"),
                 BinOp::Rem => format!("fmod({f}->u.f, {v})"),
-                BinOp::Pow => format!("pow({f}->u.f, {v})"),
-                _ => return None,
+                _ => format!("pow({f}->u.f, {v})"),
             },
             (Some(op), false) => {
-                let iop = int_op(op)?;
+                let iop = int_op(op).unwrap_or("+");
                 if iop.len() == 1 {
                     format!("{f}->u.i {iop} {v}")
                 } else {
@@ -1902,7 +2040,7 @@ impl<'p> Gen<'p> {
                 }
             }
         };
-        let (ct, member, tag, rep) = if float { ("double", "f", "T_FLOAT", Rep::Float) } else { ("int64_t", "i", "T_INT", Rep::Int) };
+        let (ct, member, rep) = if float { ("double", "f", Rep::Float) } else { ("int64_t", "i", Rep::Int) };
         let vv = if float { self.num(value) } else { self.int(value) };
         let viv = if op.is_none() { "VIV_INSERT" } else { "VIV_ZERO_OF" };
         let (fsite, fid) = (self.site(*fsp), self.field_id(name));
@@ -1921,9 +2059,17 @@ impl<'p> Gen<'p> {
                 let (kk, j, el) = (self.t(), self.t(), self.t());
                 let iv = self.int(ix);
                 let walk = self.place_walk_to(place, &[format!("lc_int({kk})")], &ptr, viv, "LC_UNIT", 0, n - 1);
+                if self.clean_view(s, id) {
+                    // Nothing else holds the list or the element, which is
+                    // struct `id`: only the bounds to test, and an index
+                    // out of range is an error.
+                    return Some(format!(
+                        "{{ {ct} {v} = {vv}; int64_t {kk} = {iv}; uint64_t {j} = lc_pos({kk}, {w}.len); if ({j} < (uint64_t){w}.len) {{ lc_v *{f} = &REC(((lc_v *){w}.data)[{j}])->f[{k}]; {f}->u.{member} = {new}; }} else {{ {walk}{slow}; lc_unbox_fail(LC_UNIT, \"a list of structs nothing else holds\", {site}); }} }} "
+                    ));
+                }
                 let reread = self.view_read(s, Rep::Boxed);
                 return Some(format!(
-                    "{{ {ct} {v} = {vv}; int64_t {kk} = {iv}; uint64_t {j} = lc_pos({kk}, {w}.wlen); lc_v *{el}; if ({j} < (uint64_t){w}.wlen && ({el} = (lc_v *){w}.data + {j})->tag == T_STRUCT && {el}->u.o->rc == 1 && REC(*{el})->ty == {id} && REC(*{el})->f[{k}].tag == {tag}) {{ lc_v *{f} = &REC(*{el})->f[{k}]; {f}->u.{member} = {new}; }} else {{ {walk}{slow}; {w} = {reread}; }} }} "
+                    "{{ {ct} {v} = {vv}; int64_t {kk} = {iv}; uint64_t {j} = lc_pos({kk}, {w}.wlen); lc_v *{el}; if ({j} < (uint64_t){w}.wlen && ({el} = (lc_v *){w}.data + {j})->tag == T_STRUCT && {el}->u.o->rc == 1 && REC(*{el})->ty == {id}) {{ lc_v *{f} = &REC(*{el})->f[{k}]; {f}->u.{member} = {new}; }} else {{ {walk}{slow}; {w} = {reread}; }} }} "
                 ));
             }
         }
@@ -1932,8 +2078,29 @@ impl<'p> Gen<'p> {
         let rk = Self::release_all(&keys);
         let reread = self.view_reread(place);
         Some(format!(
-            "{{ {ct} {v} = {vv}; {kc}{walk}if ({ptr}->tag == T_STRUCT && {ptr}->u.o->rc == 1 && REC(*{ptr})->ty == {id} && REC(*{ptr})->f[{k}].tag == {tag}) {{ lc_v *{f} = &REC(*{ptr})->f[{k}]; {f}->u.{member} = {new}; }} else {{ {slow}; {reread}}} {rk}}} "
+            "{{ {ct} {v} = {vv}; {kc}{walk}if ({ptr}->tag == T_STRUCT && {ptr}->u.o->rc == 1 && REC(*{ptr})->ty == {id}) {{ lc_v *{f} = &REC(*{ptr})->f[{k}]; {f}->u.{member} = {new}; }} else {{ {slow}; {reread}}} {rk}}} "
         ))
+    }
+
+    /// Whether `p.f = value` or `p.f op= value`, for field `k` of struct
+    /// `id`, is done in place by `assign_field`, and if so whether as a
+    /// float (else an int): an `f64` field given a number, or an `int`
+    /// field given an int, with an operator done unboxed.
+    fn in_place_field(&self, id: u32, k: usize, op: Option<BinOp>, value: &Ex) -> Option<bool> {
+        if !self.typed {
+            return None;
+        }
+        let float = match (&self.prog.structs[id as usize].fields[k].ty, self.rep(value)) {
+            (Ty::Float, Rep::Float | Rep::Int) => true,
+            (Ty::Int { min, max, .. }, Rep::Int) if *min == i64::MIN && *max == i64::MAX => false,
+            _ => return None,
+        };
+        match op {
+            Some(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Pow) if float => Some(true),
+            Some(op) if !float => int_op(op).map(|_| false),
+            Some(_) => None,
+            None => Some(float),
+        }
     }
 
     /// The struct and position of field `name` of `obj` when it is
@@ -2093,10 +2260,13 @@ impl<'p> Gen<'p> {
     /// Views (`lc_view`) of the list slots a loop only reads and assigns
     /// elements of, for `elem`, `assign_elem` and `len_fast` to use: the C
     /// that reads them, to run before the loop, and how many views to drop
-    /// after it (`close_views`).
-    fn open_views(&mut self, cond: Option<&Ex>, body: &[St]) -> (String, usize) {
+    /// after it (`close_views`). Last, the views of lists of structs the
+    /// loop keeps clean, each with its slot, struct and the C test that
+    /// finds it clean, for `versioned`.
+    fn open_views(&mut self, cond: Option<&Ex>, body: &[St]) -> (String, usize, Vec<(u32, u32, String)>) {
         let mut code = String::new();
         let mut n = 0;
+        let mut cleans = Vec::new();
         for s in view_slots(cond, body) {
             let Some(&kind) = self.cx.viewable.get(&s) else { continue };
             if self.slot_rep(s) != Rep::Boxed || self.view_of(s).is_some() {
@@ -2104,10 +2274,78 @@ impl<'p> Gen<'p> {
             }
             let w = self.t();
             let _ = write!(code, "lc_view {w} = {}; ", self.view_read(s, kind));
+            if let Some(T::List(e)) = self.cx.tys.get(s as usize) {
+                if let T::Struct(id, _) = **e {
+                    if let Some(writes) = self.keeps_clean(id, s, cond, body) {
+                        cleans.push((s, id, format!("lc_view_clean({w}, {id}, {writes})")));
+                    }
+                }
+            }
             self.cx.views.push((s, w, kind));
             n += 1;
         }
-        (code, n)
+        (code, n, cleans)
+    }
+
+    /// Whether a loop (its condition and body) uses list slot `s`, of
+    /// structs `id`, only to read their fields declared `f64`, an int type
+    /// or `bool` and to assign the fields `assign_field` updates in place,
+    /// and if so whether it assigns any. Such a loop never shares or
+    /// replaces an element, so a list and elements that nothing else holds
+    /// when it starts stay so, and when it only reads, elements that are
+    /// all structs `id` stay so. `None` otherwise.
+    fn keeps_clean(&self, id: u32, s: u32, cond: Option<&Ex>, body: &[St]) -> Option<bool> {
+        let fields = &self.prog.structs[id as usize].fields;
+        let field = |name: &str| fields.iter().position(|f| f.name == name);
+        let is_s = |e: &Ex| matches!(e, Ex::Local(x, _) if *x == s);
+        let (mut elems, mut reads, mut writes, mut bad) = (0, 0, false, false);
+        let mut f = |n: Node, _: u32| match n {
+            Node::Ex(Ex::Index { obj, .. }) if is_s(obj) => elems += 1,
+            Node::Ex(Ex::Field { obj, name, user: None, .. }) => {
+                if let Ex::Index { obj: o, .. } = &**obj {
+                    if is_s(o) && field(name).is_some_and(|k| matches!(fields[k].ty, Ty::Float | Ty::Int { .. } | Ty::Bool)) {
+                        reads += 1;
+                    }
+                }
+            }
+            Node::St(St::Assign { place: Place { root: Root::Local(x), path, .. }, op, value, .. }) if *x == s => match &path[..] {
+                [Seg::Index(..), Seg::Field(name, _)] if field(name).is_some_and(|k| self.in_place_field(id, k, *op, value).is_some()) => writes = true,
+                _ => bad = true,
+            },
+            _ => {}
+        };
+        if let Some(c) = cond {
+            walk_ex(c, 0, &mut f);
+        }
+        walk_stmts(body, 0, &mut f);
+        (!bad && elems == reads).then_some(writes)
+    }
+
+    /// The C of a loop, from `make`, which generates it with the views
+    /// just opened. When some of them are of structs the loop keeps clean
+    /// (`cleans`, from `open_views`), it is generated twice: trusting
+    /// them, for when the tests find them clean as the loop starts, and as
+    /// usual. A loop inside one so generated, or with a lambda in it, is
+    /// generated once.
+    fn versioned(&mut self, cleans: &[(u32, u32, String)], lambdas: bool, make: &mut dyn FnMut(&mut Gen<'p>) -> String) -> String {
+        if cleans.is_empty() || lambdas || self.cx.versioned {
+            return make(self);
+        }
+        self.cx.versioned = true;
+        let n = self.cx.clean.len();
+        self.cx.clean.extend(cleans.iter().map(|(s, id, _)| (*s, *id)));
+        let fast = make(self);
+        self.cx.clean.truncate(n);
+        let slow = make(self);
+        self.cx.versioned = false;
+        let tests: Vec<&str> = cleans.iter().map(|c| c.2.as_str()).collect();
+        format!("if ({}) {{ {fast}}} else {{ {slow}}} ", tests.join(" && "))
+    }
+
+    /// Whether the loop being generated may trust the view of slot `s` as a
+    /// clean list of structs `id`.
+    fn clean_view(&self, s: u32, id: u32) -> bool {
+        self.cx.clean.contains(&(s, id))
     }
 
     fn close_views(&mut self, n: usize) {
@@ -2232,9 +2470,9 @@ impl<'p> Gen<'p> {
                 code
             }
             Ex::Match { scrut, arms, span } => self.match_native(scrut, arms, *span, Rep::Int),
-            Ex::CallFn { fns, args, span, .. } if self.int_native(e) => {
+            Ex::CallFn { fns, args, places, span } if self.int_native(e) => {
                 let en = self.direct_entry(fns, args).unwrap();
-                self.typed_call(fns[0], &en, args, *span)
+                self.typed_call(fns[0], &en, args, places, *span)
             }
             Ex::Index { obj, index, span } if self.int_native(e) => self.elem(obj, index, *span, Rep::Int),
             Ex::Field { obj, name, user: None, span } if self.int_native(e) => self.field_scalar(obj, name, *span, Rep::Int),
@@ -2280,9 +2518,9 @@ impl<'p> Gen<'p> {
                 code
             }
             Ex::Match { scrut, arms, span } => self.match_native(scrut, arms, *span, Rep::Bool),
-            Ex::CallFn { fns, args, span, .. } if self.bool_native(e) => {
+            Ex::CallFn { fns, args, places, span } if self.bool_native(e) => {
                 let en = self.direct_entry(fns, args).unwrap();
-                self.typed_call(fns[0], &en, args, *span)
+                self.typed_call(fns[0], &en, args, places, *span)
             }
             Ex::Index { obj, index, span } if self.bool_native(e) => self.elem(obj, index, *span, Rep::Bool),
             _ => {
@@ -2806,7 +3044,7 @@ impl<'p> Gen<'p> {
 
     fn call_fn(&mut self, fns: &Rc<[FnId]>, args: &[Ex], places: &[Option<Place>], span: Span) -> String {
         if let Some(en) = self.direct_entry(fns, args) {
-            let c = self.typed_call(fns[0], &en, args, span);
+            let c = self.typed_call(fns[0], &en, args, places, span);
             return box_c(en.ret, &c);
         }
         let site = self.site(span);
@@ -2835,11 +3073,10 @@ impl<'p> Gen<'p> {
             for (i, p, keys) in &writebacks {
                 if fd.params.get(*i).is_some_and(|p| p.mode == Mode::Mut) {
                     // Move the value out of its place for the call, and back after.
-                    let (p1, p2) = (g.t(), g.t());
+                    let p1 = g.t();
                     let w1 = g.place_walk(p, keys, &p1, "VIV_NO", "LC_UNIT", 0);
-                    let w2 = g.place_walk(p, keys, &p2, "VIV_NO", "LC_UNIT", 0);
                     let _ = write!(before, "lc_release({arr}[{i}]); {{ {w1}{arr}[{i}] = lc_take({p1}); }} ");
-                    let _ = write!(after, "{{ {w2}lc_set({p2}, {arr}[{i}]); }} ");
+                    after.push_str(&g.write_back(p, keys, &format!("{arr}[{i}]")));
                 }
             }
             format!("{fill}{before}lc_callsite = {site}; {r} = F{fid}({arr}); {after}")
@@ -3044,14 +3281,11 @@ impl<'p> Gen<'p> {
                     match (mut_recv, recv) {
                         (true, Recv::Place(p)) => {
                             let (kc, keys) = self.place_keys(p);
-                            let (p1, p2) = (self.t(), self.t());
+                            let p1 = self.t();
                             let w1 = self.place_walk(p, &keys, &p1, "VIV_NO", "LC_UNIT", 0);
-                            let w2 = self.place_walk(p, &keys, &p2, "VIV_NO", "LC_UNIT", 0);
+                            let back = self.write_back(p, &keys, &format!("{arr}[0]"));
                             let rk = Self::release_all(&keys);
-                            let _ = write!(
-                                c,
-                                "lc_release({arr}[0]); {kc}{{ {w1}{arr}[0] = lc_take({p1}); }} lc_callsite = {site}; {r} = F{fid}({arr}); {{ {w2}lc_set({p2}, {arr}[0]); }} {rk}"
-                            );
+                            let _ = write!(c, "lc_release({arr}[0]); {kc}{{ {w1}{arr}[0] = lc_take({p1}); }} lc_callsite = {site}; {r} = F{fid}({arr}); {back}{rk}");
                         }
                         _ => {
                             let _ = write!(c, "lc_callsite = {site}; {r} = F{fid}({arr}); ");
@@ -3461,13 +3695,16 @@ impl<'p> Gen<'p> {
                     },
                     _ => String::new(),
                 };
-                let (views, nv) = self.open_views(None, body);
-                let mut bd = String::new();
-                for s in body {
-                    bd.push_str(&self.stmt(s));
-                }
+                let (views, nv, cleans) = self.open_views(None, body);
+                let lp = self.versioned(&cleans, stmts_have_lambda(body), &mut |g| {
+                    let mut bd = String::new();
+                    for s in body {
+                        bd.push_str(&g.stmt(s));
+                    }
+                    format!("for (int64_t {i} = {a}; {i} < {b}; {i}++) {{ {bind}{bd}}} ")
+                });
                 self.close_views(nv);
-                let _ = write!(code, "{views}for (int64_t {i} = {a}; {i} < {b}; {i}++) {{ {bind}{bd}}} }} ");
+                let _ = write!(code, "{views}{lp}}} ");
                 code
             }
             St::For { pat, iter, body, span } => {
@@ -3482,14 +3719,17 @@ impl<'p> Gen<'p> {
                         _ => None,
                     } {
                         // An unboxed loop variable: packed elements go straight into it.
-                        let (views, nv) = self.open_views(None, body);
-                        let mut b = String::new();
-                        for s in body {
-                            b.push_str(&self.stmt(s));
-                        }
+                        let (views, nv, cleans) = self.open_views(None, body);
+                        let lp = self.versioned(&cleans, stmts_have_lambda(body), &mut |g| {
+                            let mut b = String::new();
+                            for s in body {
+                                b.push_str(&g.stmt(s));
+                            }
+                            format!("while ({next}(&{it}, &N{slot}, {site})) {{ {b}}} ")
+                        });
                         self.close_views(nv);
                         return format!(
-                            "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, true, {site}); lc_release({iv}); {views}while ({next}(&{it}, &N{slot}, {site})) {{ {b}}} lc_iter_done(&{it}); }} "
+                            "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, true, {site}); lc_release({iv}); {views}{lp}lc_iter_done(&{it}); }} "
                         );
                     }
                 }
@@ -3501,26 +3741,33 @@ impl<'p> Gen<'p> {
                         format!("if (!({cond})) lc_bad_unpack({x}, -1, true, {site}); lc_release({x}); ")
                     }
                 };
-                let (views, nv) = self.open_views(None, body);
-                let mut b = String::new();
-                for s in body {
-                    b.push_str(&self.stmt(s));
-                }
+                let (views, nv, cleans) = self.open_views(None, body);
+                let lp = self.versioned(&cleans, stmts_have_lambda(body), &mut |g| {
+                    let mut b = String::new();
+                    for s in body {
+                        b.push_str(&g.stmt(s));
+                    }
+                    format!("while (lc_iter_next_fast(&{it}, &{x})) {{ {bind}{b}}} ")
+                });
                 self.close_views(nv);
                 format!(
-                    "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, {keys_only}, {site}); lc_release({iv}); {views}lc_v {x}; while (lc_iter_next_fast(&{it}, &{x})) {{ {bind}{b}}} lc_iter_done(&{it}); }} "
+                    "{{ lc_v {iv} = {ive}; lc_iter {it}; lc_iter_init(&{it}, {iv}, {keys_only}, {site}); lc_release({iv}); {views}lc_v {x}; {lp}lc_iter_done(&{it}); }} "
                 )
             }
             St::While { cond, body, .. } => {
                 let site = self.site(cond.span());
-                let (views, nv) = self.open_views(Some(cond), body);
-                let c = self.cond_at(cond, &site);
-                let mut b = String::new();
-                for s in body {
-                    b.push_str(&self.stmt(s));
-                }
+                let (views, nv, cleans) = self.open_views(Some(cond), body);
+                let lambdas = has_lambda(cond) || stmts_have_lambda(body);
+                let lp = self.versioned(&cleans, lambdas, &mut |g| {
+                    let c = g.cond_at(cond, &site);
+                    let mut b = String::new();
+                    for s in body {
+                        b.push_str(&g.stmt(s));
+                    }
+                    format!("while (1) {{ if (!{c}) break; {b}}} ")
+                });
                 self.close_views(nv);
-                format!("{{ {views}while (1) {{ if (!{c}) break; {b}}} }} ")
+                format!("{{ {views}{lp}}} ")
             }
             St::Break(_) => "break; ".into(),
             St::Continue(_) => "continue; ".into(),
@@ -3554,6 +3801,20 @@ impl<'p> Gen<'p> {
                 format!("{{ bool {t} = {cv}; if (!{t}) {fail} }} ")
             }
         }
+    }
+}
+
+/// For a struct field read as a scalar of `rep` (not `Boxed`): its C type,
+/// the runtime's checked unboxing, and the member of the field's `lc_v`
+/// that holds it. A field declared `f64`, an int type or `bool` of a
+/// struct the checker knows always holds one of those, since every store
+/// converts to the field's type, so in-place reads and updates don't test
+/// its tag.
+fn scalar_c(rep: Rep) -> (&'static str, &'static str, &'static str) {
+    match rep {
+        Rep::Float => ("double", "lc_unbox_float", "u.f"),
+        Rep::Int => ("int64_t", "lc_unbox_int", "u.i"),
+        _ => ("bool", "lc_unbox_bool", "u.i != 0"),
     }
 }
 

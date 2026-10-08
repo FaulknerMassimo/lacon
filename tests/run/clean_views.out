@@ -1,0 +1,8 @@
+[B{x: 2.875, n: 0, on: true}, B{x: 2.3125, n: 1, on: false}, B{x: 2.3125, n: 2, on: true}] 4.625
+[B{x: 1.5, n: 0, on: true}, B{x: 2.5, n: 1, on: true}] [B{x: 1.0, n: 0, on: true}, B{x: 3.0, n: 0, on: true}]
+[B{x: 2.0, n: 1, on: true}, B{x: 1.0, n: 2, on: true}] B{x: 2.0, n: 1, on: true}
+4.0
+[B{x: 0.5, n: 4, on: true}, B{x: 4.5, n: 0, on: false}] 2
+[B{x: 2.0, n: 1, on: true}, B{x: 4.0, n: 2, on: true}]
+E0402 clean_views.lc:65:8 index 2 out of range for length 2
+[exit 1]

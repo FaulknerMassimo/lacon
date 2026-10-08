@@ -1,0 +1,63 @@
+# Functions with `mut` parameters have typed entries in native code: a
+# variable of the caller is passed by its slot, and any other place by a
+# value taken from it and written back after the call.
+
+type P {x f64, n int}
+
+fn grow(mut xs [int], n int) =
+  for i in 0..n: xs.push(i)
+
+fn bump(mut n int, by int) =
+  n += by
+
+fn scale(mut v f64) =
+  v = v * 2
+
+fn pop2(mut xs [int]) int =
+  x = xs[-1]
+  xs.truncate(xs.len - 1)
+  x
+
+fn pair(mut xs [int], mut n int) =
+  xs.push(n)
+  n += 100
+
+fn rename(mut p P, n int) P =
+  p.n = n
+  p
+
+fn bad(mut xs [int]) =
+  xs[10] = 1
+
+fn main() =
+  var xs = [7]
+  grow(xs, 3)
+  var c = 1
+  bump(c, 41)
+  var g f64 = 1.5
+  scale(g)
+  print(xs, c, g)
+  # Places: a field, an element, a map's value.
+  var p = P{1, 2}
+  bump(p.n, 3)
+  scale(p.x)
+  var ns = [1, 2, 3]
+  bump(ns[1], 5)
+  var m = {"a": 1}
+  bump(m["a"], 9)
+  print(p, ns, m)
+  # Two `mut` arguments, one of them reaching into the other's list.
+  var ys = [1, 2]
+  var k = 5
+  pair(ys, k)
+  print(ys, k)
+  # A result, a method call, a call through a value.
+  print(pop2(xs), xs)
+  xs.grow(1)
+  print(xs)
+  f = grow
+  f(xs, 1)
+  print(xs)
+  q = rename(p, 8)
+  print(p, q)
+  bad(xs)

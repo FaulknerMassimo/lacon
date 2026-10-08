@@ -1,0 +1,33 @@
+# A `mut` argument written back to its place after the call takes the
+# place's declared type, as any store does: a generic `mut v T` can hand
+# an int back to an `f64` field or variable, and a sized int is checked.
+
+type P {x f64, n int}
+type C {r u8}
+
+fn set[T](mut v T, w T) =
+  v = w
+
+fn put[T](mut v T, w T) T =
+  v = w
+  w
+
+fn main() =
+  var p = P{1.5, 2}
+  set(p.x, 3)
+  print(p, p.x / 2)
+  var ps = [P{0.5, 1}]
+  set(ps[0].x, 5)
+  print(ps, ps[0].x / 2)
+  var g f64 = 1.5
+  set(g, 7)
+  print(g, g / 2)
+  # As a method on the place.
+  print(p.x.put(9), p, p.x / 2)
+  # A list's element keeps what it is given.
+  var w = [1.5, 2.5]
+  set(w[0], 4)
+  print(w)
+  var c = C{1}
+  set(c.r, 300)
+  print(c)

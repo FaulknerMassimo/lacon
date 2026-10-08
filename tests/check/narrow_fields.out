@@ -1,0 +1,6 @@
+E0407 narrow_fields.lc:14:9 `r.ms` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (r.ms ?? 0)
+E0407 narrow_fields.lc:18:9 `s.ms` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (s.ms ?? 0)
+E0407 narrow_fields.lc:22:9 `t.ms` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (t.ms ?? 0)
+E0407 narrow_fields.lc:26:9 `u.ms` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (u.ms ?? 0)
+E0407 narrow_fields.lc:30:11 `w.ms` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (w.ms ?? 0)
+[exit 1]

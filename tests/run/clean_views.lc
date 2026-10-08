@@ -1,0 +1,65 @@
+# A loop that only reads struct fields of a list's elements and assigns
+# them in place checks once, as it starts, that the list and its elements
+# are its own; native code then runs a copy of the loop that tests only
+# the bounds of each access. Lists and elements held elsewhere take the
+# usual path, which copies them.
+
+type B {x f64, n int, on bool}
+
+fn step(mut bs [B], dt f64) =
+  for i in 0..bs.len:
+    for j in i + 1..bs.len:
+      d = bs[i].x - bs[j].x
+      bs[i].x -= d * dt
+      bs[j].x += d * dt
+      bs[j].n += 1
+
+fn total(bs [B]) f64 =
+  var t = 0.0
+  for i in 0..bs.len:
+    if bs[i].on: t += bs[i].x * bs[i].n
+  t
+
+fn main() =
+  var bs = [B{1, 0, true}, B{2.5, 0, false}, B{4, 0, true}]
+  step(bs, 0.5)
+  print(bs, total(bs))
+  # The list held by another variable: copied by the first assignment.
+  var cs = [B{1, 0, true}, B{3, 0, true}]
+  keep = cs
+  step(cs, 0.25)
+  print(cs, keep)
+  # An element held elsewhere: copied, the list not.
+  var ds = [B{1, 1, true}, B{2, 1, true}]
+  e = ds[1]
+  step(ds, 1)
+  print(ds, e)
+  # Read-only loops need no element of their own.
+  es = [e, e]
+  print(total(es))
+  # Negative indexes, a while loop whose condition reads a field, a loop
+  # over a list of ints, and one over strs.
+  var ps = [B{0, 1, true}, B{0, 2, false}]
+  ps[-1].x += 1
+  var k = 0
+  while ps[0].n < 5:
+    ps[0].n += 2
+    ps[-1].x *= 2
+    k += 1
+  for i in [1, 0, 1]:
+    ps[i].n -= 1
+  for w in ["a", "bb"]:
+    ps[w.len - 1].x += 0.5
+  print(ps, k)
+  # Reading an element whole keeps the loop on the usual path.
+  var qs = [B{1, 1, true}, B{2, 2, true}]
+  for i in 0..qs.len:
+    q = qs[i]
+    qs[i].x += q.n
+  print(qs)
+  # An empty list, then an index out of range in a loop that assigns.
+  var none_ = [B{0, 0, true}]
+  none_.truncate(0)
+  for i in 0..0: none_[i].x = 1
+  for i in 0..3:
+    ps[i].x += 1

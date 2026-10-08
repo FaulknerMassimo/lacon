@@ -23,10 +23,11 @@ and task. Phase 2 has started: native code holds the ints, bools and floats
 the checker proves as C scalars, packs lists of them, takes small values
 from free lists rather than malloc, inlines lambdas given to `map`,
 `filter` and `sort_by`, reads a list once before a loop that only
-assigns its elements or their fields, and reads struct fields in place.
-On nine benchmark programs it takes 1.0-4.5x Rust's time (geometric mean
-1.5x). nbody (4.5x), with its tests on every field access, and fib (2.6x),
-which pays for overflow checks, are the slowest. `fix` applies
+assigns its elements or their fields, reads struct fields in place, and
+checks a list of structs once before a loop that updates their fields.
+On nine benchmark programs it takes 1.0-2.6x Rust's time (geometric mean
+1.37x). fib (2.6x) and nbody (1.9x) are the slowest, fib paying for
+overflow checks. `fix` applies
 the fixes diagnostics carry, `put` replaces a function by name, and `q`
 answers queries (an item's source, its callers, a type). An agent has
 finished every task with these in place of file tools, but on tasks this

@@ -1,0 +1,31 @@
+# What is known about an optional field ends where the field, or the
+# variable holding it, may change: a store to either, a `mut` argument,
+# the end of the `if`, and a loop that assigns the variable.
+
+type Req {path str, ms int?}
+
+fn clear(mut r Req) =
+  r.ms = none
+
+fn main() =
+  var r = Req{"/a", 5}
+  if r.ms == none: return
+  clear(r)
+  print(r.ms + 1)
+  var s = Req{"/b", 5}
+  if s.ms == none: return
+  s = Req{"/c", none}
+  print(s.ms + 1)
+  var t = Req{"/b", 5}
+  if t.ms == none: return
+  t.ms = none
+  print(t.ms + 1)
+  var u = Req{"/b", 5}
+  if u.ms != none:
+    print(u.ms + 1)
+  print(u.ms + 2)
+  var w = Req{"/b", 5}
+  if w.ms == none: return
+  for i in 0..2:
+    print(w.ms + i)
+    w = Req{"/d", none}

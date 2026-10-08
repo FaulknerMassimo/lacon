@@ -1,0 +1,23 @@
+# An optional field compared with `none`, or tested with `is_some` or
+# `is_none`, is narrowed as a variable is: after `if r.ms == none:
+# continue`, `r.ms` is an int.
+
+type Req {path str, ms int?}
+type Pair {a Req, b int?}
+
+fn main() =
+  rs = [Req{"/a", 5}, Req{"/b", none}, Req{"/c", 7}]
+  var total = 0
+  for r in rs:
+    if r.ms == none: continue
+    total += r.ms
+  print(total)
+  var p = Pair{Req{"/x", 3}, 4}
+  if p.a.ms != none and p.b != none:
+    print(p.a.ms + p.b)
+  if p.a.ms.is_none(): return
+  if p.a.ms.is_some():
+    print(p.a.ms * 2)
+  var q = Req{"/q", none}
+  q.ms = 9
+  print(q.ms + 1)
