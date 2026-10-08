@@ -21,6 +21,8 @@ use lacon_syntax::ast::{BinOp, CmpOp, Mode, UnOp};
 use lacon_syntax::fmtspec::FmtSpec;
 use lacon_syntax::{Source, Span};
 
+mod moves;
+
 pub const HEADER: &str = include_str!("../runtime/lacon.h");
 pub const RUNTIME: &[(&str, &str)] = &[
     ("rt_core.c", include_str!("../runtime/rt_core.c")),
@@ -131,11 +133,23 @@ struct Cx {
     versioned: bool,
     /// The checker's type of each slot, in a sound program.
     tys: Vec<T>,
+    /// The reads that move their slot's value out (`moves::last_uses`).
+    moves: Rc<std::collections::HashSet<usize>>,
 }
 
 impl Cx {
     fn new(slots: Vec<Rep>, tys: Vec<T>) -> Cx {
-        Cx { max_up: 0, slots, ret: Rep::Boxed, viewable: HashMap::new(), views: Vec::new(), clean: Vec::new(), versioned: false, tys }
+        Cx {
+            max_up: 0,
+            slots,
+            ret: Rep::Boxed,
+            viewable: HashMap::new(),
+            views: Vec::new(),
+            clean: Vec::new(),
+            versioned: false,
+            tys,
+            moves: Rc::default(),
+        }
     }
 }
 
@@ -968,6 +982,15 @@ impl<'p> Gen<'p> {
         f
     }
 
+    /// The reads in `fd`'s body that move their slot's value out: of boxed
+    /// slots no lambda captures, but not `mut` parameters, whose values go
+    /// back to the caller.
+    fn last_uses(&self, fd: &FnDef, slots: &[Rep]) -> std::collections::HashSet<usize> {
+        let captured = captured_slots(&fd.body);
+        let muts = mut_slots(fd);
+        moves::last_uses(&fd.body, fd.nslots, &|s| slots.get(s as usize) == Some(&Rep::Boxed) && !captured.contains(&s) && !muts.contains(&s))
+    }
+
     /// The typed entry of function `id`, if it gets one: any function but
     /// `main` without generics, defaults or lambdas.
     fn entry_of(&mut self, id: FnId) -> Option<Entry> {
@@ -1037,6 +1060,7 @@ impl<'p> Gen<'p> {
         let mut cx = Cx::new(self.frame_reps(&fd.body, fd.nslots, &muts, &params, &floats), self.slot_tys(&fd.body));
         cx.ret = en.ret;
         cx.viewable = self.viewable(&fd.body);
+        cx.moves = Rc::new(self.last_uses(fd, &cx.slots));
         let saved = std::mem::replace(&mut self.cx, cx);
         let body = match en.ret {
             Rep::Int => self.int(&fd.body),
@@ -1258,6 +1282,7 @@ impl<'p> Gen<'p> {
         let tys = self.slot_tys(&fd.body);
         let saved = std::mem::replace(&mut self.cx, Cx::new(reps, tys));
         self.cx.viewable = self.viewable(&fd.body);
+        self.cx.moves = Rc::new(self.last_uses(fd, &self.cx.slots));
         let heap = has_lambda(&fd.body);
         let body = self.expr(&fd.body);
         let natives = self.native_decls();
@@ -1669,6 +1694,7 @@ impl<'p> Gen<'p> {
     fn read_place(&mut self, p: &Place) -> String {
         if let (Root::Local(s), true) = (&p.root, p.path.is_empty()) {
             match self.slot_rep(*s) {
+                Rep::Boxed if self.cx.moves.contains(&moves::place_key(p)) => return format!("lc_take(&{})", self.slot(0, *s)),
                 Rep::Boxed => {}
                 r => return box_c(r, &format!("N{s}")),
             }
@@ -2165,10 +2191,12 @@ impl<'p> Gen<'p> {
     }
 
     /// An expression that reads but changes nothing (no statements, calls
-    /// or methods), so a value it reads can be borrowed across it.
+    /// or methods), so a value it reads can be borrowed across it. A read
+    /// that moves its slot's value out changes the slot.
     fn pure(&self, e: &Ex) -> bool {
         match e {
-            Ex::Lit(..) | Ex::Local(..) | Ex::Up(..) => true,
+            Ex::Local(..) => !self.cx.moves.contains(&moves::ex_key(e)),
+            Ex::Lit(..) | Ex::Up(..) => true,
             Ex::Binary { l, r, .. } => self.pure(l) && self.pure(r),
             Ex::Unary { e, .. } => self.pure(e),
             _ => false,
@@ -2663,6 +2691,7 @@ impl<'p> Gen<'p> {
             Ex::Lit(v, _) => self.lit(v),
             Ex::Str(pieces, _) => self.interp(pieces),
             Ex::Local(s, _) => match self.slot_rep(*s) {
+                Rep::Boxed if self.cx.moves.contains(&moves::ex_key(e)) => format!("lc_take(&{})", self.slot(0, *s)),
                 Rep::Boxed => format!("lc_retain({})", self.slot(0, *s)),
                 r => box_c(r, &format!("N{s}")),
             },
@@ -3253,6 +3282,10 @@ impl<'p> Gen<'p> {
             let arr = g.t();
             let a = g.args_into(&arr, args);
             let rel = Self::release_arr(&arr, args.len());
+            if args.is_empty() && matches!(name, "sort" | "rev" | "trim" | "trim_start" | "trim_end" | "upper" | "lower") {
+                // The receiver is taken: one nothing else holds is changed in place.
+                return format!("{a}{r} = lc_method_own({m}, {rv}, 0, {arr}, {site}); {rv} = LC_UNIT; {rel}if (lc_unwinding) UNWIND; ");
+            }
             format!("{a}{r} = lc_method({m}, {rv}, {}, {arr}, {site}); {rel}if (lc_unwinding) UNWIND; ", args.len())
         };
         match user {

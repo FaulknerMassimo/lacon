@@ -234,8 +234,10 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
   a list once before a loop that only assigns its elements (§20) or their
   fields, reads struct fields in place (§23), and checks a list of
   structs once before a loop that only reads and assigns their fields,
-  then runs a copy of the loop without per-element tests (§27). Mode
-  checking, RC insertion and reuse analysis are not built yet.
+  then runs a copy of the loop without per-element tests (§27). A
+  variable's last read moves its value, so `+`, `sort`, `rev` and the
+  trims change a value nothing else holds in place (§28). Mode checking
+  isn't built, and every other read of a variable still retains it.
 - **Backends, in order:**
   1. **C** first. That's how Koka, Nim and Lean work, and it's the fastest way
      to native speed and portability.
@@ -378,6 +380,13 @@ and functions with `mut` parameters get typed entries. nbody went from
 met; mode checking and Perceus reuse are not built. A `mut` argument
 written back to an `f64` field could leave an int there, in both the
 interpreter and native code; it now takes the field's type.
+A variable's last read now moves its value (§28), so `s = s + x`,
+`xs = xs + [x]`, `xs = xs.sort()` and `t = t.trim()` change a value
+nothing else holds in place, where each copied it: building a string
+of 200,000 pieces went from 0.98 s to 0.002 s. A tenth benchmark,
+`concat`, which the compiler before didn't finish in two minutes, runs
+at 1.68x Rust; trees went from 1.01x to 0.89x, and the nine's geometric
+mean is 1.33x. Mode checking isn't built.
 
 ### Phase 3 — Speed and scale
 
@@ -2193,3 +2202,100 @@ knapsack and collatz still pay for overflow checks (§20, §21).
 Next: with both of Phase 2's criteria met, the primer (§26) is the
 larger lever on tokens-to-green, and Perceus reuse the remaining piece
 of Phase 2's memory model.
+
+---
+
+## 28. Phase 2: last reads move, and `+`, `sort` and `trim` reuse what nothing else holds
+
+Native code retained a variable's value at every read, so whatever took
+the value never held it alone. The runtime's in-place `+`, for a string
+or list nothing else holds, worked only for `+=`, which takes the value
+from its place. Agents reassign a variable from itself instead: of the
+585 distinct Lacon programs and items agents wrote in the harness runs
+so far, 102 do, 76 times with `+` (`cur = cur + c`), 44 with `sort_by`,
+26 with `sort` and twice with a trim. In a loop, `s = s + x` copied the
+string every time:
+
+| Program (pinned, best of three) | Before | After |
+|---|---|---|
+| `s = s + "ab"`, 200,000 times | 0.984 s | 0.002 s |
+| `xs = xs + [i]`, 50,000 times | 4.03 s | 0.002 s |
+| `xs = xs.rev()` then `xs = xs.sort()`, 100,000 ints, 300 times | 0.346 s | 0.232 s |
+
+**Last reads move.** A new pass (`crates/cgen/src/moves.rs`) finds, in
+each named function, the reads of a variable that nothing reads after,
+and those take the value out of the slot (`lc_take`) instead of
+retaining it. It is liveness, backwards over the statements, through
+blocks, `if` and `match`, with each loop taken to a fixed point and
+`break` and `continue` going to the loop's sets. Inside an expression, a
+read moves only if it is the expression's one mention of the variable
+and the expression holds no loop: C leaves the order of some of the
+generated code's evaluations open, and this way it can't matter.
+Assigning a variable ends its old value's life, so the read on the
+right of `s = s + x` or `xs = xs.sort()` moves. A variable a lambda
+uses, a `mut` parameter (whose value goes back to the caller) and
+anything in a lambda's own frame (whose parameter may borrow a list's
+element, §19) never move, and nor does a field: `p.items =
+p.items.sort()` copies as before. A read that moves isn't `pure`, since
+a path that evaluates a pure index twice, as a struct field's read does
+on its way to an error, would find the slot empty the second time.
+
+**In place.** `+` already appended to a string or list it held alone.
+`sort`, `rev`, `trim`, `trim_start`, `trim_end`, `upper` and `lower` now
+call `lc_method_own`, which takes its receiver: a list nothing else
+holds is sorted in place (ints by radix, other kinds by the same stable
+sort, with the elements borrowed) or reversed, and a string is trimmed
+with a `memmove`, or cased in place, since each mapping keeps a char's
+encoded length. A literal's count never falls to one, so a literal is
+always copied. Moves pay elsewhere too: an argument moved into a call
+arrives with a count of one, so the callee changes it without a copy
+(`var ys = xs; ys.push(9)`), and a match binding moved into a call saves
+a retain and a release, which took trees from 1.01x Rust to 0.89x.
+`sort_by` with a lambda still builds a new list.
+
+`tests/run/moves.lc` covers values another variable holds, a loop that
+breaks out and reads the variable after, a `while` condition read on
+each turn, a `mut` parameter, a variable a lambda uses, a field, and
+trims and cases of non-ASCII strings; with the runtime traced, each
+in-place path ran. Verified as before: every golden program and task
+input gives the same stdout, stderr and exit code from the interpreter
+and from native code, typed and with `LACON_BOXED=1`, each also under
+AddressSanitizer and UndefinedBehaviorSanitizer, and
+`bench/tasks/check.py`, interpreted and `--native`, passes every task.
+LeakSanitizer reports leaks in four golden programs where it reported
+five: `alloc` no longer leaks.
+
+**Results.** A tenth benchmark, `concat`, builds 400,000 short lines
+with `line = line + ...`, trims each, gathers them with `rows = rows +
+[line]`, sorts them and joins their first two chars with `out = out +
+...`. The compiler before this didn't finish it in two minutes; Rust,
+pushing onto a `String` and a `Vec`, takes 0.113 s. Before and after
+measured together, pinned, best of seven runs:
+
+| Program | Before | After |
+|---|---|---|
+| collatz | 1.59x | 1.58x |
+| concat | over 1,000x | 1.68x |
+| fib | 2.63x | 2.60x |
+| knapsack | 1.84x | 1.85x |
+| mandel | 1.06x | 1.05x |
+| nbody | 1.92x | 1.89x |
+| records | 0.84x | 0.86x |
+| sieve | 1.09x | 1.11x |
+| trees | 1.01x | 0.89x |
+| wordfreq | 0.99x | 0.98x |
+| geometric mean of the nine | 1.34x | 1.33x |
+
+(Native time as a multiple of Rust's, `rustc -O`.) records ran at 1.04x
+in §27 and 0.84x here with either compiler: on this machine it takes
+0.25 s or 0.35 s depending on when it runs, and both compilers do both.
+With concat, the ten's geometric mean is 1.36x.
+
+The interpreter, which `lacon run` and the harness use, still copies:
+`s = s + "ab"` 200,000 times takes it 1.9 s. Giving it the same moves
+means moving the pass to the IR crate and making its strings growable;
+no task's input is large enough yet for it to show.
+
+Next: the primer (§26) is still the larger lever on tokens-to-green.
+For speed, `sort_by`, `map` and `filter` could reuse a list nothing else
+holds, and mode checking is the piece of Phase 2's memory model left.

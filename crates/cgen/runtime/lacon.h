@@ -396,6 +396,7 @@ enum {
 extern const char *const lc_method_names[];
 bool lc_is_mutator(int m);
 lc_v lc_method(int m, lc_v recv, int argc, lc_v *args, const char *site);
+lc_v lc_method_own(int m, lc_v recv, int argc, lc_v *args, const char *site);
 lc_v lc_mutate(int m, lc_v *place, int argc, lc_v *args, const char *site);
 
 /* ----- fast paths ----- */

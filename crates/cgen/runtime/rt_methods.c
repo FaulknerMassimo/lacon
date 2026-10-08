@@ -1544,3 +1544,97 @@ lc_v lc_mutate(int m, lc_v *slot, int argc, lc_v *args, const char *site) {
     }
     lc_panic("E0203", site, "%s has no method `%s`", lc_kind(s, k), lc_method_names[m]);
 }
+
+/* `lc_method` on a receiver it takes: a string or list nothing else holds
+ * is changed in place where the method allows, else the method makes a new
+ * value and the receiver is released. */
+lc_v lc_method_own(int m, lc_v recv, int argc, lc_v *args, const char *site) {
+    if (argc == 0 && recv.tag == T_LIST && recv.u.o->rc == 1) {
+        lc_vec *v = VEC(recv);
+        int64_t n = v->len;
+        switch (m) {
+        case M_sort:
+            if (v->kind == K_INT) {
+                lc_sort_ints(v->ints, n);
+                return recv;
+            }
+            if (v->kind == K_BOXED || v->kind == K_FLOAT) {
+                /* The elements are borrowed for the sort and put back in order. */
+                lc_kv *kv = lc_pairs_new(n);
+                for (int64_t i = 0; i < n; i++) kv[i] = (lc_kv){lc_vget(v, i), lc_vget(v, i)};
+                char a[64], b[64];
+                if (!lc_sort_kv(kv, n, a, b)) lc_panic("E0301", site, "cannot sort: %s and %s are not comparable", a, b);
+                for (int64_t i = 0; i < n; i++) {
+                    if (v->kind == K_FLOAT) v->floats[i] = kv[i].val.u.f;
+                    else v->boxed[i] = kv[i].val;
+                }
+                free(kv);
+                return recv;
+            }
+            break;
+        case M_rev:
+            for (int64_t i = 0, j = n - 1; i < j; i++, j--) {
+                switch (v->kind) {
+                case K_INT: { int64_t t = v->ints[i]; v->ints[i] = v->ints[j]; v->ints[j] = t; break; }
+                case K_FLOAT: { double t = v->floats[i]; v->floats[i] = v->floats[j]; v->floats[j] = t; break; }
+                case K_BOOL: { bool t = v->bools[i]; v->bools[i] = v->bools[j]; v->bools[j] = t; break; }
+                default: { lc_v t = v->boxed[i]; v->boxed[i] = v->boxed[j]; v->boxed[j] = t; }
+                }
+            }
+            return recv;
+        }
+    } else if (argc == 0 && recv.tag == T_STR && recv.u.o->rc == 1) {
+        lc_str *s = STR(recv);
+        switch (m) {
+        case M_trim:
+        case M_trim_start:
+        case M_trim_end: {
+            const char *p = s->data;
+            int64_t n = s->len, l;
+            if (m == M_trim) {
+                trim_ws(&p, &n);
+            } else if (m == M_trim_start) {
+                while (n > 0 && lc_is_ws(lc_utf8_decode(p, n, &l))) p += l, n -= l;
+            } else {
+                while (n > 0) {
+                    int64_t i = n - 1;
+                    while (i > 0 && ((unsigned char)p[i] & 0xC0) == 0x80) i--;
+                    if (!lc_is_ws(lc_utf8_decode(p + i, n - i, &l))) break;
+                    n = i;
+                }
+            }
+            /* Whitespace dropped from either end, counted in chars. */
+            int64_t gone = 0;
+            for (const char *q = s->data; q < s->data + s->len; q++) {
+                if ((q < p || q >= p + n) && ((unsigned char)*q & 0xC0) != 0x80) gone++;
+            }
+            memmove(s->data, p, n);
+            s->len = n;
+            s->data[n] = 0;
+            s->nchars -= gone;
+            return recv;
+        }
+        case M_upper:
+        case M_lower: {
+            /* Each mapping keeps a char's encoded length. */
+            uint32_t (*f)(uint32_t) = m == M_upper ? upper_cp : lower_cp;
+            int64_t i = 0, l;
+            char enc[4];
+            while (i < s->len) {
+                unsigned char c = (unsigned char)s->data[i];
+                if (c < 0x80) {
+                    s->data[i++] = (char)f(c);
+                    continue;
+                }
+                uint32_t cp = lc_utf8_decode(s->data + i, s->len - i, &l);
+                if (utf8_encode(f(cp), enc) == l) memcpy(s->data + i, enc, l);
+                i += l;
+            }
+            return recv;
+        }
+        }
+    }
+    lc_v r = lc_method(m, recv, argc, args, site);
+    lc_release(recv);
+    return r;
+}

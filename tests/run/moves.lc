@@ -1,0 +1,108 @@
+# A variable's last read moves its value instead of copying it, so `+`,
+# `sort`, `rev`, `trim`, `upper` and `lower` change a value nothing else
+# holds in place. A value held elsewhere is copied as before, and a read
+# that a later one, a loop, a `mut` parameter or a lambda could follow
+# doesn't move.
+
+type Bag {items [int]}
+
+fn grow(xs [int]) [int] =
+  var ys = xs
+  ys.push(9)
+  ys
+
+fn sort_back(mut xs [int]) =
+  xs = xs.sort()
+
+fn first_long(words [str]) str =
+  var found = ""
+  for w in words:
+    t = w.trim()
+    if t.len > 3:
+      found = t
+      break
+  found
+
+fn main() =
+  # Appends in place, and a copy held elsewhere stays as it was.
+  var s = ""
+  for i in 0..5: s = s + "ab"
+  keep = s
+  s = s + "!"
+  print(s, keep)
+  var xs = []
+  for i in 0..4: xs = xs + [i * 3 % 5]
+  ys = xs
+  xs = xs + [7]
+  print(xs, ys)
+  # Sorted and reversed in place, or copied when shared.
+  var ns = [5, 1, 4, 2]
+  ms = ns
+  ns = ns.sort()
+  print(ns, ms)
+  ns = ns.rev()
+  print(ns)
+  ns = ns.sort()
+  print(ns, ms)
+  var fs = [2.5, -1.0, 2.0]
+  fs = fs.sort()
+  var ws = ["pear", "fig", "apple"]
+  ws = ws.sort()
+  var ps = [(2, "b"), (1, "z"), (2, "a")]
+  ps = ps.sort()
+  var bs = [true, false, false]
+  bs = bs.rev()
+  print(fs, ws, ps, bs)
+  print(fs.rev(), ws.rev())
+  # Strings trimmed and cased in place, counted in chars. A literal is
+  # held by the program too, so these are built.
+  var t = " " + " héllo wörld \t"
+  t = t.trim()
+  print("[{t}]", t.len, t[1])
+  var u = " " + " ïn "
+  u = u.trim_start()
+  print("[{u}]", u.len)
+  u = u.trim_end()
+  print("[{u}]", u.len)
+  var c = "à" + "bc Éz"
+  c = c.upper()
+  print(c, c.len)
+  c = c.lower()
+  print(c)
+  # Moved into a parameter, which grows its own copy.
+  a = [1, 2]
+  b = grow(a)
+  print(a, b)
+  print(grow(b))
+  # A `mut` parameter's value goes back to the caller.
+  var m = [3, 1, 2]
+  sort_back(m)
+  print(m)
+  # A field is read in place, not moved.
+  var bag = Bag{[4, 2, 3]}
+  bag.items = bag.items.sort()
+  print(bag)
+  # Read again after a loop that breaks out early.
+  print(first_long(["  hi ", " hello ", "x"]), first_long([]))
+  var w = " left "
+  for i in 0..3:
+    v = w.trim()
+    if i == 1: break
+    print(v)
+  print("[{w}]")
+  # A `while` condition read again on each turn.
+  var q = "aaaa"
+  while q.len > 1: q = q[1..]
+  print(q)
+  # A variable a lambda uses isn't moved.
+  var k = "k"
+  f = |x| x + k
+  k2 = k + "2"
+  print(f("a"), k2, k)
+  # One branch of a match moves, the other reads.
+  var r = "  r  "
+  n = 2
+  z = match n
+    1: r.trim()
+    _: r.upper()
+  print("[{z}]", "[{r}]")

@@ -1,0 +1,14 @@
+fn main() =
+  var seed = 7
+  var rows = []
+  for i in 0..400000:
+    var line = " "
+    for j in 0..6:
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      line = line + str(seed % 100) + ","
+    line = line.trim()
+    rows = rows + [line]
+  rows = rows.sort()
+  var out = ""
+  for r in rows: out = out + r[0..2]
+  print(rows.len, out.len, rows[0], rows[-1])
