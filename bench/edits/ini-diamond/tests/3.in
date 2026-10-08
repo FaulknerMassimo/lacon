@@ -1,0 +1,27 @@
+[a]
+x = 1
+y = @{x}@{x}@{x}
+z = @{y}-@{y}
+w = @{z}|@{x}
+p = @{q}
+q = @{r}
+r = @{p}
+s = @{q}+@{x}
+t = @{x}@{t}@{x}
+[b]
+u = @{a.w} and @{a.y}
+v = @{a.x}@{v}@{a.x}
+both = @{a.z}@{a.z}
+via = @{b.both}/@{u}
+---
+get a.y
+get a.z
+get a.w
+get a.p
+get a.s
+get a.t
+get b.u
+get b.v
+get b.both
+get b.via
+raw b.via

@@ -1,0 +1,263 @@
+line 1: no account bob
+line 2: no account cy
+line 3: no account dee
+line 4: no account ann
+line 5: no account fay
+line 6: no account ann
+line 7: no account bob
+line 8: no account fay
+line 9: no account eve
+line 10: no account fay
+line 11: no account cy
+line 12: no account bob
+line 13: no account dee
+line 14: no account ann
+line 15: no account cy
+line 16: no account ann
+line 17: no account cy
+line 19: no account fay
+line 20: no account cy
+line 21: no account fay
+line 22: no account dee
+line 23: no account dee
+line 24: no account eve
+line 25: no account dee
+line 26: no account bob
+line 27: no account bob
+line 28: insufficient funds
+line 29: no account bob
+line 30: no account fay
+line 31: no account dee
+line 32: no account dee
+line 34: no account eve
+line 35: no account dee
+line 36: insufficient funds
+line 37: no account cy
+bob 26.00
+line 39: no account eve
+line 40: no account fay
+line 41: insufficient funds
+line 43: no account dee
+line 44: no account fay
+line 45: no account cy
+line 47: no account eve
+ann 100.00
+line 49: bad command
+line 51: no account fay
+line 52: no account fay
+line 53: no account dee
+line 54: no account fay
+line 55: no account eve
+line 56: no account eve
+bob:
+  33 open 26.00
+  42 deposit 205.29
+  50 deposit 170.00
+line 58: account exists
+line 60: no account eve
+line 61: bad amount
+line 64: no account eve
+line 65: no account eve
+line 66: bad amount
+line 67: no account eve
+line 68: no account eve
+line 69: no account dee
+line 73: no account fay
+line 75: balance not zero
+line 76: no account dee
+line 77: no account eve
+line 78: no account fay
+line 79: no account dee
+line 82: no account cy
+line 83: no account eve
+line 84: no account cy
+line 85: account exists
+line 86: account exists
+line 89: no account cy
+line 90: insufficient funds
+line 91: account exists
+line 92: no account eve
+line 93: no account dee
+line 94: no account eve
+line 97: no account cy
+line 99: no account eve
+line 102: no account eve
+line 104: no account dee
+bob 184.94
+line 108: no account eve
+line 109: bad amount
+line 110: bad amount
+line 112: no account eve
+line 114: no account eve
+fay 157.84
+line 118: account exists
+line 120: same account
+line 121: balance not zero
+line 125: account exists
+line 126: no account eve
+line 127: no account eve
+line 128: insufficient funds
+line 132: no account dee
+line 136: no account eve
+line 137: insufficient funds
+line 139: no account dee
+line 140: bad amount
+line 141: no account eve
+line 143: no account dee
+line 144: balance not zero
+line 147: no account dee
+line 150: no account dee
+line 151: no account eve
+line 152: account exists
+line 155: bad amount
+line 159: no account dee
+line 163: insufficient funds
+line 166: account exists
+line 167: no account dee
+fay 366.06
+ann 48.61
+line 183: bad amount
+line 188: balance not zero
+ann 95.24
+line 191: no account dee
+line 192: bad amount
+fay 63.23
+line 196: balance not zero
+line 197: bad amount
+line 198: no account dee
+line 200: no account dee
+line 202: same account
+line 204: account exists
+line 206: account exists
+line 207: bad command
+line 209: account exists
+line 211: insufficient funds
+line 212: account exists
+line 217: balance not zero
+line 219: balance not zero
+line 234: account exists
+eve 211.63
+line 238: same account
+line 240: account exists
+dee 201.53
+line 256: account exists
+line 258: account exists
+line 260: account exists
+line 262: insufficient funds
+line 264: bad amount
+line 265: account exists
+line 266: same account
+line 269: insufficient funds
+line 275: bad command
+fay 619.15
+line 278: account exists
+line 279: insufficient funds
+line 280: account exists
+line 281: account exists
+line 282: balance not zero
+cy 580.98
+line 290: balance not zero
+line 291: bad amount
+eve -154.25
+line 293: balance not zero
+line 294: account exists
+line 295: bad amount
+line 297: account exists
+line 303: bad amount
+line 304: insufficient funds
+line 311: balance not zero
+line 318: account exists
+line 321: balance not zero
+line 326: bad amount
+dee 230.19
+line 331: balance not zero
+line 333: balance not zero
+line 334: insufficient funds
+line 335: account exists
+line 338: same account
+line 341: insufficient funds
+cy 505.91
+line 344: account exists
+line 347: insufficient funds
+line 349: account exists
+line 352: insufficient funds
+dee 236.84
+line 356: insufficient funds
+line 357: same account
+line 360: account exists
+line 361: bad amount
+cy 16.92
+line 370: bad amount
+line 371: balance not zero
+line 372: insufficient funds
+dee 238.02
+line 378: account exists
+line 379: same account
+line 382: account exists
+line 383: insufficient funds
+bob:
+  33 open 26.00
+  42 deposit 205.29
+  50 deposit 170.00
+  59 transfer to ann 181.84
+  62 interest 2.19
+  63 interest 1.10
+  70 withdraw 28.00
+  80 deposit 53.00
+  81 withdraw 66.86
+  95 limit 71.00
+  105 interest 4.06
+  129 deposit 46.00
+  130 transfer from cy 260.00
+  148 transfer to ann 284.00
+  153 deposit 228.00
+  157 withdraw 6.00
+  158 deposit 55.92
+  164 withdraw 120.03
+  171 deposit 99.00
+  176 withdraw 268.04
+  180 withdraw 24.00
+  182 limit 228.00
+  203 deposit 296.00
+  205 transfer to fay 237.13
+  224 withdraw 34.00
+  225 transfer to cy 22.61
+  230 deposit 98.00
+  239 interest 2.72
+  241 limit 0.00
+  245 transfer from cy 140.58
+  248 deposit 142.48
+  253 withdraw 41.00
+  257 deposit 23.00
+  259 transfer from eve 243.00
+  270 limit 53.00
+  273 limit 259.00
+  274 withdraw 103.95
+  276 withdraw 274.00
+  286 deposit 17.96
+  306 withdraw 34.00
+  312 deposit 167.44
+  314 withdraw 6.00
+  315 deposit 154.55
+  322 limit 63.00
+  328 withdraw 102.12
+  350 interest 3.01
+  362 withdraw 187.00
+  363 interest 2.09
+line 387: insufficient funds
+line 389: balance not zero
+line 390: insufficient funds
+line 391: bad command
+line 392: account exists
+line 393: insufficient funds
+line 394: insufficient funds
+line 395: insufficient funds
+dee 445.02
+line 399: insufficient funds
+ann -130.29
+bob 342.81
+cy 7.92
+dee 155.02
+eve -169.45
+fay -125.36
+total 80.65

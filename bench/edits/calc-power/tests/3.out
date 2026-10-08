@@ -1,0 +1,34 @@
+1
+0
+1
+1
+-27
+4
+4
+-1
+3
+1000000000000000000
+-4611686018427387904
+4
+16
+81
+8
+16
+line 19: unexpected end
+line 20: unexpected '^'
+line 21: unexpected '^'
+line 22: negative exponent
+line 23: undefined variable x
+line 24: undefined variable x
+line 25: unexpected end
+line 26: negative exponent
+line 27: division by zero
+3909821048582988049
+7
+b = 2
+big = 3909821048582988049
+e = 5
+8
+line 33: unexpected '*'
+1
+0

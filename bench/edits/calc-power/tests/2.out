@@ -1,0 +1,31 @@
+7
+-49
+-3
+-1
+1
+-3
+-2
+6
+line 10: gcd takes 2 arguments
+line 11: abs takes 1 argument
+line 12: abs takes 1 argument
+line 13: min needs at least one argument
+line 14: unknown function foo
+line 15: undefined variable y
+line 16: division by zero
+line 17: division by zero
+line 18: unexpected end
+line 19: unexpected end
+line 20: unexpected '2'
+line 21: unexpected character '$'
+line 22: bad let
+line 23: bad let
+line 24: bad let
+line 25: undefined variable q
+x = 7
+a_1 = -3
+x = 7
+line 29: unexpected end
+line 30: expected ',' or ')' but found '2'
+line 31: unexpected ')'
+line 34: undefined variable __a

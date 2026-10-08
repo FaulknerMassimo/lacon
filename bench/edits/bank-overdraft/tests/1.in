@@ -1,0 +1,8 @@
+open ann 50
+limit ann 20
+withdraw ann 60
+withdraw ann 15
+balance ann
+open bob 10
+withdraw bob 10.01
+history ann

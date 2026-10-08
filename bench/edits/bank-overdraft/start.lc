@@ -1,0 +1,157 @@
+# Arguments each command takes after its name: (fewest, most).
+ARITY = {
+  "open": (1, 2),
+  "deposit": (2, 2),
+  "withdraw": (2, 2),
+  "transfer": (3, 3),
+  "close": (1, 1),
+  "interest": (1, 1),
+  "history": (1, 1),
+  "balance": (1, 1),
+}
+
+type Entry {line int, what str, amount int}
+
+# balance and amounts are in cents
+type Account {name str, balance int, history [Entry] = [], closed bool = false}
+
+# Digits, optionally followed by a point and one or two digits, in cents.
+fn parse_cents(s str) int? =
+  (whole, frac) = s.split_once(".") ?? (s, "0")
+  if whole.is_empty() or !whole.is_digit(): return none
+  if frac.is_empty() or frac.len > 2 or !frac.is_digit(): return none
+  int(whole)? * 100 + int(frac.pad_right(2, "0"))?
+
+# An amount in cents that must not be zero.
+fn positive(s str) int? =
+  c = parse_cents(s)?
+  if c == 0: return none
+  c
+
+fn fmt_cents(c int) str = "{c / 100}.{c % 100:02}"
+
+fn record(mut a Account, n int, what str, amount int) =
+  a.history.push(Entry{n, what, amount})
+
+# Why the first of names is not an open account, or none.
+fn check_open(accts {str: Account}, names [str]) str? =
+  for name in names:
+    if name not in accts: return "no account {name}"
+    if accts[name].closed: return "account closed {name}"
+  none
+
+fn cmd_open(mut accts {str: Account}, n int, args [str]) str? =
+  name = args[0]
+  amount = if args.len == 2: parse_cents(args[1]) ?? -1 else: 0
+  if amount < 0: return "bad amount"
+  if name in accts: return "account exists"
+  accts[name] = Account{name, amount}
+  record(accts[name], n, "open", amount)
+  none
+
+fn cmd_deposit(mut accts {str: Account}, n int, args [str]) str? =
+  amount = positive(args[1]) ?? 0
+  if amount == 0: return "bad amount"
+  why = check_open(accts, args[..1])
+  if why != none: return why
+  name = args[0]
+  accts[name].balance += amount
+  record(accts[name], n, "deposit", amount)
+  none
+
+fn cmd_withdraw(mut accts {str: Account}, n int, args [str]) str? =
+  amount = positive(args[1]) ?? 0
+  if amount == 0: return "bad amount"
+  why = check_open(accts, args[..1])
+  if why != none: return why
+  name = args[0]
+  if accts[name].balance < amount: return "insufficient funds"
+  accts[name].balance -= amount
+  record(accts[name], n, "withdraw", amount)
+  none
+
+fn cmd_transfer(mut accts {str: Account}, n int, args [str]) str? =
+  src = args[0]
+  dst = args[1]
+  amount = positive(args[2]) ?? 0
+  if amount == 0: return "bad amount"
+  why = check_open(accts, [src, dst])
+  if why != none: return why
+  if src == dst: return "same account"
+  if accts[src].balance < amount: return "insufficient funds"
+  accts[src].balance -= amount
+  accts[dst].balance += amount
+  record(accts[src], n, "transfer to {dst}", amount)
+  record(accts[dst], n, "transfer from {src}", amount)
+  none
+
+fn cmd_close(mut accts {str: Account}, n int, args [str]) str? =
+  why = check_open(accts, args)
+  if why != none: return why
+  name = args[0]
+  if accts[name].balance != 0: return "balance not zero"
+  accts[name].closed = true
+  record(accts[name], n, "close", 0)
+  none
+
+# Adds RATE percent to every open account with a positive balance, rounded
+# down to the cent.
+fn cmd_interest(mut accts {str: Account}, n int, args [str]) str? =
+  rate = positive(args[0]) ?? 0
+  if rate == 0: return "bad amount"
+  for name in accts.keys().sort():
+    a = accts[name]
+    if a.closed or a.balance <= 0: continue
+    gain = a.balance * rate / 10000
+    if gain > 0:
+      accts[name].balance += gain
+      record(accts[name], n, "interest", gain)
+  none
+
+fn cmd_history(accts {str: Account}, n int, args [str]) str? =
+  name = args[0]
+  if name not in accts: return "no account {name}"
+  print("{name}:")
+  for e in accts[name].history:
+    print("  {e.line} {e.what} {fmt_cents(e.amount)}")
+  none
+
+fn cmd_balance(accts {str: Account}, n int, args [str]) str? =
+  why = check_open(accts, args)
+  if why != none: return why
+  print("{args[0]} {fmt_cents(accts[args[0]].balance)}")
+  none
+
+# Carries out one command; returns why it could not, or none.
+fn run_line(mut accts {str: Account}, n int, line str) str? =
+  fields = line.split()
+  if fields.is_empty(): return none
+  cmd = fields[0]
+  args = fields[1..]
+  if cmd not in ARITY: return "bad command"
+  (lo, hi) = ARITY[cmd]
+  if args.len < lo or args.len > hi: return "bad command"
+  match cmd
+    "open": cmd_open(accts, n, args)
+    "deposit": cmd_deposit(accts, n, args)
+    "withdraw": cmd_withdraw(accts, n, args)
+    "transfer": cmd_transfer(accts, n, args)
+    "close": cmd_close(accts, n, args)
+    "interest": cmd_interest(accts, n, args)
+    "history": cmd_history(accts, n, args)
+    _: cmd_balance(accts, n, args)
+
+fn print_summary(accts {str: Account}) =
+  var total = 0
+  for name, a in accts.sort():
+    if a.closed: continue
+    print("{name} {fmt_cents(a.balance)}")
+    total += a.balance
+  print("total {fmt_cents(total)}")
+
+fn main() =
+  var accts = {}
+  for i, line in io.lines().enumerate():
+    why = run_line(accts, i + 1, line)
+    if why != none: print("line {i + 1}: {why}")
+  print_summary(accts)

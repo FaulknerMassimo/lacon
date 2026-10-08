@@ -353,6 +353,8 @@ in its narrow sense. On these small tasks the tools saved nothing over
 writing the whole file with a plain script: none of 60 episodes used
 `fix`, `q` or `sig`. Taking away Claude Code's file tools saved 35% of
 Lacon's tokens, which says more about the harness than about Lacon.
+A second suite (§25) starts each episode from an existing program and asks
+for a change, where the tools should pay; one smoke episode has run it.
 
 ### Phase 3 — Speed and scale
 
@@ -450,6 +452,8 @@ tests/           golden tests: run/ (stdout), check/ (diagnostics), unit/ (`laco
                  fix/, put/ and q/ (the editing and query commands)
 bench/tokens/    the same program in Rust, Go, Python and Lacon, plus a token counter
 bench/tasks/     Phase 0 tasks (prompt, hidden tests, reference) and a checker
+bench/edits/     tasks that change an existing program: the program before
+                 and after, in Python and Lacon, and hidden tests
 bench/perf/      native speed: the same programs in Lacon and Rust, and a timer
 bench/harness/   has Claude solve the tasks in each language and reports tokens-to-green
 bench/results/   harness runs (created by the harness)
@@ -1789,3 +1793,71 @@ No other golden output changed.
 Next: tasks that change an existing program, to see whether `put`, `fix`
 and `q` pay where they should, and Python, Rust and Go in `-write` mode
 to redo §13's comparison without the file tools' overhead.
+
+---
+
+## 25. Phase 2: tasks that change a program
+
+§24's tasks are programs of about 30 lines written whole, which leave
+`put`, `fix`, `q` and `sig` nothing to do. A second suite,
+`bench/edits/`, starts each episode from an existing program and asks
+for a change to it.
+
+**The tasks.** Each has the program before the change in Python
+(`start.py`) and Lacon (`start.lc`), the program after it (`ref.py`,
+`solution.lc`), a prompt that describes the change but not the code, and
+hidden tests of both the change and what must stay the same. The four
+make different kinds of change:
+
+| Task | The program | The change | Lacon lines |
+|---|---|---|---|
+| bank-overdraft | banking commands: open, deposit, withdraw, transfer, close, interest, history, balance | a `limit` command; withdrawals and transfers down to minus the limit, checked in two places; negative amounts printed with a sign | 157 |
+| calc-power | an integer calculator: tokenizer, recursive-descent parser to an enum, evaluator, `let`, functions | a right-associative `^` that binds tighter than unary minus: the tokenizer, a new parser level, and the evaluator, ahead of its division-by-zero test | 161 |
+| log-timing | an access-log summary with seven reports | an optional time field: a field on the record type, the parser, a new report | 109 |
+| ini-diamond | an INI query tool with `@{...}` references | a bug, given only as its symptom: the set of entries being expanded is never emptied, so an entry used twice reads as a cycle | 93 |
+
+**The harness.** `--suite edits` runs them. The episode starts with
+`start<ext>` as `main<ext>`, and the system prompt's first line says the
+program exists and asks for the change; the rest is unchanged, so a
+write task's prompt is the same byte for byte. Without file tools,
+`./show` prints the program, since the Bash-only modes had no way to
+read it. A build of the unchanged start doesn't count as the first
+attempt. Edit tasks need Claude Code: the API agent's tools take the
+whole program as an argument.
+
+**Checks.** `bench/tasks/check.py` covers both suites. For an edit task
+it also runs each `start.*` against `start.py` on every test input, so
+every language starts from the same program, and fails a task whose
+`start.py` passes every test (the four pass 0 or 1 of their 3 to 5).
+Every program passes, interpreted and native, and a replay of all four
+in lacon, lacon-write, lacon-tools, python and python-write passes.
+
+**A smoke episode** (ini-diamond, lacon-tools, Opus 5.5 through Claude
+Code) passed in 5 calls and 31,740 tokens ($0.07). The model read the
+whole program with `./show`, not `sig` or `q def`, then put only
+`lookup`. It lost a call to Claude Code's permission check, which refuses
+a `printf` argument containing `${...}`, the syntax the task's references
+first had. They are `@{...}` now, so a model in any language can pipe an
+example to `./run`.
+
+**Found while writing them:**
+
+- `if r.ms == none: continue` narrows a local but not a field: `r.ms`
+  stays `int?` after it, and the solution reads it into a local first.
+  An agent adding an optional field would meet this.
+- `lacon sig` prints `type Parser {toks [Tok], pos int}`, without the
+  default of `pos int = 0`, so `Parser{toks}` looks invalid to a reader.
+- `put` adds an item it doesn't find at the end of the file, not where it
+  stands in the input. Putting a whole solution over its start passes
+  every test, but only ini-diamond, which adds no item, comes out the
+  same as `solution.lc` byte for byte.
+
+**Not done.** The starts have no Rust or Go ports yet, so the suite
+compares Lacon with Python only. The programs are 93 to 161 lines (3.4 to
+5.0 KB); reading one whole costs little more than `sig` and two `q def`
+calls, so `./show` may be the right choice at this size. If the pilot
+shows the same, the starts need to grow to several hundred lines before
+the tools can pay.
+
+Next: a pilot of the four tasks, one trial each in lacon, lacon-write and
+lacon-tools (12 episodes), then Python with and without file tools.

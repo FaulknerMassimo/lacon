@@ -1,0 +1,46 @@
+k1 = @@-@{s1.k2}@{s1.k1}
+k2 = @{k1}ba@{.k5}@{s1.k5}
+k3 = @@@{s1.k6}@{s3.k5}a
+k4 = a
+k5 = @{k4}@{s2.k3}@{s2.k1}/-
+k6 = aa
+[s1]
+k1 = @{k6}a-@{s3.k4}
+k3 = @{.k1}-a
+k5 = @{s3.k4}@{s3.k5}@{s1.k4}b
+k6 = a@{s3.k5}@{.k2}/@{.k1}
+[s2]
+k1 = @{k3}b-
+k3 = b
+k4 = @{s3.k5}@{s3.k2}/@@
+k5 = @{s1.k2}@{s3.k4}/b@{.k4}
+[s3]
+k2 = /@{.k2}@{k5}b
+k3 = @{.k3}@@@{s1.k6}@{.k3}
+k4 = ba
+k5 = @{.k3}@{s3.k3}/@@@{s1.k5}
+---
+get k1
+get k2
+get k3
+get k4
+get k5
+get k6
+get s1.k1
+get s1.k2
+get s1.k3
+get s1.k4
+get s1.k5
+get s1.k6
+get s2.k1
+get s2.k2
+get s2.k3
+get s2.k4
+get s2.k5
+get s2.k6
+get s3.k1
+get s3.k2
+get s3.k3
+get s3.k4
+get s3.k5
+get s3.k6

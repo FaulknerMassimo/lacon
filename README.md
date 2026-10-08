@@ -30,7 +30,9 @@ which pays for overflow checks, are the slowest. `fix` applies
 the fixes diagnostics carry, `put` replaces a function by name, and `q`
 answers queries (an item's source, its callers, a type). An agent has
 finished every task with these in place of file tools, but on tasks this
-small they save nothing over writing the whole file.
+small they save nothing over writing the whole file. A second suite of
+tasks, in `bench/edits/`, starts the agent from an existing program to
+change, where reading and replacing items by name should pay.
 The design and build plan is in [PLAN.md](PLAN.md).
 
 ```
@@ -45,12 +47,13 @@ cargo build --release
 ./target/release/lacon sig bench/tokens/users.lc     # signatures and effects
 ./target/release/lacon explain E0202                 # long form of a diagnostic
 cargo test                                           # golden tests in tests/
-uv run bench/tasks/check.py                          # task solutions vs hidden tests
+uv run bench/tasks/check.py                          # task solutions vs hidden tests (both suites)
 uv run bench/tasks/check.py --native                 # the same, compiled with `lacon build`
 uv run bench/perf/run.py                             # native speed against the same programs in Rust
 uv run bench/harness/run.py --agent claude-code      # Claude solves the tasks, through Claude Code (Opus 5.5)
 uv run bench/harness/run.py --langs lacon,python     # the same through the API (needs an API key)
 uv run bench/harness/run.py --agent claude-code --langs lacon,lacon-write,lacon-tools   # no file tools: ./write, or Lacon's own tools
+uv run bench/harness/run.py --agent claude-code --suite edits   # change an existing program instead of writing one
 uv run bench/harness/report.py bench/results/<run>   # tokens-to-green per language
 ```
 

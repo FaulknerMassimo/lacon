@@ -1,0 +1,28 @@
+a -0.05
+a -0.05
+b -47.50
+line 11: balance not zero
+b:
+  7 open 3.00
+  8 limit 100.00
+  9 transfer to a 50.50
+  12 limit 0.00
+line 14: insufficient funds
+line 17: balance not zero
+a 50.39
+a:
+  1 open 1.00
+  2 limit 0.06
+  3 withdraw 1.05
+  9 transfer from b 50.50
+  16 transfer to b 0.06
+  19 limit 0.00
+line 23: bad amount
+line 24: bad amount
+line 27: insufficient funds
+line 32: insufficient funds
+a 51.38
+b 0.06
+c 5.61
+d -7.00
+total 50.05

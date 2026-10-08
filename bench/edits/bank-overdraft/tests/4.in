@@ -1,0 +1,400 @@
+withdraw bob 24
+transfer cy eve 259
+deposit dee 46.07
+balance ann
+withdraw fay 40
+transfer ann eve 25.05
+transfer bob cy 276
+withdraw fay 297.24
+withdraw eve 288
+deposit fay 160
+withdraw cy 19
+deposit bob 124
+withdraw dee 229
+withdraw ann 32
+withdraw cy 250
+withdraw ann 35
+transfer cy cy 254.58
+open ann
+transfer fay ann 158.87
+balance cy
+limit fay 236
+transfer dee ann 147
+deposit dee 254
+withdraw eve 70.70
+withdraw dee 194.19
+deposit bob 119
+balance bob
+withdraw ann 273
+transfer bob fay 27
+history fay
+balance dee
+withdraw dee 205
+open bob 26
+transfer eve ann 13
+deposit dee 129.77
+withdraw ann 249.59
+transfer cy ann 175.61
+balance bob
+transfer bob eve 278.97
+transfer fay ann 133.21
+withdraw bob 257
+deposit bob 205.29
+deposit dee 14.35
+transfer bob fay 176
+withdraw cy 23
+deposit ann 100
+transfer eve ann 176.10
+balance ann
+transfer ann bob
+deposit bob 170
+withdraw fay 25
+transfer fay ann 87.03
+deposit dee 74.76
+withdraw fay 22
+deposit eve 7.92
+limit eve 71
+history bob
+open bob 300
+transfer bob ann 181.84
+transfer eve dee 256
+deposit eve x
+interest 1
+interest 0.5
+deposit eve 284
+limit eve 54.07
+deposit cy 0
+transfer eve ann 32
+transfer eve eve 141
+transfer dee eve 267.33
+withdraw bob 28
+deposit ann 161
+deposit ann 155.99
+deposit fay 187
+  
+close ann
+withdraw dee 114
+withdraw eve 215
+withdraw fay 173.56
+limit dee 151.08
+deposit bob 53
+withdraw bob 66.86
+balance cy
+withdraw eve 292
+withdraw cy 93
+open ann 42.28
+open ann 283
+  
+open fay 82
+deposit cy 271.37
+withdraw fay 177.32
+open ann
+transfer bob eve 228
+balance dee
+limit eve 201.39
+limit bob 71
+withdraw ann 7
+close cy
+withdraw ann 195.85
+withdraw eve 15
+limit ann 80
+open cy
+withdraw eve 20
+deposit cy 93
+withdraw dee 102
+interest 2.25
+balance bob
+withdraw ann 153
+deposit eve 79.91
+interest 0
+interest 0
+deposit fay 74
+balance eve
+limit fay 258
+transfer eve eve 8.74
+balance fay
+limit fay 43
+deposit cy 192.71
+open ann 250
+transfer ann fay 274
+transfer fay fay 38.30
+close bob
+deposit fay 252.09
+transfer fay cy 101
+deposit cy 155.17
+open ann 50.86
+transfer fay eve 238
+deposit eve 43.02
+withdraw ann 230.49
+deposit bob 46
+transfer cy bob 260
+deposit cy 248
+deposit dee 207
+deposit cy 61.00
+withdraw cy 61.25
+limit fay 190
+withdraw eve 219.06
+withdraw ann 146.19
+deposit cy 161
+withdraw dee 204.70
+transfer fay ann 0.0
+withdraw eve 146
+  
+deposit dee 152
+close fay
+withdraw fay 247.50
+deposit fay 106.63
+transfer dee cy 230
+transfer bob ann 284
+deposit cy 103.95
+history dee
+withdraw eve 138
+open cy 257.27
+deposit bob 228
+withdraw ann 217.60
+withdraw dee 0
+open eve
+withdraw bob 6
+deposit bob 55.92
+limit dee 20
+deposit eve 155.80
+withdraw fay 57
+withdraw eve 133
+transfer ann eve 235
+withdraw bob 120.03
+withdraw fay 19
+open bob 215
+deposit dee 116
+limit fay 202
+balance fay
+balance ann
+deposit bob 99
+deposit cy 253.28
+transfer fay ann 74.06
+deposit eve 26.23
+withdraw fay 57.21
+withdraw bob 268.04
+withdraw fay 191.56
+deposit ann 41
+withdraw ann 35
+withdraw bob 24
+withdraw cy 221
+limit bob 228
+withdraw dee x
+deposit fay 20
+transfer ann cy 32.43
+withdraw cy 22
+limit cy 152
+close fay
+withdraw ann 1
+balance ann
+transfer dee dee 220.16
+withdraw bob 0
+balance fay
+withdraw fay 120
+withdraw cy 40.50
+close bob
+withdraw fay 1.234
+transfer bob dee 36
+deposit ann 228
+deposit dee 120.99
+limit ann 150
+transfer cy cy 101
+deposit bob 296
+open cy
+transfer bob fay 237.13
+open bob
+bogus
+deposit ann 298
+open eve
+withdraw cy 3
+transfer eve cy 188
+open cy 104.41
+withdraw cy 159
+open dee 51.84
+transfer fay eve 83
+withdraw cy 213.39
+close cy
+withdraw ann 186.50
+close bob
+withdraw dee 10
+withdraw ann 186
+deposit ann 72.50
+deposit eve 258
+withdraw bob 34
+transfer bob cy 22.61
+withdraw eve 198
+limit fay 82.28
+limit eve 242
+deposit dee 80
+deposit bob 98
+transfer fay ann 165
+transfer eve fay 215
+deposit dee 228.22
+open eve
+transfer dee eve 234.60
+withdraw ann 220
+balance eve
+transfer ann ann 42.40
+interest 1
+open eve
+limit bob 0
+withdraw fay 7
+deposit dee 84.92
+withdraw ann 22
+transfer cy bob 140.58
+deposit eve 245
+withdraw eve 190
+deposit bob 142.48
+deposit cy 271
+balance dee
+transfer eve fay 53
+transfer dee fay 135
+withdraw bob 41
+deposit fay 151.32
+withdraw eve 160.95
+open bob 213.06
+deposit bob 23
+open cy 273
+transfer eve bob 243
+open bob
+transfer ann fay 138
+withdraw ann 287.76
+limit dee 265.31
+deposit ann 1.234
+open bob 53
+transfer bob bob 265.64
+limit dee 89.08
+withdraw ann 244.00
+withdraw dee 238
+limit bob 53
+limit ann 134.34
+limit fay 267.37
+limit bob 259
+withdraw bob 103.95
+deposit ann
+withdraw bob 274
+balance fay
+open ann 292.27
+withdraw eve 87
+open ann 72.03
+open fay 0
+close ann
+balance cy
+deposit eve 33.96
+
+deposit bob 17.96
+limit fay 244
+deposit fay 163
+withdraw cy 144
+close cy
+interest 0
+balance eve
+close dee
+open eve
+withdraw fay 1.234
+deposit ann 147
+open bob 27
+transfer dee fay 94.75
+withdraw eve 81
+deposit fay 84
+limit ann 287.80
+withdraw ann 202.95
+deposit fay 1.
+withdraw dee 256
+withdraw fay 14
+withdraw bob 34
+transfer fay eve 178.66
+deposit dee 165
+withdraw cy 64
+limit fay 98
+close eve
+deposit bob 167.44
+deposit cy 132.93
+withdraw bob 6
+deposit bob 154.55
+withdraw ann 54
+
+open dee 151
+deposit eve 2.55
+limit eve 215.85
+close fay
+limit bob 63
+withdraw fay 214
+withdraw fay 128.61
+transfer eve dee 93.41
+interest 0
+
+withdraw bob 102.12
+balance dee
+transfer fay dee 189.52
+close dee
+deposit fay 263.15
+close eve
+withdraw ann 195
+open dee
+limit fay 135
+withdraw dee 269.50
+transfer bob bob 35.81
+deposit fay 115.18
+withdraw fay 211
+withdraw eve 240
+balance cy
+limit fay 218.61
+open fay
+withdraw fay 245
+limit ann 185
+withdraw dee 289.17
+transfer cy fay 5
+open cy 73.23
+interest 0.5
+deposit dee 85.88
+transfer ann fay 280.38
+deposit fay 40.56
+limit ann 135
+balance dee
+transfer ann dee 73.31
+transfer eve eve 3
+withdraw fay 151.47
+withdraw fay 184.03
+open ann 169.12
+transfer dee bob 0.0
+withdraw bob 187
+interest 0.5
+withdraw cy 283
+withdraw cy 206
+withdraw eve 22
+withdraw fay 31
+balance cy
+deposit fay 300.11
+interest 0
+close dee
+transfer ann dee 3
+balance dee
+transfer fay ann 278.78
+deposit fay 42
+limit dee 89
+deposit ann 51.83
+open bob
+transfer cy cy 17
+withdraw fay 27
+transfer ann dee 207
+open dee 79
+withdraw ann 241
+deposit ann 4.15
+withdraw ann 13
+history bob
+transfer cy fay 230.23
+withdraw cy 9
+close ann
+withdraw eve 235.32
+close ann bob
+open ann 40
+withdraw eve 249.40
+withdraw eve 240.18
+withdraw ann 23
+withdraw bob 40
+balance dee
+withdraw dee 290
+withdraw eve 170.92
+withdraw bob 38

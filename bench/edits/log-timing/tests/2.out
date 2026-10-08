@@ -1,0 +1,22 @@
+requests: 241
+bytes: 2011829
+status 2xx: 94
+status 3xx: 36
+status 4xx: 81
+status 5xx: 30
+methods: GET 98, PUT 39, DELETE 36, POST 35, HEAD 33
+top paths:
+  /a/b.gif 43
+  /api/users 38
+  /login 36
+slowest paths:
+error paths:
+  /a/b.gif 19
+  /static/app.js 18
+  /index.html 17
+top clients:
+  10.0.0.2 57 requests, 434060 bytes
+  10.0.0.1 50 requests, 268388 bytes
+  192.168.1.9 48 requests, 361424 bytes
+busiest hour: 15 (18 requests)
+malformed: 52

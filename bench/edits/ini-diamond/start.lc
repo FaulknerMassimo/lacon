@@ -1,0 +1,93 @@
+# A value in double quotes keeps the spaces inside them.
+fn unquote(v str) str =
+  if v.len >= 2 and v.starts_with("\"") and v.ends_with("\""): v[1..-1] else: v
+
+# The document's sections, {section: {key: value}} with "" for entries before
+# the first header, and the sections in the order they first appear. Prints an
+# error for each line that is none of the forms.
+fn parse_doc(lines [str]) ({str: {str: str}}, [str]) =
+  var secs = {"": {}}
+  var order = []
+  var section = ""
+  for i, raw in lines.enumerate():
+    line = raw.trim()
+    if line.is_empty() or line[0] == ";" or line[0] == "#": continue
+    if line.starts_with("[") and line.ends_with("]"):
+      section = line[1..-1].trim()
+      if section not in secs:
+        secs[section] = {}
+        order.push(section)
+      continue
+    (k, v) = line.split_once("=") ?? ("", "")
+    key = k.trim()
+    if key.is_empty():
+      print("line {i + 1}: bad line")
+      continue
+    secs[section][key] = unquote(v.trim())
+  (secs, order)
+
+# The (section, key) a reference names: `key` is in section, `s.key` in s,
+# and `.key` outside any section.
+fn split_ref(section str, ref str) (str, str) = ref.split_once(".") ?? (section, ref)
+
+# value with each @{...} reference replaced by what it names, and @@ by @.
+# seen holds the entries being expanded, to catch a cycle.
+fn expand(secs {str: {str: str}}, section str, value str, mut seen {(str, str)}) str =
+  var out = ""
+  var i = 0
+  while i < value.len:
+    if value[i..].starts_with("@@"):
+      out += "@"
+      i += 2
+      continue
+    if value[i..].starts_with("@{"):
+      end = value[i..].find("}") ?? -1
+      if end >= 0:
+        out += lookup(secs, section, value[i + 2..i + end], seen)
+        i += end + 1
+        continue
+    out += value[i]
+    i += 1
+  out
+
+# What a reference names, expanded in turn. A reference to a missing entry
+# stays as written, and one that leads back to an entry being expanded is
+# <cycle>.
+fn lookup(secs {str: {str: str}}, section str, ref str, mut seen {(str, str)}) str =
+  (sec, key) = split_ref(section, ref)
+  if sec not in secs or key not in secs[sec]: return "@{" + ref + "}"
+  if (sec, key) in seen: return "<cycle>"
+  seen.add((sec, key))
+  expand(secs, sec, secs[sec][key], seen)
+
+# The (section, key) of a query's SECTION.KEY or KEY.
+fn split_name(name str) (str, str) = name.split_once(".") ?? ("", name)
+
+# The answer to one query.
+fn run_query(secs {str: {str: str}}, order [str], query str) str =
+  parts = query.split()
+  if parts == ["sections"]: return order.join(" ")
+  if !parts.is_empty() and parts[0] == "keys" and parts.len <= 2:
+    sec = if parts.len == 2: parts[1] else: ""
+    if sec not in secs: return "missing"
+    return secs[sec].keys().sort().join(", ")
+  if parts.len != 2: return "bad query"
+  (sec, key) = split_name(parts[1])
+  found = sec in secs and key in secs[sec]
+  match parts[0]
+    "has": if found: "yes" else: "no"
+    "raw": if found: secs[sec][key] else: "missing"
+    "get":
+      if !found: return "missing"
+      var seen = set()
+      seen.add((sec, key))
+      expand(secs, sec, secs[sec][key], seen)
+    _: "bad query"
+
+fn main() =
+  lines = io.read().lines()
+  split = lines.position(it == "---") ?? lines.len
+  (secs, order) = parse_doc(lines[..split])
+  queries = if split < lines.len: lines[split + 1..] else: []
+  for query in queries:
+    if !query.trim().is_empty(): print(run_query(secs, order, query))

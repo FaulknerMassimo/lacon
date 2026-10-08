@@ -1,6 +1,6 @@
 """Run task solutions against their hidden tests.
 
-    uv run bench/tasks/check.py                 # every task, every solution file
+    uv run bench/tasks/check.py                 # every task and edit task, every solution file
     uv run bench/tasks/check.py rpn grid-path   # selected tasks
     uv run bench/tasks/check.py --bless rpn     # rewrite tests/N.out from ref.py
     uv run bench/tasks/check.py --native        # Lacon solutions compiled with `lacon build`
@@ -10,6 +10,11 @@ number of solutions: `solution.lc`, `solution.py`, `solution.rs`,
 `solution.go`. `ref.py` is the reference that generated the expected outputs.
 Programs read stdin and write stdout; output is compared exactly, ignoring
 trailing whitespace on each line and trailing blank lines.
+
+The edit tasks in bench/edits/ also have the program an episode starts from,
+`start.py` and its ports (`start.lc`, ...). Each port must print what
+`start.py` prints on every test input, so every language starts from the same
+program, and `start.py` must fail at least one test, so the change is tested.
 """
 import shutil
 import subprocess
@@ -19,6 +24,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
+EDITS = ROOT / "bench" / "edits"
 TIMEOUT = 10
 
 
@@ -78,10 +84,26 @@ def bless(task: Path) -> None:
     print(f"{task.name}: blessed {len(tests_of(task))} tests")
 
 
+def start_outputs(task: Path) -> list[str] | None:
+    """What an edit task's start.py prints on each test input."""
+    start = task / "start.py"
+    if not start.exists():
+        return None
+    return [subprocess.run([sys.executable, str(start)], stdin=t.open(), capture_output=True, text=True, timeout=TIMEOUT, check=True).stdout for t in tests_of(task)]
+
+
 def run_task(task: Path) -> bool:
     tests = tests_of(task)
     ok = True
-    for sol in sorted(p for p in task.iterdir() if p.stem in ("solution", "ref") and (not NATIVE or p.suffix == ".lc")):
+    starts = start_outputs(task)
+    if starts is not None:
+        passing = sum(norm(got) == norm(t.with_suffix(".out").read_text()) for got, t in zip(starts, tests))
+        print(f"{task.name}/start.py: passes {passing}/{len(tests)} tests")
+        if passing == len(tests):
+            print(f"  start.py passes every test, so none tests the change")
+            ok = False
+    stems = ("solution", "ref") if starts is None else ("solution", "ref", "start")
+    for sol in sorted(p for p in task.iterdir() if p.stem in stems and p.name != "start.py" and (not NATIVE or p.suffix == ".lc")):
         with tempfile.TemporaryDirectory() as tmp:
             try:
                 cmd = command(sol, Path(tmp))
@@ -92,17 +114,19 @@ def run_task(task: Path) -> bool:
             if cmd is None:
                 continue
             failed = []
-            for t in tests:
+            for i, t in enumerate(tests):
                 try:
                     r = subprocess.run(cmd, stdin=t.open(), capture_output=True, text=True, timeout=TIMEOUT)
                     got = r.stdout
                 except subprocess.TimeoutExpired:
                     got, r = "(timeout)", None
-                want = t.with_suffix(".out").read_text()
+                want = starts[i] if sol.stem == "start" else t.with_suffix(".out").read_text()
                 if norm(got) != norm(want):
                     detail = r.stderr.strip().splitlines()[:3] if r else []
                     failed.append(f"  test {t.stem}: want {norm(want)[:200]!r} got {norm(got)[:200]!r} {' '.join(detail)}")
             status = "ok" if not failed else f"FAIL {len(failed)}/{len(tests)}"
+            if sol.stem == "start" and not failed:
+                status = "ok (same as start.py)"
             print(f"{task.name}/{sol.name}: {status}")
             for f in failed:
                 print(f)
@@ -114,7 +138,8 @@ def main() -> int:
     global NATIVE
     NATIVE = "--native" in sys.argv
     names = [a for a in sys.argv[1:] if a not in ("--bless", "--native")]
-    tasks = [HERE / n for n in names] if names else sorted(p for p in HERE.iterdir() if (p / "prompt.md").exists())
+    every = sorted(p for d in (HERE, EDITS) for p in d.iterdir() if (p / "prompt.md").exists())
+    tasks = [next((d / n for d in (HERE, EDITS) if (d / n).is_dir()), HERE / n) for n in names] if names else every
     if "--bless" in sys.argv:
         for t in tasks:
             bless(t)

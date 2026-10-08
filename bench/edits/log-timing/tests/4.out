@@ -1,0 +1,24 @@
+requests: 6
+bytes: 50
+status 2xx: 3
+status 4xx: 2
+status 5xx: 1
+methods: GET 6
+top paths:
+  /x 2
+  /v 1
+  /w 1
+slowest paths:
+  /w 3ms
+  /x 3ms
+  /y 3ms
+error paths:
+  /w 1
+  /y 1
+  /z 1
+top clients:
+  b 3 requests, 30 bytes
+  a 2 requests, 10 bytes
+  c 1 requests, 10 bytes
+busiest hour: 23 (4 requests)
+malformed: 6

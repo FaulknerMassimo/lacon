@@ -1,0 +1,10 @@
+line 4: insufficient funds
+ann -10.00
+line 7: insufficient funds
+ann:
+  1 open 50.00
+  2 limit 20.00
+  3 withdraw 60.00
+ann -10.00
+bob 10.00
+total 0.00

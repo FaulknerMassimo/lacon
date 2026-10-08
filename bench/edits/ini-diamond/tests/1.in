@@ -1,0 +1,7 @@
+dir = /srv
+[app]
+path = @{.dir}/@{.dir}
+self = @{self}
+---
+get app.path
+get app.self

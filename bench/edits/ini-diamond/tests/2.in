@@ -1,0 +1,59 @@
+; global settings
+name = demo
+root = /srv/@{name}
+  # indented comment
+[paths]
+home = @{.root}/home
+logs = @{home}/logs
+cache=@{missing}/x
+price = @@5 and @{ unterminated
+greeting = "  hi there  "
+loop = @{loop}
+a = @{b}
+b = @{a}
+[ db ]
+url = postgres://@{host}:@{port}
+host = localhost
+port = 5432
+dsn = @{paths.home} @{nosec.key} @{.name}
+no equals here
+ = novalue
+empty =
+eq = a=b=c
+[paths]
+extra = @{logs}
+[]
+late = yes
+---
+get name
+get root
+get paths.home
+get paths.logs
+get paths.cache
+get paths.price
+get paths.greeting
+raw paths.greeting
+get paths.loop
+get paths.a
+get db.url
+get db.dsn
+get db.empty
+get db.eq
+get paths.extra
+get late
+get nope
+get db.nope
+raw paths.logs
+has db.port
+has db.nope
+has name
+sections
+keys
+keys db
+keys paths
+keys nope
+bogus
+get
+get a b
+
+has nosec.key

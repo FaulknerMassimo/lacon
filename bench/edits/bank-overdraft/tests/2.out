@@ -1,0 +1,36 @@
+line 6: same account
+line 7: no account zed
+line 8: insufficient funds
+line 9: account exists
+line 10: bad amount
+line 11: bad amount
+line 12: bad amount
+line 13: bad command
+line 18: account closed cy
+line 19: account closed cy
+cy:
+  15 open 0.50
+  16 withdraw 0.50
+  17 close 0.00
+ann:
+  1 open 100.00
+  4 withdraw 30.05
+  5 transfer to bob 10.00
+  21 interest 0.89
+bob:
+  2 open 0.00
+  3 deposit 25.50
+  5 transfer from ann 10.00
+  21 interest 0.53
+bob 36.03
+line 25: balance not zero
+line 26: bad command
+line 27: bad amount
+line 28: bad command
+line 29: bad command
+line 30: bad amount
+line 31: no account zed
+line 32: account closed cy
+ann 60.84
+bob 36.03
+total 96.87

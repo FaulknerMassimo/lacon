@@ -1,0 +1,33 @@
+line 19: bad line
+line 20: bad line
+demo
+/srv/demo
+/srv/demo/home
+/srv/demo/home/logs
+@{missing}/x
+@5 and @{ unterminated
+  hi there  
+  hi there  
+<cycle>
+<cycle>
+postgres://localhost:5432
+/srv/demo/home @{nosec.key} demo
+
+a=b=c
+/srv/demo/home/logs
+yes
+missing
+missing
+@{home}/logs
+yes
+no
+yes
+paths db
+late, name, root
+dsn, empty, eq, host, port, url
+a, b, cache, extra, greeting, home, logs, loop, price
+missing
+bad query
+bad query
+bad query
+no

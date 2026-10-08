@@ -1,0 +1,32 @@
+open ann 100
+open bob
+deposit bob 25.5
+withdraw ann 30.05
+transfer ann bob 10
+transfer ann ann 1
+transfer ann zed 1
+withdraw bob 100
+open ann 5
+deposit ann 0
+deposit ann 1.234
+deposit ann 12.
+foo bar
+
+open cy 0.5
+withdraw cy 0.5
+close cy
+deposit cy 1
+balance cy
+history cy
+interest 1.5
+history ann
+history bob
+balance bob
+close bob
+withdraw
+interest 0
+limit ann
+limit ann 5 6
+limit ann x
+limit zed 5
+limit cy 5

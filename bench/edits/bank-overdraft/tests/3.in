@@ -1,0 +1,33 @@
+open a 1
+limit a 0.06
+withdraw a 1.05
+balance a
+interest 10
+balance a
+open b 3
+limit b 100.00
+transfer b a 50.5
+balance b
+close b
+limit b 0
+history b
+transfer b a 1
+deposit b 47.5
+transfer a b 0.06
+close a
+balance a
+limit a 0
+history a
+withdraw a 0.01
+open c 2.5
+limit c 1.
+limit c 1.005
+limit c 01.5
+withdraw c 4
+withdraw c 0.01
+
+open d
+limit d 7
+transfer d c 7
+transfer d c 0.01
+interest 2

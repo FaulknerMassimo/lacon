@@ -1,0 +1,161 @@
+OPS = "+-*/%(),="
+
+# kind is "num", "name" or "op"
+type Tok {kind str, text str}
+
+type Parser {toks [Tok], pos int = 0}
+
+enum Expr = Num(int) | Var(str) | Neg(Expr) | Bin(str, Expr, Expr) | Call(str, [Expr])
+
+# Numbers, names and one-character operators.
+fn tokenize(line str) [Tok]! =
+  var toks = []
+  var i = 0
+  while i < line.len:
+    c = line[i]
+    if c == " ":
+      i += 1
+    elif c.is_digit():
+      var j = i
+      while j < line.len and line[j].is_digit(): j += 1
+      toks.push(Tok{"num", line[i..j]})
+      i = j
+    elif c.is_alpha() or c == "_":
+      var j = i
+      while j < line.len and (line[j].is_alpha() or line[j].is_digit() or line[j] == "_"): j += 1
+      toks.push(Tok{"name", line[i..j]})
+      i = j
+    elif OPS.contains(c):
+      toks.push(Tok{"op", c})
+      i += 1
+    else:
+      fail "unexpected character '{c}'"
+  toks
+
+# The next token's text, or "" at the end.
+fn peek(p Parser) str =
+  if p.pos < p.toks.len: p.toks[p.pos].text else: ""
+
+fn take(mut p Parser) Tok! =
+  if p.pos >= p.toks.len: fail "unexpected end"
+  p.pos += 1
+  p.toks[p.pos - 1]
+
+fn expect(mut p Parser, text str) ()! =
+  t = take(p)?
+  if t.text != text: fail "expected '{text}' but found '{t.text}'"
+
+fn parse_sum(mut p Parser) Expr! =
+  var e = parse_product(p)?
+  while p.peek() in ["+", "-"]:
+    op = take(p)?.text
+    e = Bin(op, e, parse_product(p)?)
+  e
+
+fn parse_product(mut p Parser) Expr! =
+  var e = parse_unary(p)?
+  while p.peek() in ["*", "/", "%"]:
+    op = take(p)?.text
+    e = Bin(op, e, parse_unary(p)?)
+  e
+
+fn parse_unary(mut p Parser) Expr! =
+  if p.peek() == "-":
+    take(p)?
+    return Neg(parse_unary(p)?)
+  parse_primary(p)
+
+fn parse_primary(mut p Parser) Expr! =
+  t = take(p)?
+  if t.kind == "num": return Num(int(t.text)?)
+  if t.kind == "name":
+    if p.peek() == "(":
+      take(p)?
+      return Call(t.text, parse_args(p)?)
+    return Var(t.text)
+  if t.text == "(":
+    e = parse_sum(p)?
+    expect(p, ")")?
+    return e
+  fail "unexpected '{t.text}'"
+
+# A call's arguments, after its '(' and through its ')'.
+fn parse_args(mut p Parser) [Expr]! =
+  var args = []
+  if p.peek() == ")":
+    take(p)?
+    return args
+  while true:
+    args.push(parse_sum(p)?)
+    t = take(p)?
+    if t.text == ")": return args
+    if t.text != ",": fail "expected ',' or ')' but found '{t.text}'"
+  args
+
+fn parse_whole(mut p Parser) Expr! =
+  e = parse_sum(p)?
+  if p.pos < p.toks.len: fail "unexpected '{p.peek()}'"
+  e
+
+fn evaluate(e Expr, env {str: int}) int! = match e
+  Num(v): v
+  Var(name):
+    if name not in env: fail "undefined variable {name}"
+    env[name]
+  Neg(x): -evaluate(x, env)?
+  Call(name, args): call(name, args.map(evaluate(it, env)?))?
+  Bin(op, l, r): binary(op, evaluate(l, env)?, evaluate(r, env)?)?
+
+# `/` and `%` truncate toward zero.
+fn binary(op str, a int, b int) int! =
+  if op == "+": return a + b
+  if op == "-": return a - b
+  if op == "*": return a * b
+  if b == 0: fail "division by zero"
+  if op == "/": a / b else: a % b
+
+fn need(name str, args [int], n int) ()! =
+  s = if n == 1: "" else: "s"
+  if args.len != n: fail "{name} takes {n} argument{s}"
+
+fn call(name str, args [int]) int! =
+  if name == "abs":
+    need(name, args, 1)?
+    return args[0].abs()
+  if name == "min" or name == "max":
+    if args.is_empty(): fail "{name} needs at least one argument"
+    return if name == "min": args.min() else: args.max()
+  if name == "gcd":
+    need(name, args, 2)?
+    var a = args[0].abs()
+    var b = args[1].abs()
+    while b != 0:
+      r = a % b
+      a = b
+      b = r
+    return a
+  fail "unknown function {name}"
+
+# Runs one line; returns the lines to print.
+fn run_line(line str, mut env {str: int}) [str]! =
+  toks = tokenize(line)?
+  if toks.is_empty(): return []
+  if toks[0].kind == "name" and toks[0].text == "let":
+    if toks.len < 3 or toks[1].kind != "name" or toks[2].text != "=": fail "bad let"
+    var p = Parser{toks[3..]}
+    value = evaluate(parse_whole(p)?, env)?
+    env[toks[1].text] = value
+    return []
+  if toks.len == 1 and toks[0].kind == "name" and toks[0].text == "vars":
+    return env.sort().map("{it.0} = {it.1}")
+  var p = Parser{toks}
+  [str(evaluate(parse_whole(p)?, env)?)]
+
+fn main() =
+  var env = {}
+  for i, line in io.lines().enumerate():
+    code = line.split("#")[0]
+    match run_line(code, env)
+      err(e): print("line {i + 1}: {e}")
+      out:
+        for s in out: print(s)

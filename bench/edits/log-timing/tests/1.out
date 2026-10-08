@@ -1,0 +1,19 @@
+requests: 4
+bytes: 5164
+status 2xx: 3
+status 4xx: 1
+methods: GET 3, POST 1
+top paths:
+  /a.gif 2
+  / 1
+  /login 1
+slowest paths:
+  /login 310ms
+  /a.gif 62ms
+error paths:
+  /login 1
+top clients:
+  10.0.0.1 3 requests, 2838 bytes
+  10.0.0.2 1 requests, 2326 bytes
+busiest hour: 13 (2 requests)
+malformed: 1

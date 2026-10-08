@@ -1,0 +1,109 @@
+type Req {client str, hour int, method str, path str, status int, size int}
+
+# The hour of a timestamp like 10/Oct/2000:13:55:36 -0700, or none.
+fn parse_hour(stamp str) int? =
+  (date, clock) = stamp.split_once(":") ?? (stamp, "")
+  parts = clock.split(":")
+  if date.split("/").len != 3 or parts.len != 3: return none
+  hh = parts[0]
+  if hh.len != 2 or !hh.is_digit(): return none
+  h = int(hh)?
+  if h > 23: return none
+  h
+
+# (method, path) from a request line like GET /a?x=1 HTTP/1.0, or none.
+fn parse_request(text str) (str, str)? =
+  parts = text.split(" ")
+  if parts.len != 3 or "" in parts: return none
+  (parts[0], parts[1].split("?")[0])
+
+# The request on one log line, or none if the line is malformed:
+#
+#   127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /a.gif HTTP/1.0" 200 2326
+fn parse_line(line str) Req? =
+  start = line.find("[")?
+  end = line.find("]")?
+  if end < start: return none
+  # the client, two unused fields, then the space before '['
+  head = line[..start].split(" ")
+  if head.len != 4 or head[3] != "" or "" in head[..3]: return none
+  hour = parse_hour(line[start + 1..end])?
+  rest = line[end + 1..]
+  if !rest.starts_with(" \""): return none
+  q = rest[2..].find("\"")? + 2
+  (method, path) = parse_request(rest[2..q])?
+  tail = rest[q + 1..].split(" ")
+  if tail.len != 3 or tail[0] != "": return none
+  status = tail[1]
+  size = tail[2]
+  if status.len != 3 or !status.is_digit(): return none
+  if size != "-" and (size.is_empty() or !size.is_digit()): return none
+  Req{head[0], hour, method, path, int(status)?, if size == "-": 0 else: int(size)?}
+
+# Up to n (key, count) pairs, by count descending and then by key.
+fn top(counts {str: int}, n int) [(str, int)] = counts.sort_by((-it.1, it.0)).take(n)
+
+fn report_totals(reqs [Req]) =
+  print("requests: {reqs.len}")
+  print("bytes: {reqs.map(it.size).sum()}")
+
+fn report_status(reqs [Req]) =
+  var classes = {}
+  for r in reqs: classes[r.status / 100] += 1
+  for c, n in classes.sort():
+    print("status {c}xx: {n}")
+
+fn report_methods(reqs [Req]) =
+  var counts = {}
+  for r in reqs: counts[r.method] += 1
+  print("methods: " + top(counts, counts.len).map("{it.0} {it.1}").join(", "))
+
+fn report_paths(reqs [Req]) =
+  var counts = {}
+  for r in reqs: counts[r.path] += 1
+  print("top paths:")
+  for path, n in top(counts, 3): print("  {path} {n}")
+
+fn report_errors(reqs [Req]) =
+  var counts = {}
+  for r in reqs:
+    if r.status >= 400: counts[r.path] += 1
+  print("error paths:")
+  for path, n in top(counts, 3): print("  {path} {n}")
+
+fn report_clients(reqs [Req]) =
+  var counts = {}
+  var sizes = {}
+  for r in reqs:
+    counts[r.client] += 1
+    sizes[r.client] += r.size
+  print("top clients:")
+  for client, n in top(counts, 3): print("  {client} {n} requests, {sizes[client]} bytes")
+
+fn report_hours(reqs [Req]) =
+  if reqs.is_empty():
+    print("busiest hour: none")
+    return
+  var counts = [0] * 24
+  for r in reqs: counts[r.hour] += 1
+  var best = 0
+  for h in 0..24:
+    if counts[h] > counts[best]: best = h
+  print("busiest hour: {best:02} ({counts[best]} requests)")
+
+fn main() =
+  var reqs = []
+  var malformed = 0
+  for line in io.lines():
+    if line.trim().is_empty(): continue
+    match parse_line(line)
+      none: malformed += 1
+      r: reqs.push(r)
+  report_totals(reqs)
+  report_status(reqs)
+  report_methods(reqs)
+  report_paths(reqs)
+  report_errors(reqs)
+  report_clients(reqs)
+  report_hours(reqs)
+  print("malformed: {malformed}")

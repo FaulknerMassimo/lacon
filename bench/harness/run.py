@@ -11,6 +11,7 @@ tokens it spends getting to passing tests (tokens-to-green).
     uv run bench/harness/run.py --agent replay                 # no model: submit the reference solutions
     uv run bench/harness/run.py --langs lacon --primer docs/primer-short.md   # try another primer
     uv run bench/harness/run.py --agent claude-code --langs lacon,lacon-write,lacon-tools   # how the program is written
+    uv run bench/harness/run.py --agent claude-code --suite edits   # change an existing program
     uv run bench/harness/report.py bench/results/<run>         # summarize a run
 
 In each episode the model gets the task prompt, one example, and two tools:
@@ -26,6 +27,11 @@ with `./write`, and `lacon-tools` writes and changes it with `./lacon put`
 and `./lacon fix` and reads it with `./lacon q` and `./lacon sig`. Against
 each other, they measure whether Lacon's own tools cut tokens-to-green, apart
 from what dropping the file tools' definitions saves on every call.
+
+The `edits` suite (bench/edits/) has tasks that change an existing program
+rather than write one: the episode starts with the task's `start<ext>` as
+`main<ext>`, and the prompt asks for a change. Without file tools, `./show`
+prints the program. Edit tasks need Claude Code (or replay).
 
 Agents:
 - `claude` calls the Messages API (needs ANTHROPIC_API_KEY or similar).
@@ -63,6 +69,8 @@ import langs as L
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 TASKS = ROOT / "bench" / "tasks"
+EDITS = ROOT / "bench" / "edits"
+SUITES = {"tasks": TASKS, "edits": EDITS}
 PRIMER = ROOT / "docs" / "primer.md"
 RESULTS = ROOT / "bench" / "results"
 
@@ -114,7 +122,12 @@ Use the `run` tool to try the program on inputs you choose and the `submit` tool
 
 NUDGE = "Submit your program with the `submit` tool when it is ready."
 
-SYSTEM_CC = """You are solving a programming task. Write one complete program in {lang} that reads standard input and writes standard output, in the file `main{ext}` in the current directory.
+# The first line of a Claude Code system prompt: write a program, or change
+# the one in the directory.
+GOAL_NEW = "You are solving a programming task. Write one complete program in {lang} that reads standard input and writes standard output, in the file `main{ext}` in the current directory."
+GOAL_EDIT = "You are changing an existing program: `main{ext}` in the current directory is a program in {lang} that reads standard input and writes standard output. Change it as the task asks."
+
+SYSTEM_CC = """{goal}
 
 Environment: {environment}
 
@@ -122,11 +135,11 @@ Environment: {environment}
 
 Bash can run only `./run`, `./submit`, `ls`, `printf` and `echo`; piping into `./run` works, but redirection and other commands are blocked. Create and change files with the Write and Edit tools."""
 
-SYSTEM_CC_TOOLS = """You are solving a programming task. Write one complete program in {lang} that reads standard input and writes standard output, in the file `main{ext}` in the current directory.
+SYSTEM_CC_TOOLS = """{goal}
 
 Environment: {environment}
 
-There are no file tools; `./lacon` writes and reads the program. `./lacon put main.lc` reads top-level items (`fn`, `type`, `enum`, constants) from stdin and replaces each item of the same name in main.lc, or adds it, creating the file if needed. It then checks the file and prints each error, or `ok`. Write the program with a heredoc, and change a function by putting just that function again:
+There are no file tools; `./lacon` writes and reads the program{show}. `./lacon put main.lc` reads top-level items (`fn`, `type`, `enum`, constants) from stdin and replaces each item of the same name in main.lc, or adds it, creating the file if needed. It then checks the file and prints each error, or `ok`. Write the program with a heredoc, and change a function by putting just that function again:
 
 ```
 ./lacon put main.lc <<'EOF'
@@ -139,13 +152,13 @@ EOF
 
 `printf '1 2\\n' | ./run` builds the program and runs it on that input, printing the build errors or the exit code and output. `./submit` runs it against the hidden tests and prints the first failing one. The task is finished when a submission passes.
 
-Bash can run only `./lacon`, `./run`, `./submit`, `ls`, `printf` and `echo`; piping into `./run` works, but other commands are blocked."""
+Bash can run only `./lacon`, {own}`./run`, `./submit`, `ls`, `printf` and `echo`; piping into `./run` works, but other commands are blocked."""
 
-SYSTEM_CC_WRITE = """You are solving a programming task. Write one complete program in {lang} that reads standard input and writes standard output, in the file `main{ext}` in the current directory.
+SYSTEM_CC_WRITE = """{goal}
 
 Environment: {environment}
 
-There are no file tools. `./write` saves its stdin as `main{ext}`, replacing the whole file. Write the program with a heredoc:
+There are no file tools. `./write` saves its stdin as `main{ext}`, replacing the whole file{show}. Write the program with a heredoc:
 
 ```
 ./write <<'EOF'
@@ -155,7 +168,7 @@ EOF
 
 `printf '1 2\\n' | ./run` builds the program and runs it on that input, printing the build errors or the exit code and output. `./submit` runs it against the hidden tests and prints the first failing one. The task is finished when a submission passes.
 
-Bash can run only `./write`, `./run`, `./submit`, `ls`, `printf` and `echo`; piping into `./run` works, but other commands are blocked."""
+Bash can run only `./write`, {own}`./run`, `./submit`, `ls`, `printf` and `echo`; piping into `./run` works, but other commands are blocked."""
 
 # Claude Code's Bash may run only the episode's own tools, `ls`, and
 # printf/echo to pipe input into `./run`.
@@ -167,6 +180,8 @@ CC_ALLOWED_EDIT = {
     "write": ["Bash(./write)", "Bash(./write *)", *CC_BASH],
     "tools": ["Bash(./lacon *)", *CC_BASH],
 }
+# An edit task without file tools also has `./show`.
+CC_SHOW = ["Bash(./show)", "Bash(./show *)"]
 
 
 # ----- tasks -----
@@ -177,21 +192,39 @@ class Task:
     name: str
     prompt: str
     tests: list[tuple[str, str]]  # (input, expected output)
+    dir: Path
 
     @staticmethod
     def load(name: str) -> Task:
-        d = TASKS / name
+        d = find_task(name)
         ins = sorted(d.glob("tests/*.in"), key=lambda p: int(p.stem))
         tests = [(p.read_text(), p.with_suffix(".out").read_text()) for p in ins]
-        return Task(name, (d / "prompt.md").read_text().strip(), tests)
+        return Task(name, (d / "prompt.md").read_text().strip(), tests, d)
+
+    @property
+    def edit(self) -> bool:
+        """An edit task: the episode starts from an existing program."""
+        return any(self.dir.glob("start.*"))
+
+    def start(self, ext: str) -> str | None:
+        p = self.dir / f"start{ext}"
+        return p.read_text() if p.exists() else None
 
     def user_message(self) -> str:
         example_in, example_out = self.tests[0]
         return f"{self.prompt}\n\nExample input:\n```\n{example_in}```\n\nExample output:\n```\n{example_out}```"
 
 
-def all_tasks() -> list[str]:
-    return sorted(p.name for p in TASKS.iterdir() if (p / "prompt.md").exists())
+def all_tasks(suite: str = "tasks") -> list[str]:
+    return sorted(p.name for p in SUITES[suite].iterdir() if (p / "prompt.md").exists())
+
+
+def find_task(name: str) -> Path:
+    """A task's directory, in either suite."""
+    for d in SUITES.values():
+        if (d / name / "prompt.md").exists():
+            return d / name
+    raise KeyError(name)
 
 
 # --chain-hint: told to every language, to see whether it saves the separate
@@ -203,9 +236,12 @@ CHAIN_HINT = {
 }
 
 
-def system_prompt(lang: L.Lang, agent: str = "claude", primer: Path = PRIMER, chain_hint: bool = False) -> str:
+def system_prompt(lang: L.Lang, agent: str = "claude", primer: Path = PRIMER, chain_hint: bool = False, edit_task: bool = False) -> str:
     template = {"write": SYSTEM_CC_WRITE, "tools": SYSTEM_CC_TOOLS}.get(lang.edit, SYSTEM_CC if agent == "claude-code" else SYSTEM)
-    s = template.format(lang=lang.name, ext=lang.ext, environment=lang.environment)
+    goal = (GOAL_EDIT if edit_task else GOAL_NEW).format(lang=lang.name, ext=lang.ext)
+    show = {"write": ", and `./show` prints it", "tools": ", and `./show` prints all of it"}.get(lang.edit, "") if edit_task else ""
+    own = "`./show`, " if edit_task else ""
+    s = template.format(goal=goal, lang=lang.name, ext=lang.ext, environment=lang.environment, show=show, own=own)
     if chain_hint:
         hint = "bash" if lang.edit != "files" else "claude-code" if agent == "claude-code" else "claude"
         s += "\n\n" + CHAIN_HINT[hint].format(ext=lang.ext, verb="put" if lang.edit == "tools" else "write")
@@ -273,9 +309,15 @@ class Episode:
         src = self.workdir / f"main{self.lang.ext}"
         src.write_text(code)
         b = self.lang.build(src)
-        if self.first_build_ok is None:
+        if self.first_build_ok is None and not self.unchanged():
             self.first_build_ok = b.ok
         return b
+
+    def unchanged(self) -> bool:
+        """In an edit task, whether the program is still the start, whose
+        build isn't the model's first attempt."""
+        src = self.workdir / f"main{self.lang.ext}"
+        return self.task.edit and src.exists() and src.read_text() == self.task.start(self.lang.ext)
 
     def tool(self, name: str, inp: dict) -> str:
         if name == "run":
@@ -321,7 +363,7 @@ class Episode:
             return L.Result(2, "", f"./lacon runs only {', '.join(L.Lacon.COMMANDS)}; run the program with ./run and ./submit\n")
         self.commands[sub] = self.commands.get(sub, 0) + 1
         r = self.lang.command(args, self.workdir, stdin)
-        if self.first_build_ok is None and r.exit_code is not None:
+        if self.first_build_ok is None and r.exit_code is not None and not self.unchanged():
             if sub in ("put", "check") and r.exit_code in (0, 1):
                 self.first_build_ok = r.exit_code == 0
             elif sub == "fix":
@@ -398,7 +440,7 @@ def claude_agent(ep: Episode, client, args) -> tuple[str, list]:
 def replay_agent(ep: Episode) -> tuple[str, list]:
     """Submits the task's reference solution, if it has one, to test the
     harness without the API."""
-    d = TASKS / ep.task.name
+    d = ep.task.dir
     ref = d / f"solution{ep.lang.ext}"
     if not ref.exists() and isinstance(ep.lang, L.Python):
         ref = d / "ref.py"
@@ -408,6 +450,7 @@ def replay_agent(ep: Episode) -> tuple[str, list]:
     log = []
     if ep.lang.edit == "tools":
         # Put the whole solution, as a model would, and submit what put wrote.
+        # In an edit task, that replaces the start's items of the same names.
         r = ep.lacon(["put", f"main{ep.lang.ext}"], code)
         log.append({"tool": "lacon put", "result": r.stdout + r.stderr})
         code = (ep.workdir / f"main{ep.lang.ext}").read_text()
@@ -427,11 +470,16 @@ sys.exit(tool_main({tool!r}, {task!r}, {lang!r}, {events!r}))
 
 
 def tool_main(tool: str, task_name: str, lang_key: str, events: str) -> int:
-    """`./run [input-file]`, `./submit`, `./write` and lacon-tools' `./lacon
-    <command>` inside a Claude Code episode."""
+    """`./run [input-file]`, `./submit`, `./write`, `./show` and lacon-tools'
+    `./lacon <command>` inside a Claude Code episode."""
     lang = L.make(lang_key, build=False)
     src = Path.cwd() / f"main{lang.ext}"
     ep = Episode(Task.load(task_name), lang, 0, Path.cwd())
+    if tool == "show":
+        with open(events, "a") as f:
+            f.write(json.dumps({"tool": "show", "command": "show", "build_ok": None, "passed": False}) + "\n")
+        sys.stdout.write(src.read_text() if src.exists() else f"there is no {src.name}\n")
+        return 0
     if tool == "write":
         text = ep.write(sys.stdin.read() if not sys.stdin.isatty() else "")
         with open(events, "a") as f:
@@ -478,7 +526,8 @@ def claude_code_agent(ep: Episode, args) -> tuple[str, list]:
     with tempfile.TemporaryDirectory(prefix="lacon-bench-events-") as side:
         events = Path(side) / "events.jsonl"
         edit = ep.lang.edit
-        for tool in ("run", "submit", *{"write": ["write"], "tools": ["lacon"]}.get(edit, [])):
+        show = ep.task.edit and edit != "files"
+        for tool in ("run", "submit", *{"write": ["write"], "tools": ["lacon"]}.get(edit, []), *(["show"] if show else [])):
             script = ep.workdir / tool
             script.write_text(TOOL_SCRIPT.format(python=sys.executable, harness=str(HERE), tool=tool, task=ep.task.name, lang=ep.lang.key, events=str(events)))
             script.chmod(0o755)
@@ -486,9 +535,9 @@ def claude_code_agent(ep: Episode, args) -> tuple[str, list]:
             args.claude, "-p", ep.task.user_message(),
             "--output-format", "stream-json", "--verbose",
             "--model", args.model,
-            "--system-prompt", system_prompt(ep.lang, "claude-code", args.primer, args.chain_hint),
+            "--system-prompt", system_prompt(ep.lang, "claude-code", args.primer, args.chain_hint, ep.task.edit),
             "--tools", "Bash,Read,Write,Edit" if edit == "files" else "Bash",
-            "--allowedTools", *CC_ALLOWED_EDIT[edit],
+            "--allowedTools", *CC_ALLOWED_EDIT[edit], *(CC_SHOW if show else []),
             "--permission-prompts", "none",
             "--restricted", "--safe-mode", "--no-session-persistence",
             "--max-budget-usd", str(args.max_budget),
@@ -571,6 +620,8 @@ def run_episode(task_name: str, lang: L.Lang, trial: int, args, client, out: Pat
     start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix=f"lacon-bench-{task_name}-") as tmp:
         ep = Episode(task, lang, trial, Path(tmp))
+        if task.edit:
+            (ep.workdir / f"main{lang.ext}").write_text(task.start(lang.ext) or "")
         error = None
         try:
             if args.agent == "replay":
@@ -607,7 +658,7 @@ def run_episode(task_name: str, lang: L.Lang, trial: int, args, client, out: Pat
         "error": error,
     }
     name = f"{task_name}.{lang.key}.{trial}.json"
-    (out / "transcripts" / name).write_text(json.dumps({"system": system_prompt(lang, args.agent, args.primer, args.chain_hint), "messages": jsonable(transcript)}, indent=1))
+    (out / "transcripts" / name).write_text(json.dumps({"system": system_prompt(lang, args.agent, args.primer, args.chain_hint, task.edit), "messages": jsonable(transcript)}, indent=1))
     return record
 
 
@@ -630,7 +681,8 @@ def main() -> int:
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], help="output_config.effort (default: the model's)")
     ap.add_argument("--langs", default="lacon,python,rust,go")
-    ap.add_argument("--tasks", help="comma-separated task names (default: all)")
+    ap.add_argument("--suite", choices=list(SUITES), default="tasks", help="write programs (tasks) or change them (edits)")
+    ap.add_argument("--tasks", help="comma-separated task names, from either suite (default: all of --suite)")
     ap.add_argument("--trials", type=int, default=1)
     ap.add_argument("--jobs", type=int, default=4, help="episodes run in parallel")
     ap.add_argument("--max-turns", type=int, default=25, help="API calls per episode")
@@ -643,9 +695,11 @@ def main() -> int:
     ap.add_argument("--chain-hint", action="store_true", help="tell every language that a failed submission has no penalty")
     args = ap.parse_args()
 
-    tasks = args.tasks.split(",") if args.tasks else all_tasks()
+    tasks = args.tasks.split(",") if args.tasks else all_tasks(args.suite)
     for t in tasks:
-        if not (TASKS / t / "prompt.md").exists():
+        try:
+            find_task(t)
+        except KeyError:
             ap.error(f"no task {t!r}")
     langs: list[L.Lang] = []
     for key in args.langs.split(","):
@@ -665,6 +719,8 @@ def main() -> int:
     client = None
     if args.agent == "claude" and any(lang.edit != "files" for lang in langs):
         ap.error("-write and -tools need --agent claude-code or replay")
+    if args.agent == "claude" and any(Task.load(t).edit for t in tasks):
+        ap.error("edit tasks need --agent claude-code or replay")
     if args.agent == "claude":
         import anthropic
 
@@ -690,6 +746,7 @@ def main() -> int:
         "languages": {lang.key: lang.environment for lang in langs},
         "primer": {"path": str(args.primer), "chars": len(args.primer.read_text())},
         "chain_hint": args.chain_hint,
+        "tasks": tasks,
     }
     if client is not None:
         sample = Task.load(tasks[0])
