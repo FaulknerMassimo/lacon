@@ -1,0 +1,100 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Lacon",
+  "scopeName": "source.lacon",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#declaration" },
+    { "include": "#keyword" },
+    { "include": "#number" },
+    { "include": "#operator" },
+    { "include": "#call" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.number-sign.lacon",
+      "match": "#.*$"
+    },
+    "string": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.lacon",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [{ "include": "#interpolation" }]
+        },
+        {
+          "name": "string.quoted.double.lacon",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.lacon", "match": "\\\\." },
+            { "include": "#interpolation" }
+          ]
+        }
+      ]
+    },
+    "interpolation": {
+      "patterns": [
+        { "name": "constant.character.escape.lacon", "match": "\\{\\{" },
+        {
+          "name": "meta.interpolation.lacon",
+          "begin": "\\{(?=[^}\\s])",
+          "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.lacon" } },
+          "endCaptures": { "0": { "name": "punctuation.section.embedded.end.lacon" } },
+          "patterns": [
+            { "match": "'[^']*'", "name": "string.quoted.single.lacon" },
+            { "include": "#number" },
+            { "include": "#keyword" },
+            { "include": "#operator" }
+          ]
+        }
+      ]
+    },
+    "declaration": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.function.lacon" },
+            "2": { "name": "entity.name.function.lacon" }
+          }
+        },
+        {
+          "match": "\\b(type|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.type.lacon" },
+            "2": { "name": "entity.name.type.lacon" }
+          }
+        }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        { "name": "keyword.control.lacon", "match": "\\b(if|elif|else|for|while|break|continue|return|match|fail|assert|test)\\b" },
+        { "name": "keyword.operator.word.lacon", "match": "\\b(in|and|or|not|as)\\b" },
+        { "name": "storage.modifier.lacon", "match": "\\b(var|mut)\\b" },
+        { "name": "constant.language.lacon", "match": "\\b(true|false|none)\\b" },
+        { "name": "variable.language.lacon", "match": "\\bit\\b" },
+        { "name": "support.type.primitive.lacon", "match": "\\b(int|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|str)\\b" }
+      ]
+    },
+    "number": {
+      "patterns": [
+        { "name": "constant.numeric.float.lacon", "match": "\\b\\d[\\d_]*\\.\\d[\\d_]*([eE][+-]?\\d+)?\\b" },
+        { "name": "constant.numeric.integer.lacon", "match": "\\b(0x[0-9a-fA-F_]+|0b[01_]+|\\d[\\d_]*)\\b" }
+      ]
+    },
+    "operator": {
+      "patterns": [
+        { "name": "keyword.operator.lacon", "match": "\\?\\?|\\.\\.=?|==|!=|<=|>=|\\*\\*|//|[-+*/%<>=!?~&|]" }
+      ]
+    },
+    "call": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?=\\()",
+      "captures": { "1": { "name": "entity.name.function.call.lacon" } }
+    }
+  }
+}

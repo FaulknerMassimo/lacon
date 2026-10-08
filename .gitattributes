@@ -1,0 +1,3 @@
+# Until Lacon is in GitHub Linguist, borrow a similar language for highlighting.
+# Switch to `linguist-language=Lacon` once Linguist knows it.
+*.lc linguist-language=Python

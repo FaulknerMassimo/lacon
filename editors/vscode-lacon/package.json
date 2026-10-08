@@ -1,0 +1,27 @@
+{
+  "name": "lacon",
+  "displayName": "Lacon",
+  "description": "Syntax highlighting for the Lacon language",
+  "version": "0.0.1",
+  "publisher": "lacon",
+  "license": "MIT",
+  "engines": { "vscode": "^1.70.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "lacon",
+        "aliases": ["Lacon", "lacon"],
+        "extensions": [".lc"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lacon",
+        "scopeName": "source.lacon",
+        "path": "./syntaxes/lacon.tmLanguage.json"
+      }
+    ]
+  }
+}
