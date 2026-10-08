@@ -354,10 +354,11 @@ writing the whole file with a plain script: none of 60 episodes used
 `fix`, `q` or `sig`. Taking away Claude Code's file tools saved 35% of
 Lacon's tokens, which says more about the harness than about Lacon.
 A second suite (§25) starts each episode from an existing program and asks
-for a change. In a pilot on its four tasks, writing only the changed items
-with `put` took 0.84x the tokens and 0.65x the cost of rewriting the whole
-program, the first measurement in which `put` pays; still no episode used
-`sig`, `q` or `fix`.
+for a change. Over two trials of its four tasks, writing only the changed
+items with `put` took 0.84x the tokens and 0.65x the cost of rewriting the
+whole program, the first measurement in which `put` pays, and 0.79x the
+tokens of Python edited with Read and Edit, at the same cost. Still no
+episode used `sig`, `q` or `fix`.
 
 ### Phase 3 — Speed and scale
 
@@ -1895,10 +1896,45 @@ As geometric means of per-task ratios:
   the whole program with `./show` first; at 93 to 161 lines that costs
   about as much as `sig` and a `q def` or two, and needs no second call.
 
-One trial a cell is a pilot: ini-diamond's lacon-write took 29,253
-tokens against lacon-tools' 18,237 for the same one-function fix, and
-calc-power went the other way. More trials, and Python on the same
-tasks, come next.
+**A second trial, and Python** (`bench/results/20261008-edits-run2`, not
+committed): the three Lacon modes again, and Python with Read and Edit
+(`python`) and with Write only (`python-write`). The account's spend
+limit cut off log-timing in both Python modes; those two can be resumed
+with `--out`. All 18 that ran passed. Tokens-to-green, trial 1 / trial 2:
+
+| Task | Lacon | lacon-write | lacon-tools | Python | python-write |
+|---|---|---|---|---|---|
+| bank-overdraft | 45,027 / 45,644 | 31,654 / 41,542 | 22,476 / 22,499 | 30,418 | 20,091 |
+| calc-power | 43,336 / 43,211 | 24,479 / 31,329 | 29,523 / 29,331 | 35,670 | 25,135 |
+| ini-diamond | 20,626 / 20,532 | 29,253 / 26,133 | 18,237 / 18,122 | 22,915 | 13,607 |
+| log-timing | 42,107 / 41,987 | 23,035 / 13,577 | 21,578 / 20,962 | | |
+| mean cost | $0.080 | $0.109 | $0.072 | $0.073 | $0.096 |
+
+The modes that change items in place repeat almost exactly: Lacon with
+Read and Edit and lacon-tools each varied by under 3% a task. Rewriting
+the whole program varied by up to 70%. As geometric means of per-task
+means:
+
+| | tokens | cost |
+|---|---|---|
+| lacon-tools against lacon-write | 0.84x | 0.65x |
+| lacon-tools against Lacon (Read, Edit) | 0.62x | 0.91x |
+| lacon-tools against Python (Read, Edit), 3 tasks | 0.79x | 0.99x |
+| lacon-tools against python-write, 3 tasks | 1.21x | 0.77x |
+| lacon-write against python-write, 3 tasks | 1.60x | 1.27x |
+| Lacon against Python, both with Read and Edit, 3 tasks | 1.18x | 1.04x |
+
+- **`put` pays in both trials**: against rewriting the whole program,
+  0.84x the tokens and 0.65x the cost.
+- **Against Python as agents edit it now, with Read and Edit, lacon-tools
+  takes 0.79x the tokens at the same cost.** With the same tools as
+  Python, Lacon takes 1.18x: the primer, about 1,400 tokens a call.
+- **python-write takes the fewest tokens and lacon-tools the least
+  money.** Rewriting a short Python program whole costs few calls but
+  output tokens; lacon-tools writes less and pays the primer on every
+  call. Only lacon-write against python-write compares the languages
+  alone, with the same tool and way of working: 1.60x the tokens, 1.27x
+  the cost, mostly the primer read on each of about four calls.
 
 **Found while writing them:**
 
@@ -1917,6 +1953,7 @@ compares Lacon with Python only. The programs are 93 to 161 lines (3.4 to
 5.0 KB), small enough that reading one whole is the sensible first move;
 `sig` and `q` need larger programs to pay, if they pay at all.
 
-Next: a second trial of the three Lacon modes and a first of Python with
-and without Read and Edit, to see how Lacon's edits compare with
-Python's.
+Next: the two log-timing episodes the spend limit cut off. Then the
+primer's cost, which now decides most comparisons with Python, and
+the gaps above, of which the field narrowing is the one an agent will
+hit.
