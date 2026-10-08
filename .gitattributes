@@ -1,8 +1,0 @@
-# Until Lacon is in GitHub Linguist, borrow a similar language for highlighting.
-# Switch to `linguist-language=Lacon` once Linguist knows it.
-*.lc linguist-language=Python
-
-# Keep the compiler's Rust and the benchmark scripts out of the language bar so
-# the .lc programs show.
-crates/** linguist-vendored
-bench/**/*.py linguist-vendored
