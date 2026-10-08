@@ -826,6 +826,14 @@ impl<'p> Interp<'p> {
         if let (Value::Str(s), true, Some(to)) = (&rv, name == "parse", self.prog.parse_to.get(&span)) {
             return Ok(builtins::parse_as(s, *to));
         }
+        if name == "map" && self.prog.opt_map.contains(&span) {
+            // `map` on an optional: `none` stays `none`, a value goes to `f`.
+            if matches!(rv, Value::None) {
+                return Ok(Value::None);
+            }
+            let fv = self.eval(&args[0], f)?;
+            return self.call_value(&fv, vec![rv], span);
+        }
         let mut argv = Vec::with_capacity(args.len());
         for a in args {
             argv.push(self.eval(a, f)?);

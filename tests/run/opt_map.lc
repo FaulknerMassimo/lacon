@@ -1,0 +1,21 @@
+# `x.map(f)` on an optional: `none` stays `none`, and a value goes to `f`,
+# as in Rust. On a list inside an optional it maps the optional, not the
+# elements; a lambda that returns an optional isn't wrapped again.
+fn half(n int) int? =
+  if n % 2 == 0: n / 2 else: none
+
+fn twice(n int) int = n * 2
+
+fn main() =
+  m = {"a": [1, 2, 3], "b": []}
+  print(m.get("a").map(it.len) ?? -1)
+  print(m.get("z").map(it.len) ?? -1)
+  print(m.get("a").map(it.sum()), m.get("z").map(it.sum()))
+  xs = [4, 5]
+  print(xs.first().map(half) ?? 0, xs.last().map(half) ?? 0)
+  print(xs.first().map(twice) ?? 0, xs.get(9).map(it * 10))
+  print(m.get("a").map(it.map(it + 1)) ?? [])
+  k = 100
+  print("hello world".find("o").map(it + k) ?? 0)
+  o = xs.first()
+  print(o.map(str(it) + "!") ?? "")

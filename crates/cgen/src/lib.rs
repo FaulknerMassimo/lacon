@@ -2927,6 +2927,7 @@ impl<'p> Gen<'p> {
 
     fn method(&mut self, recv: &Recv, name: &str, user: Option<&Rc<[FnId]>>, args: &[Ex], span: Span) -> String {
         let site = self.site(span);
+        let opt_map = name == "map" && self.prog.opt_map.contains(&span);
         let m = method_id(name);
         let builtin = m.is_some() && is_method(name);
         // A builtin mutator with no user function of the name: straight to
@@ -3005,13 +3006,20 @@ impl<'p> Gen<'p> {
             if let (true, Some(&to)) = (name == "parse", g.prog.parse_to.get(&span)) {
                 return format!("{r} = lc_parse_as({rv}, {}, {site}); if (lc_unwinding) UNWIND; ", conv_args(to));
             }
+            if opt_map {
+                // `map` on an optional: `none` stays `none`, a value goes to `f`.
+                let arr = g.t();
+                let a = g.args_into(&arr, args);
+                let rel = Self::release_arr(&arr, args.len());
+                return format!("{a}{r} = {rv}.tag == T_NONE ? LC_NONE : lc_call({arr}[0], 1, &{rv}, {site}); {rel}if (lc_unwinding) UNWIND; ");
+            }
             let arr = g.t();
             let a = g.args_into(&arr, args);
             let rel = Self::release_arr(&arr, args.len());
             format!("{a}{r} = lc_method({m}, {rv}, {}, {arr}, {site}); {rel}if (lc_unwinding) UNWIND; ", args.len())
         };
         match user {
-            None => match self.inline_loop(name, args, &rv, &r, &site) {
+            None => match if opt_map { None } else { self.inline_loop(name, args, &rv, &r, &site) } {
                 Some(l) => {
                     let b = builtin_call(self);
                     let _ = write!(code, "if ({rv}.tag == T_LIST) {{ {l}}} else {{ {b}}} ");

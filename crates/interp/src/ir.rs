@@ -1,7 +1,7 @@
 //! The resolved program the interpreter runs: names are frame slots, `it`
 //! arguments are explicit lambdas, and assignment targets are places.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use lacon_syntax::ast::{BinOp, CmpOp, Mode, UnOp};
@@ -24,6 +24,9 @@ pub struct Program {
     /// `s.parse()` calls whose type the checker knows from a declared type
     /// (`n int = s.parse()?`), by span: they parse to that type or fail.
     pub parse_to: HashMap<Span, ConvTo>,
+    /// `x.map(f)` calls on an optional `x`, by span: `none` stays `none`,
+    /// and a value goes to `f`.
+    pub opt_map: HashSet<Span>,
 }
 
 pub struct FnDef {

@@ -287,8 +287,10 @@ Python, is in §13: every episode passed, but Lacon took 2.92x Python's tokens
 and 67% of its first attempts built. After fixes and a short primer
 (`docs/primer-short.md`, 1,356 tokens), a run against Python, Rust and Go
 (§13) had 97% of Lacon's first attempts build, and Lacon took 1.37-1.49x
-their tokens but 0.76-0.93x their cost. Not done yet: more trials of Python,
-Rust and Go, and deciding how cached tokens count. See §12 for the
+their tokens but 0.76-0.93x their cost. With no file tools in any
+language (§26), Lacon takes 1.29-1.35x their tokens and 0.83-1.05x their
+cost, and what's left is the primer. Not done yet: a second trial
+without file tools, and deciding how cached tokens count. See §12 for the
 semantics the interpreter settled on and §13 for what writing the tasks and
 the runs taught.
 
@@ -356,9 +358,15 @@ Lacon's tokens, which says more about the harness than about Lacon.
 A second suite (§25) starts each episode from an existing program and asks
 for a change. Over two trials of its four tasks, writing only the changed
 items with `put` took 0.84x the tokens and 0.65x the cost of rewriting the
-whole program, the first measurement in which `put` pays, and 0.79x the
-tokens of Python edited with Read and Edit, at the same cost. Still no
+whole program, the first measurement in which `put` pays, and 0.73x the
+tokens of Python edited with Read and Edit, at 0.93x the cost. Still no
 episode used `sig`, `q` or `fix`.
+Without file tools in any language (§26), writing whole programs,
+lacon-write takes 1.29-1.35x the tokens of Python, Rust and Go, nearly
+all of it the primer, at 0.83x Go's and 0.85x Rust's cost and 1.05x
+Python's. Two guesses whose fixes made things worse are fixed: E0406
+now points at a `T!` binding rather than each use, and `map` on an
+optional is accepted.
 
 ### Phase 3 — Speed and scale
 
@@ -1899,16 +1907,16 @@ As geometric means of per-task ratios:
 **A second trial, and Python** (`bench/results/20261008-edits-run2`, not
 committed): the three Lacon modes again, and Python with Read and Edit
 (`python`) and with Write only (`python-write`). The account's spend
-limit cut off log-timing in both Python modes; those two can be resumed
-with `--out`. All 18 that ran passed. Tokens-to-green, trial 1 / trial 2:
+limit cut off log-timing in both Python modes, and a resume ran them
+later. All 20 passed. Tokens-to-green, trial 1 / trial 2:
 
 | Task | Lacon | lacon-write | lacon-tools | Python | python-write |
 |---|---|---|---|---|---|
 | bank-overdraft | 45,027 / 45,644 | 31,654 / 41,542 | 22,476 / 22,499 | 30,418 | 20,091 |
 | calc-power | 43,336 / 43,211 | 24,479 / 31,329 | 29,523 / 29,331 | 35,670 | 25,135 |
 | ini-diamond | 20,626 / 20,532 | 29,253 / 26,133 | 18,237 / 18,122 | 22,915 | 13,607 |
-| log-timing | 42,107 / 41,987 | 23,035 / 13,577 | 21,578 / 20,962 | | |
-| mean cost | $0.080 | $0.109 | $0.072 | $0.073 | $0.096 |
+| log-timing | 42,107 / 41,987 | 23,035 / 13,577 | 21,578 / 20,962 | 36,066 | 19,488 |
+| mean cost | $0.080 | $0.109 | $0.072 | $0.077 | $0.099 |
 
 The modes that change items in place repeat almost exactly: Lacon with
 Read and Edit and lacon-tools each varied by under 3% a task. Rewriting
@@ -1919,21 +1927,21 @@ means:
 |---|---|---|
 | lacon-tools against lacon-write | 0.84x | 0.65x |
 | lacon-tools against Lacon (Read, Edit) | 0.62x | 0.91x |
-| lacon-tools against Python (Read, Edit), 3 tasks | 0.79x | 0.99x |
-| lacon-tools against python-write, 3 tasks | 1.21x | 0.77x |
-| lacon-write against python-write, 3 tasks | 1.60x | 1.27x |
-| Lacon against Python, both with Read and Edit, 3 tasks | 1.18x | 1.04x |
+| lacon-tools against Python (Read, Edit) | 0.73x | 0.93x |
+| lacon-tools against python-write | 1.18x | 0.73x |
+| lacon-write against python-write | 1.40x | 1.12x |
+| Lacon against Python, both with Read and Edit | 1.17x | 1.02x |
 
 - **`put` pays in both trials**: against rewriting the whole program,
   0.84x the tokens and 0.65x the cost.
 - **Against Python as agents edit it now, with Read and Edit, lacon-tools
-  takes 0.79x the tokens at the same cost.** With the same tools as
-  Python, Lacon takes 1.18x: the primer, about 1,400 tokens a call.
+  takes 0.73x the tokens and 0.93x the cost.** With the same tools as
+  Python, Lacon takes 1.17x: the primer, about 1,400 tokens a call.
 - **python-write takes the fewest tokens and lacon-tools the least
   money.** Rewriting a short Python program whole costs few calls but
   output tokens; lacon-tools writes less and pays the primer on every
   call. Only lacon-write against python-write compares the languages
-  alone, with the same tool and way of working: 1.60x the tokens, 1.27x
+  alone, with the same tool and way of working: 1.40x the tokens, 1.12x
   the cost, mostly the primer read on each of about four calls.
 
 **Found while writing them:**
@@ -1953,7 +1961,108 @@ compares Lacon with Python only. The programs are 93 to 161 lines (3.4 to
 5.0 KB), small enough that reading one whole is the sensible first move;
 `sig` and `q` need larger programs to pay, if they pay at all.
 
-Next: the two log-timing episodes the spend limit cut off. Then the
-primer's cost, which now decides most comparisons with Python, and
-the gaps above, of which the field narrowing is the one an agent will
-hit.
+Next: the primer's cost, which now decides most comparisons with
+Python, and the gaps above, of which the field narrowing is the one an
+agent will hit.
+
+---
+
+## 26. Phase 2: Python, Rust and Go without file tools
+
+§13 compared Lacon with Python, Rust and Go with Claude Code's Read,
+Write and Edit in every episode, and §24 found that those tools'
+definitions cost about 1,130 tokens a call. Here every language works
+the way §25's Bash-only modes do: a `-write` episode Writes the whole
+program to `new<ext>` and saves it with `./write`, and lacon-tools Writes
+items and puts them. What's left of the gap belongs to the languages.
+
+**The run**: the 30 tasks, one trial each, in lacon-write, lacon-tools,
+python-write, rust-write and go-write, Opus 5.5 through Claude Code, the
+short primer and the chaining hint (`bench/results/20261008-write-langs`,
+not committed). A second trial was planned and dropped: these 150
+episodes, about $6.60 at API prices, took most of a fresh usage limit.
+
+| | lacon-write | lacon-tools | python-write | rust-write | go-write |
+|---|---|---|---|---|---|
+| Passed | 30/30 | 30/30 | 30/30 | 30/30 | 30/30 |
+| First attempt builds | 97% | 97% | 100% | 97% | 100% |
+| Median tokens-to-green | 10,617 | 14,852 | 8,203 | 8,614 | 8,494 |
+| Mean output tokens | 1,106 | 1,088 | 1,064 | 1,455 | 1,438 |
+| Mean cached reads | 9,398 | 11,912 | 6,146 | 6,188 | 6,040 |
+| Mean API calls | 2.3 | 2.7 | 2.3 | 2.2 | 2.2 |
+| Episodes done in two calls | 23 | 13 | 22 | 26 | 26 |
+| Mean cost | $0.041 | $0.042 | $0.039 | $0.050 | $0.049 |
+
+| lacon-write against | Tokens | Cost | With file tools (§13) |
+|---|---|---|---|
+| python-write | 1.35x | 1.05x | 1.49x, 0.93x |
+| rust-write | 1.30x | 0.85x | 1.40x, 0.78x |
+| go-write | 1.29x | 0.83x | 1.37x, 0.76x |
+
+(Geometric means of per-task ratios.)
+
+- **Without file tools the token gap narrows, from 1.37-1.49x to
+  1.29-1.35x.** Every median fell: Python's from 9,330 to 8,203, Rust's
+  from 10,154 to 8,614, Go's from 10,290 to 8,494, and Lacon's most, from
+  17,470 to 10,617, since its episodes took more calls and each paid for
+  the tool definitions. (§13's Lacon also ran on an older compiler.)
+  lacon-write's median is above §24's 9,658 because the `-write` modes
+  now keep Write (§25).
+- **What's left is the primer.** lacon-write writes as much as Python
+  (4% more) and 24% less than Rust and Go, and takes as many calls as
+  Python. The difference is cached reads: 9.4k an episode against
+  6.0-6.2k, about 1,400 tokens on each of 2.3 calls, the primer's size.
+- **On cost Lacon beats Rust and Go and is level with Python.** Rust and
+  Go write about 30% more, and output costs five times input. §13's edge
+  over Python (0.93x) is gone: there, Lacon's episodes wrote fewer
+  tokens to the cache than Python's (1,655 against 1,994), and a cache
+  write costs 12.5 times a cache read; here they write about as many
+  (2,109 against 2,034).
+- **lacon-tools takes 1.21x lacon-write's tokens on these tasks** (§24:
+  1.07x). Its prompt has the same chaining hint, but in 14 of 30
+  episodes it Wrote `items.lc` and waited for the result before putting
+  it, a call more; lacon-write did that in 5, the other languages in 2
+  to 7. Writing a program from scratch leaves `put` nothing to save
+  (§24), so lacon-write is the mode for comparing languages, and §25
+  shows where lacon-tools pays.
+
+**Three of the 150 first attempts failed to build.** rust-write's, in
+`ledger`, was Rust's own (`Result<(), String>` under an imported
+`io::Result`). Lacon's two were guesses that a fix made worse:
+
+- `t[0].parse::<int>()?`, six times, in `dijkstra` (lacon-write).
+  E0125's fix read `int(t[0])`, and the model rewrote each call to
+  exactly that, dropping the `?`. The next build reported E0406 ten
+  times, once at each use of `n`, `m`, `s`, `u` and the rest, with `n?`
+  as the fix. The model added the `?`s to the `int` calls itself; the
+  episode took 6 calls and 37,884 tokens, 3.6x lacon-tools' 10,399.
+  E0125's fix now takes in a `?` that follows (`fix: int(t[0])?`). And a
+  local bound to a `T!` by a call or other postfix expression, then used
+  as a `T`, gets one E0406 where it's bound, with the `?` (or a `??`
+  default) there: "`n` may be an error; add `?` where it's bound to pass
+  the error up | fix: int(t[0])?". The first attempt now builds after
+  one `lacon fix`. The second reports 8 errors instead of 10: 5 at
+  bindings, and 3 at uses of `e.0` and `e.1`, whose values reached a
+  tuple before any use.
+- `deps.get(x).map(it.len) ?? 0`, Rust's `Option::map`, in `topo-order`
+  (lacon-tools). E0407's fix made it `(deps.get(x) ?? set()).map(it.len)
+  ?? 0`, which maps over the set's elements, and after `lacon fix`
+  applied it the next error, "`indeg[u]` mixes [int] and int", was
+  harder to read than the first. `map` on an optional is now accepted,
+  as `unwrap`, `expect` and `is_none` already were: `none` stays `none`,
+  a value goes to the function, and a function that returns an optional
+  isn't wrapped again. The checker records each such call in
+  `Program::opt_map`, as it does `parse_to`, so neither the interpreter
+  nor native code maps the list or set inside an optional. The first
+  attempt now builds and passes unchanged.
+
+`tests/run/opt_map.lc` and `tests/check/result_bindings.lc` are new;
+`rust_habits`, `optionals` and `fixes` show the new fixes. Rust's other
+`Option` methods still get the `?? default` fix: `filter` on an
+optional is made `(x ?? 0).filter(...)`, which doesn't build. No episode
+has guessed it. Verified as before: the golden tests (typed and native)
+and `bench/tasks/check.py`, interpreted and `--native`, pass on every
+task.
+
+Next: the primer, which is now nearly all of the gap, about 1,400
+tokens on every call. A second trial would firm up the ratios.

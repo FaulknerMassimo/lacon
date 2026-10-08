@@ -4,7 +4,7 @@ E0302 optionals.lc:15:21 `fail` needs a `T!` function, but `first` returns an op
 E0407 optionals.lc:20:9 `m.get("a")` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (m.get("a") ?? 0)
 E0407 optionals.lc:22:9 `w` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: (w ?? "")
 E0406 optionals.lc:23:9 `parse("3")` may be an error; add `?` to pass the error up | fix: parse("3")?
-E0406 optionals.lc:25:9 `r` may be an error; add `?` to pass the error up | fix: r?
+E0406 optionals.lc:24:7 `r` may be an error; add `?` where it's bound to pass the error up | fix: parse("4")?
 E0406 optionals.lc:26:3 error ignored: `parse("5")` may fail; add `?` to pass it up, or handle it with `??` or `match` | fix: parse("5")?
 E0407 optionals.lc:27:12 `"k=v".split_once("=")` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: "k=v".split_once("=")?
 E0407 optionals.lc:28:12 `"abc".find("b")` may be none; give a default with `?? value`, check `!= none` first, or pass it up with `?` | fix: "abc".find("b") ?? 0

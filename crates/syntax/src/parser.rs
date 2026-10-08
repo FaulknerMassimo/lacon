@@ -1470,8 +1470,13 @@ impl<'a> Parser<'a> {
                     };
                     if let Some((obj, t)) = parse_as {
                         // `s.parse::<f64>()` is `f64(s)`, a `f64!` as `parse` is.
-                        let span = e.span.to(self.toks[(self.pos + 5).min(self.toks.len() - 1)].span);
-                        let fix = Fix::at(span, format!("{t}({})", &self.src[obj.start as usize..obj.end as usize]));
+                        // A `?` after it is part of the fix as shown, or a
+                        // reader rewriting by hand drops it with the rest.
+                        let try_ = matches!(self.peek_at(6), Tok::Question);
+                        let end = (self.pos + if try_ { 6 } else { 5 }).min(self.toks.len() - 1);
+                        let span = e.span.to(self.toks[end].span);
+                        let q = if try_ { "?" } else { "" };
+                        let fix = Fix::at(span, format!("{t}({}){q}", &self.src[obj.start as usize..obj.end as usize]));
                         self.diags.push(Diag::new("E0125", self.span(), format!("no turbofish; convert with `{t}(s)`")).with_fix(Some(fix)));
                     } else if matches!(self.peek_at(1), Tok::Lt) {
                         self.hint("E0125", self.span(), "no turbofish: methods return lists, so `.collect()` and type arguments aren't needed", None);

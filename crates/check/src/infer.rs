@@ -7,7 +7,7 @@
 //! Operations on a value whose type isn't known yet (`stack[-1].push(x)`
 //! before anything says what `stack` holds) are deferred until it is.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use lacon_interp::builtins::is_method;
@@ -28,12 +28,14 @@ struct Frame {
     /// A `var` bound to an int without a declared type, which becomes a float
     /// if a float is assigned to it later.
     widenable: Vec<bool>,
+    /// The slot was bound to a `T!` by this expression, where a `?` can go.
+    from: Vec<Option<Span>>,
 }
 
 impl Frame {
     fn new(n: u32, s: &mut Subst) -> Frame {
         let decl = (0..n).map(|_| s.fresh()).collect();
-        Frame { decl, narrowed: vec![false; n as usize], widenable: vec![false; n as usize] }
+        Frame { decl, narrowed: vec![false; n as usize], widenable: vec![false; n as usize], from: vec![None; n as usize] }
     }
 }
 
@@ -163,6 +165,8 @@ pub struct Checker<'p> {
     /// `s.parse()` calls with a declared type to parse to, for
     /// `Program::parse_to`.
     pub parse_to: Vec<(Span, ConvTo)>,
+    /// `x.map(f)` calls on an optional, for `Program::opt_map`.
+    pub opt_map: Vec<Span>,
     /// The type of every expression checked, by node address, in order;
     /// a later entry for the same node wins.
     pub ex_log: Vec<(usize, T)>,
@@ -172,6 +176,9 @@ pub struct Checker<'p> {
     /// What `s.parse()` without a declared type gives: whichever number the
     /// text is, whatever type use gives it.
     loose_parses: Vec<T>,
+    /// Reads of a local bound to a `T!`, by the read's span: the expression
+    /// it was bound to.
+    res_reads: HashMap<Span, Span>,
 }
 
 impl<'p> Checker<'p> {
@@ -190,9 +197,11 @@ impl<'p> Checker<'p> {
             widen_hit: false,
             loops: Vec::new(),
             parse_to: Vec::new(),
+            opt_map: Vec::new(),
             ex_log: Vec::new(),
             frame_log: Vec::new(),
             loose_parses: Vec::new(),
+            res_reads: HashMap::new(),
         }
     }
 
@@ -263,7 +272,7 @@ impl<'p> Checker<'p> {
         for _ in 0..4 {
             let snap = self.s.snapshot();
             let nd = self.diags.len();
-            let np = self.parse_to.len();
+            let (np, no) = (self.parse_to.len(), self.opt_map.len());
             let (ne, nf, nl) = (self.ex_log.len(), self.frame_log.len(), self.loose_parses.len());
             self.widen_hit = false;
             self.fn_once(id);
@@ -273,6 +282,7 @@ impl<'p> Checker<'p> {
             self.s = snap;
             self.diags.truncate(nd);
             self.parse_to.truncate(np);
+            self.opt_map.truncate(no);
             self.ex_log.truncate(ne);
             self.frame_log.truncate(nf);
             self.loose_parses.truncate(nl);
@@ -398,6 +408,9 @@ impl<'p> Checker<'p> {
 
     /// `x` may be an error where a value is needed.
     fn err_res(&mut self, span: Span, inner: &T, paren: bool) {
+        if let Some(&at) = self.res_reads.get(&span) {
+            return self.err_res_bound(span, at, inner);
+        }
         let snip = self.snippet(span).to_string();
         let fix = if self.ctx.passes_err(&self.s) {
             Some(format!("{snip}?"))
@@ -406,6 +419,20 @@ impl<'p> Checker<'p> {
         };
         let how = if self.ctx.passes_err(&self.s) { "add `?` to pass the error up" } else { "handle it with `?? default` or `match`" };
         self.err_fix("E0406", span, format!("`{snip}` may be an error; {how}"), fix);
+    }
+
+    /// A local bound to a `T!` is used as a `T`: one error, where it's bound.
+    fn err_res_bound(&mut self, read: Span, at: Span, inner: &T) {
+        if self.diags.iter().any(|d| d.code == "E0406" && d.span == at) {
+            return;
+        }
+        let (name, snip) = (self.snippet(read).to_string(), self.snippet(at).to_string());
+        let (fix, how) = if self.ctx.passes_err(&self.s) {
+            (Some(format!("{snip}?")), "add `?` where it's bound to pass the error up")
+        } else {
+            (self.zero_of(inner).map(|z| format!("{snip} ?? {z}")), "handle it where it's bound with `?? default`, or `match` it")
+        };
+        self.err_fix("E0406", at, format!("`{name}` may be an error; {how}"), fix);
     }
 
     fn err_res_ignored(&mut self, span: Span, snip: &str) {
@@ -537,6 +564,7 @@ impl<'p> Checker<'p> {
         let f = self.frames.last_mut().unwrap();
         f.decl[slot as usize] = t;
         f.narrowed[slot as usize] = false;
+        f.from[slot as usize] = None;
     }
 
     fn key_of(&self, e: &Ex) -> Option<Key> {
@@ -822,7 +850,12 @@ impl<'p> Checker<'p> {
                 }
                 T::Str
             }
-            Ex::Local(slot, _) => self.slot_type(0, *slot),
+            Ex::Local(slot, span) => {
+                if let Some(at) = self.frames.last().and_then(|f| f.from[*slot as usize]) {
+                    self.res_reads.insert(*span, at);
+                }
+                self.slot_type(0, *slot)
+            }
             Ex::Up(d, slot, _) => self.slot_type(*d, *slot),
             Ex::Global(g, _) => self.consts.get(*g as usize).cloned().unwrap_or(T::Unknown),
             Ex::List(xs, _) => {
@@ -1517,6 +1550,23 @@ impl<'p> Checker<'p> {
                         return (**inner).clone();
                     }
                     "is_none" | "is_some" | "is_err" | "is_ok" => return T::Bool,
+                    // `m.get(k).map(it.len) ?? 0`: `none` stays `none`, and
+                    // a value goes to the lambda.
+                    "map" if is_opt && args.len() == 1 && args[0].is_fn() => {
+                        let u = self.s.fresh();
+                        let want = T::func(vec![(**inner).clone()], u.clone());
+                        match &args[0] {
+                            Arg::Ex(Ex::Lambda(def)) => self.lambda(def, Some(&want), Some(name)),
+                            a => self.check_arg(a, &want, Site::Lambda { method: name }),
+                        };
+                        self.opt_map.push(span);
+                        // An optional from the lambda isn't wrapped again: at
+                        // run time both are a value or `none`.
+                        return match self.s.resolve(&u) {
+                            T::Opt(_) => u,
+                            _ => T::opt(u),
+                        };
+                    }
                     "str" | "to_string" => {
                         if !is_opt {
                             self.err_res(recv_span, inner, true);
@@ -2319,7 +2369,17 @@ impl<'p> Checker<'p> {
                         }
                         self.frames[0].widenable[*slot as usize] = true;
                     }
+                    let res = ty.is_none() && matches!(self.s.resolve(&t), T::Res(_));
                     self.bind_slot(*slot, t);
+                    // `n = int(s)` then `n + 1`: the `?` goes where `n` is
+                    // bound, not on every use.
+                    let postfix = matches!(
+                        e,
+                        Ex::CallFn { .. } | Ex::CallValue { .. } | Ex::CallBuiltin { .. } | Ex::Method { .. } | Ex::Field { .. } | Ex::Index { .. } | Ex::Cast { .. }
+                    );
+                    if res && postfix {
+                        self.frames.last_mut().unwrap().from[*slot as usize] = Some(e.span());
+                    }
                     return false;
                 }
                 self.pattern(pat, &t, e.span(), e.span());

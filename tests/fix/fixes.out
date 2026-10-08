@@ -10,8 +10,8 @@ fixed E0301 fixes.lc:22:11 t int = int(s)?
 fixed E0301 fixes.lc:27:20 if xs[i] == x: return none
 fixed E0302 fixes.lc:30:1 fn check(n int) int! =
 fixed E0305 fixes.lc:34:1 fn next(n int) int =
-fixed E0120 fixes.lc:38:3 n = count(s)
-fixed E0406 fixes.lc:39:3 n? * 2
+fixed E0120 fixes.lc:38:3 n = count(s)?
+fixed E0406 fixes.lc:38:7 n = count(s)?
 fixed E0406 fixes.lc:42:57 print(older(make()), area(Circle(1.0)), find([1], 1), check(1)?, next(1), parsed("2")?)
 fixed E0406 fixes.lc:42:77 print(older(make()), area(Circle(1.0)), find([1], 1), check(1)?, next(1), parsed("2")?)
 fixed E0305 fixes.lc:43:3 os.exit(0)
@@ -55,8 +55,8 @@ fn next(n int) int =
   return n + 1
 
 fn parsed(s str) int! =
-  n = count(s)
-  n? * 2
+  n = count(s)?
+  n * 2
 
 fn main() =
   print(older(make()), area(Circle(1.0)), find([1], 1), check(1)?, next(1), parsed("2")?)

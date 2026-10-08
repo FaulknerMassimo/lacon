@@ -1,0 +1,20 @@
+# A local bound to a `T!` and used as a `T` gets one error, where it's
+# bound and the `?` goes, not one at every use. Without a way to pass the
+# error up, the fix is a default there. A binding that isn't a call or
+# other postfix expression keeps its errors at the uses.
+fn main() =
+  t = "3 4".split()
+  n = int(t[0])
+  for i in 0..n:
+    print(i + n)
+  print(n * 2)
+  p = t[1].parse()
+  print(p + 1)
+
+fn total(s str) int =
+  x = int(s)
+  x + x
+
+fn pick(c bool, a str) int! =
+  y = if c: int(a) else: int("0")
+  y + y

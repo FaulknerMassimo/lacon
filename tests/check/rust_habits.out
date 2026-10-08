@@ -6,5 +6,5 @@ E0130 rust_habits.lc:8:12 no macros; write `assert a == b` (or `assert cond, "ms
 E0101 rust_habits.lc:9:3 no format placeholders; put the value inside the braces: "{x}" | fix: print("{ys}")
 E0110 rust_habits.lc:10:9 no `is`; compare with `==` / `!=`, e.g. `x == none`
 E0149 rust_habits.lc:11:12 `[x; n]` is Rust's; repeat a list with `[x] * n` | fix: [0] * (ys.len + 1)
-E0125 rust_habits.lc:13:18 no turbofish; convert with `f64(s)` | fix: f64("2.5")
+E0125 rust_habits.lc:13:18 no turbofish; convert with `f64(s)` | fix: f64("2.5")?
 [exit 1]

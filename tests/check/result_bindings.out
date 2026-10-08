@@ -1,0 +1,5 @@
+E0406 result_bindings.lc:7:7 `n` may be an error; add `?` where it's bound to pass the error up | fix: int(t[0])?
+E0406 result_bindings.lc:11:7 `p` may be an error; add `?` where it's bound to pass the error up | fix: t[1].parse()?
+E0406 result_bindings.lc:15:7 `x` may be an error; handle it where it's bound with `?? default`, or `match` it | fix: int(s) ?? 0
+E0406 result_bindings.lc:20:3 `y` may be an error; add `?` to pass the error up | fix: y?
+[exit 1]
