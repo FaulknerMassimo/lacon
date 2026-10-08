@@ -21,7 +21,7 @@ usage: lacon <command> [args]
   fix <file.lc>...          apply the errors' fixes, then report what's left
   build <file.lc> [-o exe]  compile to a native executable
   sig <file.lc>             signatures, docs and effects, no bodies
-  put <file.lc>             replace or add the items on stdin, by name
+  put <file.lc> [items.lc]  replace or add the items in items.lc or on stdin, by name
   q def <file.lc> <name>... the source of named items
   q callers <file.lc> <fn>  where a function is called
   q type <file.lc>:<l>:<c>  the type of the expression there (or a name)
@@ -69,8 +69,9 @@ fn real_main() -> ExitCode {
             fix::fix(rest)
         }
         "put" => match rest {
-            [file] => edit::put(file),
-            _ => usage_err("put takes one file and reads the items from stdin"),
+            [file] => edit::put(file, None),
+            [file, from] => edit::put(file, Some(from)),
+            _ => usage_err("put takes the file to change, then a file of items or none to read them from stdin"),
         },
         "q" => query::query(rest),
         "sig" => match rest.first() {

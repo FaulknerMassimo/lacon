@@ -6,8 +6,9 @@
 //!   output must equal the same `X.out` (skipped without a C compiler)
 //! - `tests/fix/X.lc`: `lacon fix` on a copy; its output, then the file it
 //!   leaves, must equal `X.out`
-//! - `tests/put/X.lc`: `lacon put` on a copy, with `X.put` on stdin; the
-//!   same
+//! - `tests/put/X.lc`: `lacon put` on a copy, with `X.put` on stdin and
+//!   again from a file; each run's output, then the file it leaves, must
+//!   equal `X.out`
 //! - `tests/q/X.lc`: `lacon q` with the arguments on each line of `X.q`;
 //!   each output after the command line, must equal `X.out`
 //!
@@ -167,7 +168,12 @@ fn fix_programs() {
 fn put_programs() {
     golden("put", |scratch, src, name| {
         let stdin = std::fs::read_to_string(src.join(name).with_extension("put")).unwrap();
-        lacon(scratch, &["put", name], Some(&stdin)) + &after(scratch, name)
+        let got = lacon(scratch, &["put", name], Some(&stdin)) + &after(scratch, name);
+        // The same items read from a file must do the same.
+        std::fs::copy(src.join(name), scratch.join(name)).unwrap();
+        std::fs::write(scratch.join("items"), &stdin).unwrap();
+        let from_file = lacon(scratch, &["put", name, "items"], None) + &after(scratch, name);
+        if from_file == got { got } else { format!("{got}--- from a file:\n{from_file}") }
     });
 }
 

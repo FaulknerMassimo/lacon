@@ -1,6 +1,6 @@
-//! `lacon put`: replaces top-level items by name with the ones on stdin, or
-//! adds them, so an agent never quotes the old code to change it. Then
-//! checks the file.
+//! `lacon put`: replaces top-level items by name with the ones on stdin or in
+//! a file, or adds them, so an agent never quotes the old code to change it.
+//! Then checks the file.
 
 use std::io::Read;
 use std::process::ExitCode;
@@ -9,10 +9,16 @@ use lacon_syntax::items::{scan, ItemSpan};
 
 use crate::{analyze, report};
 
-pub fn put(path: &str) -> ExitCode {
+/// Puts the items in `from`, or on stdin, into the file at `path`.
+pub fn put(path: &str, from: Option<&str>) -> ExitCode {
     let mut input = String::new();
-    if let Err(e) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("cannot read stdin: {e}");
+    let read = match from {
+        Some(f) => std::fs::read_to_string(f).map(|t| input = t),
+        None => std::io::stdin().read_to_string(&mut input).map(|_| ()),
+    };
+    let source = from.unwrap_or("stdin");
+    if let Err(e) = read {
+        eprintln!("cannot read {source}: {e}");
         return ExitCode::from(2);
     }
     let input = dedent(&input);
@@ -22,7 +28,7 @@ pub fn put(path: &str) -> ExitCode {
     // added item.
     let items = scan(&input);
     if items.is_empty() {
-        eprintln!("nothing to put: stdin has no items");
+        eprintln!("nothing to put: {source} has no items");
         return ExitCode::from(2);
     }
     if let Some(it) = items.iter().find(|it| it.kind == "?") {

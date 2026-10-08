@@ -52,7 +52,7 @@ uv run bench/tasks/check.py --native                 # the same, compiled with `
 uv run bench/perf/run.py                             # native speed against the same programs in Rust
 uv run bench/harness/run.py --agent claude-code      # Claude solves the tasks, through Claude Code (Opus 5.5)
 uv run bench/harness/run.py --langs lacon,python     # the same through the API (needs an API key)
-uv run bench/harness/run.py --agent claude-code --langs lacon,lacon-write,lacon-tools   # no file tools: ./write, or Lacon's own tools
+uv run bench/harness/run.py --agent claude-code --langs lacon,lacon-write,lacon-tools   # Write but no Read or Edit: ./write, or Lacon's own tools
 uv run bench/harness/run.py --agent claude-code --suite edits   # change an existing program instead of writing one
 uv run bench/harness/report.py bench/results/<run>   # tokens-to-green per language
 ```

@@ -354,7 +354,10 @@ writing the whole file with a plain script: none of 60 episodes used
 `fix`, `q` or `sig`. Taking away Claude Code's file tools saved 35% of
 Lacon's tokens, which says more about the harness than about Lacon.
 A second suite (§25) starts each episode from an existing program and asks
-for a change, where the tools should pay; one smoke episode has run it.
+for a change. In a pilot on its four tasks, writing only the changed items
+with `put` took 0.84x the tokens and 0.65x the cost of rewriting the whole
+program, the first measurement in which `put` pays; still no episode used
+`sig`, `q` or `fix`.
 
 ### Phase 3 — Speed and scale
 
@@ -1819,10 +1822,9 @@ make different kinds of change:
 **The harness.** `--suite edits` runs them. The episode starts with
 `start<ext>` as `main<ext>`, and the system prompt's first line says the
 program exists and asks for the change; the rest is unchanged, so a
-write task's prompt is the same byte for byte. Without file tools,
-`./show` prints the program, since the Bash-only modes had no way to
-read it. A build of the unchanged start doesn't count as the first
-attempt. Edit tasks need Claude Code: the API agent's tools take the
+write task's prompt is the same byte for byte. Without Read, `./show`
+prints the program. A build of the unchanged start doesn't count as the
+first attempt. Edit tasks need Claude Code: the API agent's tools take the
 whole program as an argument.
 
 **Checks.** `bench/tasks/check.py` covers both suites. For an edit task
@@ -1833,12 +1835,70 @@ Every program passes, interpreted and native, and a replay of all four
 in lacon, lacon-write, lacon-tools, python and python-write passes.
 
 **A smoke episode** (ini-diamond, lacon-tools, Opus 5.5 through Claude
-Code) passed in 5 calls and 31,740 tokens ($0.07). The model read the
-whole program with `./show`, not `sig` or `q def`, then put only
-`lookup`. It lost a call to Claude Code's permission check, which refuses
-a `printf` argument containing `${...}`, the syntax the task's references
-first had. They are `@{...}` now, so a model in any language can pipe an
-example to `./run`.
+Code) passed in 5 calls and 31,740 tokens ($0.07). It lost a call to
+Claude Code's permission check, which refuses a `printf` argument
+containing `${...}`, the syntax the task's references first had. They are
+`@{...}` now, so a model in any language can pipe an example to `./run`.
+
+**Program text no longer goes through Bash.** The first pilot run had 3
+of its 12 episodes give up, all in lacon-write and lacon-tools, and 6 of
+those 8 Bash-only episodes were refused at least once (9 refusals). Claude
+Code 2.1.281 refuses a Bash command in which a `{` outside quotes is
+followed by a quote before its `}` ("brace with quote character
+(expansion obfuscation)"), and the scan that skips quoted text doesn't
+know heredocs, so it reads a heredoc's body as shell. A Lacon struct
+literal holding a string (`Tok{"num", s}`, `Req{..., if size == "-": 0
+...}`) or a map with string keys (`{"open": (1, 2)}`) trips it, as does a
+Python dict. Every Lacon start does; so do 5 of the 30 first-suite
+solutions, which is why §24's 180 episodes saw it once.
+
+So the Bash-only modes now keep Claude Code's Write tool and drop only
+Read and Edit. lacon-write Writes the whole program to `new<ext>` and
+runs `./write new<ext>`; lacon-tools Writes items to `items.lc` and runs
+`./lacon put main.lc items.lc`, which `put` now accepts (`put` with no
+second file still reads stdin, and the golden tests run every case both
+ways). Both modes pay for Write's definition on every call, so their
+token counts aren't comparable with §24's.
+
+**The pilot**: the four tasks, one trial each, Opus 5.5 through Claude
+Code, the short primer and the chaining hint. The lacon episodes are
+from the first run (file tools, never refused); the other two from the
+rerun with Write (`bench/results/20261008-edits-pilot` and `-pilot2`,
+not committed). All 12 passed and every first attempt built.
+
+| Task | Lacon (Read, Edit) | lacon-write | lacon-tools |
+|---|---|---|---|
+| bank-overdraft | 45,027 | 31,654 | 22,476 |
+| calc-power | 43,336 | 24,479 | 29,523 |
+| ini-diamond | 20,626 | 29,253 | 18,237 |
+| log-timing | 42,107 | 23,035 | 21,578 |
+| mean API calls | 4.5 | 3.5 | 3.2 |
+| mean output tokens | 1,707 | 2,894 | 1,548 |
+| mean cost | $0.086 | $0.125 | $0.085 |
+
+As geometric means of per-task ratios:
+
+- **lacon-tools against lacon-write: 0.84x the tokens, 0.65x the
+  cost.** Every lacon-tools episode Wrote only the items that change
+  (one to seven: bank-overdraft's seven are `ARITY`, the `Account` type,
+  `fmt_cents`, the new `cmd_limit`, `cmd_withdraw`, `cmd_transfer` and
+  `run_line`), then put, ran and submitted in one command. lacon-write
+  Wrote the whole program, 2,200 to 3,400 output tokens, and output
+  costs five times input. This is the first measurement in which `put`
+  pays.
+- **lacon-tools against Lacon with Read and Edit: 0.63x the tokens, at
+  the same cost (0.98x).** The file-tool episodes took 4 to 7 Edits on
+  the larger tasks, each a call that rereads the context, where `put`
+  carried every change at once. Edits are short, so their output and
+  cost stayed low.
+- **No episode used `sig`, `q` or `fix`.** Every Bash-only episode read
+  the whole program with `./show` first; at 93 to 161 lines that costs
+  about as much as `sig` and a `q def` or two, and needs no second call.
+
+One trial a cell is a pilot: ini-diamond's lacon-write took 29,253
+tokens against lacon-tools' 18,237 for the same one-function fix, and
+calc-power went the other way. More trials, and Python on the same
+tasks, come next.
 
 **Found while writing them:**
 
@@ -1854,10 +1914,9 @@ example to `./run`.
 
 **Not done.** The starts have no Rust or Go ports yet, so the suite
 compares Lacon with Python only. The programs are 93 to 161 lines (3.4 to
-5.0 KB); reading one whole costs little more than `sig` and two `q def`
-calls, so `./show` may be the right choice at this size. If the pilot
-shows the same, the starts need to grow to several hundred lines before
-the tools can pay.
+5.0 KB), small enough that reading one whole is the sensible first move;
+`sig` and `q` need larger programs to pay, if they pay at all.
 
-Next: a pilot of the four tasks, one trial each in lacon, lacon-write and
-lacon-tools (12 episodes), then Python with and without file tools.
+Next: a second trial of the three Lacon modes and a first of Python with
+and without Read and Edit, to see how Lacon's edits compare with
+Python's.

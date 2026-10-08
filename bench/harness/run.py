@@ -21,12 +21,15 @@ submission passes. Lacon episodes also get the primer in the system prompt;
 nothing else differs between languages.
 
 Through Claude Code, the model writes the program with Claude Code's Read,
-Write and Edit tools. Two variants take those away, leaving only Bash:
-`<lang>-write` (`python-write`, `lacon-write`, ...) saves the whole program
-with `./write`, and `lacon-tools` writes and changes it with `./lacon put`
-and `./lacon fix` and reads it with `./lacon q` and `./lacon sig`. Against
-each other, they measure whether Lacon's own tools cut tokens-to-green, apart
-from what dropping the file tools' definitions saves on every call.
+Write and Edit tools. Two variants take Read and Edit away, leaving Write
+and Bash: `<lang>-write` (`python-write`, `lacon-write`, ...) Writes the
+whole program to `new<ext>` and saves it with `./write new<ext>`, and
+`lacon-tools` Writes items to `items.lc`, puts them with `./lacon put
+main.lc items.lc`, mends them with `./lacon fix` and reads the program with
+`./lacon q` and `./lacon sig`. Against each other, they measure whether
+Lacon's own tools cut tokens-to-green, apart from what dropping Read and
+Edit saves on every call. (Program text went through Bash heredocs until
+Claude Code's check for a brace before a quote refused most of them.)
 
 The `edits` suite (bench/edits/) has tasks that change an existing program
 rather than write one: the episode starts with the task's `start<ext>` as
@@ -139,14 +142,7 @@ SYSTEM_CC_TOOLS = """{goal}
 
 Environment: {environment}
 
-There are no file tools; `./lacon` writes and reads the program{show}. `./lacon put main.lc` reads top-level items (`fn`, `type`, `enum`, constants) from stdin and replaces each item of the same name in main.lc, or adds it, creating the file if needed. It then checks the file and prints each error, or `ok`. Write the program with a heredoc, and change a function by putting just that function again:
-
-```
-./lacon put main.lc <<'EOF'
-fn main() =
-  print("hi")
-EOF
-```
+The only file tool is Write; `./lacon` writes and reads the program.{show} `./lacon put main.lc items.lc` reads top-level items (`fn`, `type`, `enum`, constants) from `items.lc` and replaces each item of the same name in main.lc, or adds it, creating main.lc if needed. It then checks main.lc and prints each error, or `ok`. Write the items to `items.lc` with the Write tool, then put them; to change a function, put just that function again.
 
 `./lacon fix main.lc` applies the fixes the errors suggest and prints what is left. `./lacon q def main.lc NAME` prints an item's source, `./lacon q type main.lc:LINE:COL` the type of the expression there, and `./lacon sig main.lc` every signature.
 
@@ -158,13 +154,7 @@ SYSTEM_CC_WRITE = """{goal}
 
 Environment: {environment}
 
-There are no file tools. `./write` saves its stdin as `main{ext}`, replacing the whole file{show}. Write the program with a heredoc:
-
-```
-./write <<'EOF'
-...the whole program...
-EOF
-```
+The only file tool is Write. Write the whole program to `new{ext}` with the Write tool, then `./write new{ext}` replaces `main{ext}` with it.{show}
 
 `printf '1 2\\n' | ./run` builds the program and runs it on that input, printing the build errors or the exit code and output. `./submit` runs it against the hidden tests and prints the first failing one. The task is finished when a submission passes.
 
@@ -173,13 +163,16 @@ Bash can run only `./write`, {own}`./run`, `./submit`, `ls`, `printf` and `echo`
 # Claude Code's Bash may run only the episode's own tools, `ls`, and
 # printf/echo to pipe input into `./run`.
 CC_ALLOWED = ["Read", "Write", "Edit", "Bash(./run)", "Bash(./run *)", "Bash(./submit)", "Bash(ls)", "Bash(ls *)", "Bash(printf *)", "Bash(echo *)"]
-# Without file tools, `./write` or `./lacon` takes their place.
+# Without Read and Edit, `./write` or `./lacon` takes their place. Write
+# stays, because program text in a Bash heredoc trips Claude Code's check
+# for a brace before a quote (PLAN §25) and is refused.
 CC_BASH = [t for t in CC_ALLOWED if t.startswith("Bash(")]
 CC_ALLOWED_EDIT = {
     "files": CC_ALLOWED,
-    "write": ["Bash(./write)", "Bash(./write *)", *CC_BASH],
-    "tools": ["Bash(./lacon *)", *CC_BASH],
+    "write": ["Write", "Bash(./write)", "Bash(./write *)", *CC_BASH],
+    "tools": ["Write", "Bash(./lacon *)", *CC_BASH],
 }
+CC_TOOLS = {"files": "Bash,Read,Write,Edit", "write": "Bash,Write", "tools": "Bash,Write"}
 # An edit task without file tools also has `./show`.
 CC_SHOW = ["Bash(./show)", "Bash(./show *)"]
 
@@ -232,19 +225,23 @@ def find_task(name: str) -> Path:
 CHAIN_HINT = {
     "claude": "A failed submission has no penalty and `submit` reports build errors too, so you can submit without running first.",
     "claude-code": "A failed submission has no penalty and `./submit` reports build errors too, so you can write `main{ext}` and run `./run input.txt && ./submit` in the same turn.",
-    "bash": "A failed submission has no penalty and `./submit` reports build errors too, so one command can {verb} the program, run it and submit: the heredoc, then `printf '...' | ./run && ./submit` on the line after `EOF`.",
+    "bash": "A failed submission has no penalty and `./submit` reports build errors too, so in one turn you can Write `{file}` and run `{save} && printf '...' | ./run && ./submit`.",
 }
+# Where a Bash-only episode writes program text, and the command that
+# applies it to `main<ext>`.
+SCRATCH = {"write": ("new{ext}", "./write new{ext}"), "tools": ("items.lc", "./lacon put main.lc items.lc")}
 
 
 def system_prompt(lang: L.Lang, agent: str = "claude", primer: Path = PRIMER, chain_hint: bool = False, edit_task: bool = False) -> str:
     template = {"write": SYSTEM_CC_WRITE, "tools": SYSTEM_CC_TOOLS}.get(lang.edit, SYSTEM_CC if agent == "claude-code" else SYSTEM)
     goal = (GOAL_EDIT if edit_task else GOAL_NEW).format(lang=lang.name, ext=lang.ext)
-    show = {"write": ", and `./show` prints it", "tools": ", and `./show` prints all of it"}.get(lang.edit, "") if edit_task else ""
+    show = {"write": " `./show` prints it.", "tools": " `./show` prints all of it."}.get(lang.edit, "") if edit_task else ""
     own = "`./show`, " if edit_task else ""
     s = template.format(goal=goal, lang=lang.name, ext=lang.ext, environment=lang.environment, show=show, own=own)
     if chain_hint:
         hint = "bash" if lang.edit != "files" else "claude-code" if agent == "claude-code" else "claude"
-        s += "\n\n" + CHAIN_HINT[hint].format(ext=lang.ext, verb="put" if lang.edit == "tools" else "write")
+        file, save = (x.format(ext=lang.ext) for x in SCRATCH.get(lang.edit, ("", "")))
+        s += "\n\n" + CHAIN_HINT[hint].format(ext=lang.ext, file=file, save=save)
     if isinstance(lang, L.Lacon):
         s += "\n\n" + primer.read_text()
     return s
@@ -449,9 +446,11 @@ def replay_agent(ep: Episode) -> tuple[str, list]:
     code = ref.read_text()
     log = []
     if ep.lang.edit == "tools":
-        # Put the whole solution, as a model would, and submit what put wrote.
-        # In an edit task, that replaces the start's items of the same names.
-        r = ep.lacon(["put", f"main{ep.lang.ext}"], code)
+        # Put the whole solution from a file, as a model would, and submit
+        # what put wrote. In an edit task, that replaces the start's items of
+        # the same names.
+        (ep.workdir / "items.lc").write_text(code)
+        r = ep.lacon(["put", f"main{ep.lang.ext}", "items.lc"], "")
         log.append({"tool": "lacon put", "result": r.stdout + r.stderr})
         code = (ep.workdir / f"main{ep.lang.ext}").read_text()
     elif ep.lang.edit == "write":
@@ -481,15 +480,25 @@ def tool_main(tool: str, task_name: str, lang_key: str, events: str) -> int:
         sys.stdout.write(src.read_text() if src.exists() else f"there is no {src.name}\n")
         return 0
     if tool == "write":
-        text = ep.write(sys.stdin.read() if not sys.stdin.isatty() else "")
+        # `./write FILE` saves FILE as the program; `./write` alone, stdin.
+        if len(sys.argv) > 1:
+            path = Path(sys.argv[1])
+            if not path.is_file():
+                print(f"there is no {path}; Write it first")
+                return 1
+            body = path.read_text()
+        else:
+            body = sys.stdin.read() if not sys.stdin.isatty() else ""
+        text = ep.write(body)
         with open(events, "a") as f:
             f.write(json.dumps({"tool": "write", "command": "write", "build_ok": None, "passed": False}) + "\n")
         print(text)
         return 0
     if tool == "lacon":
         args = sys.argv[1:]
-        # Only `put` reads stdin, which may be a terminal or left open.
-        stdin = sys.stdin.read() if args[:1] == ["put"] and not sys.stdin.isatty() else ""
+        # Only `put` without a file of items reads stdin, which may be a
+        # terminal or left open.
+        stdin = sys.stdin.read() if args[:1] == ["put"] and len(args) == 2 and not sys.stdin.isatty() else ""
         r = ep.lacon(args, stdin)
         with open(events, "a") as f:
             f.write(json.dumps({"tool": "lacon", "command": args[0] if args else "", "build_ok": ep.first_build_ok, "passed": False}) + "\n")
@@ -536,7 +545,7 @@ def claude_code_agent(ep: Episode, args) -> tuple[str, list]:
             "--output-format", "stream-json", "--verbose",
             "--model", args.model,
             "--system-prompt", system_prompt(ep.lang, "claude-code", args.primer, args.chain_hint, ep.task.edit),
-            "--tools", "Bash,Read,Write,Edit" if edit == "files" else "Bash",
+            "--tools", CC_TOOLS[edit],
             "--allowedTools", *CC_ALLOWED_EDIT[edit], *(CC_SHOW if show else []),
             "--permission-prompts", "none",
             "--restricted", "--safe-mode", "--no-session-persistence",
