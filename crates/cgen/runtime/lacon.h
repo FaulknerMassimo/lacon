@@ -184,6 +184,43 @@ static inline __attribute__((always_inline)) lc_v lc_vget(const lc_vec *x, int64
 /* Stores an owned value at `i`, boxing a packed list for a value of
  * another kind; the vec must be one nothing else holds. */
 void lc_vset(lc_vec *x, int64_t i, lc_v v);
+/* The kind a list packs a value as. */
+static inline __attribute__((always_inline)) int lc_kind_of(lc_v v) {
+    return v.tag == T_INT ? K_INT : v.tag == T_FLOAT ? K_FLOAT : v.tag == T_BOOL ? K_BOOL : K_BOXED;
+}
+/* `lc_vset` with the common cases inline, for a `map` that changes a list
+ * nothing else holds in place. */
+static inline __attribute__((always_inline)) void lc_vput(lc_vec *x, int64_t i, lc_v v) {
+    if (x->kind == K_INT && v.tag == T_INT) x->ints[i] = v.u.i;
+    else if (x->kind == K_FLOAT && v.tag == T_FLOAT) x->floats[i] = v.u.f;
+    else if (x->kind == K_BOXED) lc_set(&x->boxed[i], v);
+    else lc_vset(x, i, v);
+}
+/* Appends an owned value to the new list `*r` that `map` builds from `n`
+ * elements, which is unit until the first value makes it a list packed as
+ * that value's kind, with room for all `n`. */
+static inline __attribute__((always_inline)) void lc_map_push(lc_v *r, int64_t n, lc_v v) {
+    if (r->tag != T_LIST) *r = lc_vec_alloc(T_LIST, lc_kind_of(v), n);
+    lc_vec *x = VEC(*r);
+    if (x->len < x->cap && x->kind == K_INT && v.tag == T_INT) x->ints[x->len++] = v.u.i;
+    else if (x->len < x->cap && x->kind == K_FLOAT && v.tag == T_FLOAT) x->floats[x->len++] = v.u.f;
+    else lc_vec_push(*r, v);
+}
+/* For a `filter` that changes a list nothing else holds in place: element
+ * `i` moves down to `*w`, which counts it, if `keep`, and is released if
+ * not. A boxed element's old slot is left unit, so the list can still be
+ * released if the filter stops partway; the caller sets the length. */
+static inline __attribute__((always_inline)) void lc_vkeep(lc_vec *x, int64_t i, int64_t *w, bool keep) {
+    switch (x->kind) {
+    case K_INT: if (keep) x->ints[(*w)++] = x->ints[i]; return;
+    case K_FLOAT: if (keep) x->floats[(*w)++] = x->floats[i]; return;
+    case K_BOOL: if (keep) x->bools[(*w)++] = x->bools[i]; return;
+    }
+    lc_v e = x->boxed[i];
+    x->boxed[i] = LC_UNIT;
+    if (keep) x->boxed[(*w)++] = e;
+    else lc_release(e);
+}
 /* A packed vec's elements as boxed values, in place. */
 void lc_vec_box(lc_vec *x);
 /* Elements `a..b` of `src` as a new vec of tag `tag`; a list keeps a packed
@@ -344,11 +381,20 @@ bool lc_pred(lc_v r, const char *site);
 /* Pairs of a sort key and a value, for `sort` and `sort_by`. */
 typedef struct { lc_v key, val; } lc_kv;
 lc_kv *lc_pairs_new(int64_t n);
+/* Frees pairs from `lc_pairs_new`, releasing nothing. */
+void lc_pairs_done(lc_kv *kv);
 /* Releases the first `n` pairs and frees them all. */
 void lc_pairs_free(lc_kv *kv, int64_t n);
 /* Sorts `n` pairs stably by key and gives their values as a list, taking
  * the pairs. `by` is true for `sort_by`, whose error names the keys. */
 lc_v lc_sorted_pairs(lc_kv *kv, int64_t n, bool by, const char *site);
+/* Releases the keys of the first `n` pairs, whose values are borrowed, and
+ * frees them all. */
+void lc_pairs_free_keys(lc_kv *kv, int64_t n);
+/* `sort_by` on the list `xs`, which nothing else holds and whose elements
+ * the pairs' values borrow: sorts the pairs as `lc_sorted_pairs` does, puts
+ * the values back in `xs` in their order, and gives `xs`. */
+lc_v lc_sort_pairs_into(lc_v xs, lc_kv *kv, int64_t n, const char *site);
 
 /* ----- formatting ----- */
 

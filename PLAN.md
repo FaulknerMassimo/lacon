@@ -236,7 +236,8 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
   structs once before a loop that only reads and assigns their fields,
   then runs a copy of the loop without per-element tests (§27). A
   variable's last read moves its value, so `+`, `sort`, `rev` and the
-  trims change a value nothing else holds in place (§28). Mode checking
+  trims change a value nothing else holds in place (§28), and so do
+  `map`, `filter` and `sort_by` given a lambda (§29). Mode checking
   isn't built, and every other read of a variable still retains it.
 - **Backends, in order:**
   1. **C** first. That's how Koka, Nim and Lean work, and it's the fastest way
@@ -387,6 +388,11 @@ of 200,000 pieces went from 0.98 s to 0.002 s. A tenth benchmark,
 `concat`, which the compiler before didn't finish in two minutes, runs
 at 1.68x Rust; trees went from 1.01x to 0.89x, and the nine's geometric
 mean is 1.33x. Mode checking isn't built.
+`map`, `filter` and `sort_by` given a lambda now reuse a list nothing
+else holds (§29), as §3.3 promised of `xs.map(...).filter(...)`: a
+`map` over 100,000 ints went from 0.141 s to 0.075 s. An eleventh
+benchmark, `pipeline`, went from 1.31x Rust to 1.03x, records from
+1.06x to 0.93x, and the eleven's geometric mean is 1.33x.
 
 ### Phase 3 — Speed and scale
 
@@ -2299,3 +2305,125 @@ no task's input is large enough yet for it to show.
 Next: the primer (§26) is still the larger lever on tokens-to-green.
 For speed, `sort_by`, `map` and `filter` could reuse a list nothing else
 holds, and mode checking is the piece of Phase 2's memory model left.
+
+---
+
+## 29. Phase 2: `map`, `filter` and `sort_by` reuse a list nothing else holds
+
+§3.3 promised that pipelines like `xs.map(...).filter(...)` update in
+place when they can. §28 gave that to `sort`, `rev` and the trims, but
+`map`, `filter` and `sort_by` still built a new list every time. Agents
+call them far more often, and nearly always with a lambda, which §19
+runs as an inlined loop. The change is in that loop.
+
+**In place.** The loop now tests once, as it starts, whether the list's
+count is one. That holds for a temporary (`split`'s result, or the list
+a `map` before it built) and for a variable's last read (§28). If it
+holds:
+
+- `filter` moves each element it keeps down over the ones it drops,
+  releases those, and shortens the list.
+- `sort_by` sorts pairs of each key and its element, with the element
+  borrowed rather than retained, and puts the elements back in their
+  order.
+- `map` stores each value over the element it came from, provided the
+  first value is of the kind the list is packed as (§17). The list then
+  has the kind a new list would take from its first value, and a later
+  value of another kind boxes it in place, as it would box a new list.
+  If the first value is of another kind (strings mapped to their
+  lengths), `map` builds a new list as before.
+
+The lambda still borrows each element (§19), and the element is
+replaced only after the lambda returns. The lambda can't reach the
+list, since nothing else holds it. A lambda that fails partway leaves
+a mix of kept, released and untouched elements, all of which releasing
+the list frees; to allow that, `filter` leaves each vacated boxed slot
+unit. A new `map` list is also cheaper to make. It used to be
+allocated boxed, with room for every element, then reallocated to a
+packed kind at the first value. Now the first value makes it at its
+own kind and full size.
+
+**Sort buffers.** At first, in-place `sort_by` made a loop of sorts
+slower: 300 sorts of 100,000 ints went from 0.390 s to 0.603 s, and
+page faults from 3,820 to 34,001. Each sort mallocs and frees two
+buffers of 32 bytes a pair, 3.2 MB each here. Whether glibc hands such
+a block back to the kernel, so that the next one is mapped and faulted
+in fresh, depends on the order of the program's other allocations, and
+removing one allocation from that order was enough to make every sort
+fault its buffers in again. With glibc's thresholds fixed through
+`GLIBC_TUNABLES`, the in-place loop was faster (0.424 s against
+0.453 s), so the extra time was the allocator's and not the sort's.
+The runtime now keeps the two largest buffers a sort gives back, up to
+32 MB each, for the next sort. The loop takes 0.396 s with 2,006
+faults. Those buffers stay allocated: `pipeline`'s peak memory went
+from 12.7 MB to 16.2 MB (Rust's is 12.0 MB), and the other benchmarks'
+peaks moved by under 2%.
+
+| Program (pinned, best of seven) | Before | After |
+|---|---|---|
+| `ys = xs.map(it + 1)`, 100,000 ints, 300 times | 0.141 s | 0.075 s |
+| ... `.filter(it % 3 != 0)` after it | 0.248 s | 0.165 s |
+| ... `.map(it * 2)` after that | 0.338 s | 0.193 s |
+| `zs = xs.sort_by(-it)`, 100,000 ints, 300 times | 0.399 s | 0.396 s |
+| `line.split(',').map(it.trim()).filter(it.len > 2).sort_by(it.len)`, 60 words, 20,000 times | 0.063 s | 0.056 s |
+
+The first four programs also build `xs` from 100,000 pushes each time,
+which accounts for 0.045 s of each. The `map` alone faulted 59,356
+pages before and faults 947 now. `sort_by` in place saves the new list
+but not the sort, and the sort is most of the time.
+
+**How often.** The 526 distinct Lacon programs from the harness runs so
+far were built with these loops counted and run on their tasks' inputs.
+Of the 8,707 `map` loops they ran over non-empty lists, 6,767 started
+with a list nothing else held, and 5,899 of those stayed in place.
+`filter` reused 72 lists of 160, and `sort_by` 210 of 238. 128 of the
+526 programs reuse a list at least once. Calls with something other
+than a lambda (`xs.map(f)`, a lambda holding a lambda) and `sort_by` on
+a map take the runtime's path, which still copies.
+
+`tests/run/reuse.lc` covers ints, strings, structs and bools in place;
+lists another variable holds; a `map` whose first value, or a later
+one, changes the kind; empty lists; lists of lists; and a failure
+partway through each method in place. With the helpers traced, each
+path ran where expected. Verified as before: every golden program and
+task input gives the same stdout, stderr and exit code from the
+interpreter and from native code, typed and with `LACON_BOXED=1`, each
+also under AddressSanitizer and UndefinedBehaviorSanitizer, and
+`bench/tasks/check.py`, interpreted and `--native`, passes every task.
+LeakSanitizer reports leaks in the same four golden programs as before.
+The 526 agent programs were checked the same way on their tasks'
+inputs, 1,895 runs in each of the four builds, and none differ from the
+interpreter.
+
+**Results.** An eleventh benchmark, `pipeline`, draws 100,000 ints,
+maps, filters and sorts them by key, 300 times. Its Rust version uses
+`into_iter().map().filter().collect()`, which reuses the buffer too,
+and `sort_by_key`. Before and after measured together, pinned, best of
+seven runs:
+
+| Program | Before | After |
+|---|---|---|
+| collatz | 1.57x | 1.57x |
+| concat | 1.67x | 1.66x |
+| fib | 2.59x | 2.55x |
+| knapsack | 1.88x | 1.87x |
+| mandel | 1.03x | 1.03x |
+| nbody | 1.91x | 1.91x |
+| pipeline | 1.31x | 1.03x |
+| records | 1.06x | 0.93x |
+| sieve | 1.10x | 1.10x |
+| trees | 0.90x | 0.91x |
+| wordfreq | 0.99x | 0.99x |
+| geometric mean of the nine | 1.36x | 1.34x |
+| geometric mean of the eleven | 1.38x | 1.33x |
+
+(Native time as a multiple of Rust's, `rustc -O`.) records filters
+1,500,000 structs and sorts the result: over ten runs each, before
+took 0.237-0.244 s and after 0.209-0.213 s, against Rust's 0.230 s.
+Earlier batches the same day hit §28's slow mode with both compilers,
+before at 0.35 s and after at 0.31 s, so reuse saves about 0.03 s
+either way. The slow mode itself is still unexplained: its page faults
+are about what the fast mode's are.
+
+Next: the primer (§26) is still the larger lever on tokens-to-green,
+and mode checking is the piece of Phase 2's memory model left.

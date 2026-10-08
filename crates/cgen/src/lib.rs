@@ -3435,27 +3435,50 @@ impl<'p> Gen<'p> {
     /// runtime would call a closure. The lambda's entry counts toward the
     /// depth limit, as `lc_call` counts it. None for other methods and
     /// arguments.
+    ///
+    /// A list nothing else holds (`own`: a temporary, or a variable's last
+    /// read) becomes the result. `filter` keeps its elements in place and
+    /// `sort_by` puts them back in order. `map` stores each value over its
+    /// element if the first is of the list's packed kind, which the list
+    /// then keeps as a new one would take it; if not, it builds a new list.
+    /// The lambda borrows each element, as before, and the element is
+    /// replaced only after the lambda returns; the lambda can't reach the
+    /// list itself.
     fn inline_loop(&mut self, name: &str, args: &[Ex], rv: &str, r: &str, site: &str) -> Option<String> {
         let ([Ex::Lambda(def)], "map" | "filter" | "sort_by") = (args, name) else {
             return None;
         };
         let f = self.inline_lambda(def)?;
-        let (v, n, i, x, y) = (self.t(), self.t(), self.t(), self.t(), self.t());
+        let (v, n, i, x, y, own) = (self.t(), self.t(), self.t(), self.t(), self.t(), self.t());
         let unwind = format!("if (lc_unwinding) {{ lc_release({r}); lc_release({rv}); UNWIND; }} ");
         let (init, step, done) = match name {
-            "map" => (format!("{r} = lc_list_new({n}); "), format!("lc_vec_push({r}, {y}); "), unwind),
-            "filter" => (format!("{r} = lc_list_new(0); "), format!("if (lc_pred({y}, {site})) lc_vec_push({r}, lc_retain({x})); "), unwind),
+            "map" => (
+                format!("{r} = LC_UNIT; "),
+                format!("if ({own}) {{ if ({i} > 0 || lc_kind_of({y}) == {v}->kind) {{ lc_vput({v}, {i}, {y}); continue; }} {own} = false; }} lc_map_push(&{r}, {n}, {y}); "),
+                format!("{unwind}if ({own}) {{ {r} = {rv}; {rv} = LC_UNIT; }} else if ({r}.tag != T_LIST) {r} = lc_list_new(0); "),
+            ),
+            "filter" => {
+                let (w, keep) = (self.t(), self.t());
+                (
+                    format!("int64_t {w} = 0; {r} = {own} ? LC_UNIT : lc_list_new(0); "),
+                    format!("bool {keep} = lc_pred({y}, {site}); if ({own}) lc_vkeep({v}, {i}, &{w}, {keep}); else if ({keep}) lc_vec_push({r}, lc_retain({x})); "),
+                    format!("{unwind}if ({own}) {{ {v}->len = {w}; {r} = {rv}; {rv} = LC_UNIT; }} "),
+                )
+            }
             _ => {
                 let kv = self.t();
                 (
                     format!("lc_kv *{kv} = lc_pairs_new({n}); "),
-                    format!("{kv}[{i}] = (lc_kv){{{y}, lc_retain({x})}}; "),
-                    format!("if (lc_unwinding) {{ lc_pairs_free({kv}, {i}); lc_release({rv}); UNWIND; }} {r} = lc_sorted_pairs({kv}, {n}, true, {site}); "),
+                    format!("{kv}[{i}] = (lc_kv){{{y}, {own} ? {x} : lc_retain({x})}}; "),
+                    format!(
+                        "if (lc_unwinding) {{ if ({own}) lc_pairs_free_keys({kv}, {i}); else lc_pairs_free({kv}, {i}); lc_release({rv}); UNWIND; }} \
+                         if ({own}) {{ {r} = lc_sort_pairs_into({rv}, {kv}, {n}, {site}); {rv} = LC_UNIT; }} else {r} = lc_sorted_pairs({kv}, {n}, true, {site}); "
+                    ),
                 )
             }
         };
         Some(format!(
-            "lc_vec *{v} = VEC({rv}); int64_t {n} = {v}->len, {i} = 0; {init}if ({n} > 0) lc_enter_lambda({site}); for (; {i} < {n}; {i}++) {{ lc_v {x} = lc_vget({v}, {i}); lc_v {y} = {f}(FR, {x}); if (lc_unwinding) break; {step}}} if ({n} > 0) lc_depth--; {done}"
+            "lc_vec *{v} = VEC({rv}); int64_t {n} = {v}->len, {i} = 0; bool {own} = {rv}.u.o->rc == 1; {init}if ({n} > 0) lc_enter_lambda({site}); for (; {i} < {n}; {i}++) {{ lc_v {x} = lc_vget({v}, {i}); lc_v {y} = {f}(FR, {x}); if (lc_unwinding) break; {step}}} if ({n} > 0) lc_depth--; {done}"
         ))
     }
 

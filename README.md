@@ -25,10 +25,11 @@ from free lists rather than malloc, inlines lambdas given to `map`,
 `filter` and `sort_by`, reads a list once before a loop that only
 assigns its elements or their fields, reads struct fields in place,
 checks a list of structs once before a loop that updates their fields,
-and moves a variable's value on its last read, so `s = s + x` or
-`xs = xs.sort()` changes a value nothing else holds in place.
-On ten benchmark programs it takes 0.9-2.6x Rust's time (geometric mean
-1.36x). fib (2.6x) and nbody (1.9x) are the slowest, fib paying for
+and moves a variable's value on its last read, so `s = s + x`,
+`xs = xs.sort()` or `xs.map(...).filter(...)` changes a list or string
+nothing else holds in place.
+On eleven benchmark programs it takes 0.9-2.6x Rust's time (geometric
+mean 1.33x). fib (2.6x) and nbody (1.9x) are the slowest, fib paying for
 overflow checks. `fix` applies
 the fixes diagnostics carry, `put` replaces a function by name, and `q`
 answers queries (an item's source, its callers, a type). An agent has

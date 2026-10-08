@@ -1,0 +1,63 @@
+# `map`, `filter` and `sort_by` with a lambda reuse a list nothing else
+# holds: a temporary, or a variable's last read. A list held elsewhere, a
+# literal and a list of lists' elements are copied as before, and a lambda
+# that fails partway leaves nothing behind.
+
+type P {name str, age int}
+
+fn nums(n int) [int] =
+  var xs = []
+  for i in 0..n: xs.push(i * 7 % 10)
+  xs
+
+fn words() [str] = "  pear , fig,  apple ,kiwi , date ".split(',')
+
+fn halves(xs [str]) [str]! = xs.map(str(int(it)? / 2))
+
+fn small(xs [str]) [str]! = xs.filter(int(it)? < 5)
+
+fn by_num(xs [str]) [str]! = xs.sort_by(int(it)?)
+
+fn main() =
+  # In place: ints, strings and structs.
+  var xs = nums(8)
+  xs = xs.map(it * 3)
+  print(xs)
+  xs = xs.filter(it % 2 == 0)
+  print(xs)
+  xs = xs.sort_by(-it)
+  print(xs)
+  ws = words().map(it.trim()).filter(it.len > 3).sort_by(it.len)
+  print(ws)
+  var ps = [P{"ann", 31}, P{"bo", 17}, P{"cy", 45}, P{"di", 17}]
+  ps = ps + [P{"ed", 60}]
+  ps = ps.filter(it.age > 16).sort_by(it.age)
+  print(ps.map(it.name))
+  # Shared, so copied: `ys` keeps its elements and their order.
+  ys = nums(6)
+  zs = ys.map(it + 100).filter(it != 100).sort_by(-it)
+  print(ys, zs)
+  print(ys.filter(it > 3), ys.sort_by(-it), ys)
+  # The first value's kind differs from the list's, so a new list is
+  # built; and one that differs later boxes the list in place.
+  ints = words().map(it.trim().len)
+  print(ints, ints.sum())
+  fl = nums(5).map(it / 2.0)
+  print(fl)
+  mixed = nums(5).map(if it > 4: "big" else: it)
+  print(mixed)
+  flags = nums(6).map(it > 3).filter(it)
+  print(flags, flags.len)
+  # Empty lists, and a literal, which the program also holds.
+  print(nums(0).map(it + 1), nums(0).filter(it > 0), nums(0).sort_by(it))
+  print([3, 1, 2].map(it * 2), [3, 1, 2].sort_by(-it), [3, 1, 2])
+  # Lists of lists: the inner lists are the outer list's elements.
+  var grid = [nums(3), nums(4)]
+  grid = grid + [nums(2)]
+  g2 = grid.map(it.map(it * 10).filter(it > 0))
+  print(grid, g2)
+  # A failure partway through each, in place.
+  print(halves("4 8 x 6".split(' ')) ?? ["none"])
+  print(small("1 9 y 3".split(' ')) ?? ["none"])
+  print(by_num("3 1 z".split(' ')) ?? ["none"])
+  print(halves("4 8 6".split(' ')) ?? [], small("1 9 3".split(' ')) ?? [], by_num("3 10 2".split(' ')) ?? [])

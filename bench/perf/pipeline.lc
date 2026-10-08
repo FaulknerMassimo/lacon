@@ -1,0 +1,11 @@
+fn main() =
+  var seed = 7
+  var total = 0
+  for r in 0..300:
+    var xs = []
+    for i in 0..100000:
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      xs.push(seed % 100000)
+    ys = xs.map(it * 3 + r).filter(it % 7 != 0).sort_by(-it)
+    total += ys[0] + ys[-1] + ys.len
+  print(total)

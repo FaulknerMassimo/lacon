@@ -1568,7 +1568,7 @@ lc_v lc_method_own(int m, lc_v recv, int argc, lc_v *args, const char *site) {
                     if (v->kind == K_FLOAT) v->floats[i] = kv[i].val.u.f;
                     else v->boxed[i] = kv[i].val;
                 }
-                free(kv);
+                lc_pairs_done(kv);
                 return recv;
             }
             break;

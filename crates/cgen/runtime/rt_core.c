@@ -313,14 +313,7 @@ lc_v lc_buf_finish(lc_buf *b) {
 
 /* ----- collections ----- */
 
-static int kind_of(lc_v v) {
-    switch (v.tag) {
-    case T_INT: return K_INT;
-    case T_FLOAT: return K_FLOAT;
-    case T_BOOL: return K_BOOL;
-    }
-    return K_BOXED;
-}
+static int kind_of(lc_v v) { return lc_kind_of(v); }
 
 lc_v lc_vec_alloc(uint32_t tag, int kind, int64_t cap) {
     lc_vec *x = mem_alloc(sizeof(lc_vec));
@@ -960,6 +953,52 @@ static bool radix_sort_ints(lc_kv *xs, lc_kv *tmp, int64_t n) {
     return true;
 }
 
+/* ----- sort buffers ----- */
+
+/* A sort's buffers (its pairs, and the temporary half a merge or a radix
+ * pass writes to) come from here and go back when it ends, and the two
+ * largest of up to SCRATCH_MAX bytes are kept for the next sort. A large
+ * block given back to glibc tends to return as fresh pages, and a program
+ * that sorts in a loop then faults each one in again on every sort, more
+ * or less often depending on the order of its other allocations. Each
+ * buffer starts with its size. */
+#define SCRATCH_MAX ((size_t)32 << 20)
+static void *scratch[2];
+
+static void *scratch_get(size_t n) {
+    int best = -1;
+    for (int i = 0; i < 2; i++) {
+        size_t *h = scratch[i];
+        if (h && h[0] >= n && (best < 0 || h[0] < ((size_t *)scratch[best])[0])) best = i;
+    }
+    size_t *h;
+    if (best >= 0) {
+        h = scratch[best];
+        scratch[best] = NULL;
+    } else {
+        h = xmalloc(n + 16);
+        h[0] = n;
+    }
+    return (char *)h + 16;
+}
+
+static void scratch_put(void *p) {
+    size_t *h = (size_t *)((char *)p - 16);
+    if (h[0] > SCRATCH_MAX) {
+        free(h);
+        return;
+    }
+    /* Keep the larger two of the two held and this one. */
+    int small = scratch[0] == NULL ? 0 : scratch[1] == NULL ? 1 : ((size_t *)scratch[0])[0] <= ((size_t *)scratch[1])[0] ? 0 : 1;
+    size_t *old = scratch[small];
+    if (old && old[0] >= h[0]) {
+        free(h);
+        return;
+    }
+    scratch[small] = h;
+    free(old);
+}
+
 /* Sorts plain ints in place; equal ints are alike, so any order of them is
  * the stable one. */
 static void sort_ints_with(int64_t *xs, int64_t *tmp, int64_t n) {
@@ -986,25 +1025,25 @@ static void sort_ints_with(int64_t *xs, int64_t *tmp, int64_t n) {
 }
 
 void lc_sort_ints(int64_t *xs, int64_t n) {
-    int64_t *tmp = xmalloc(sizeof(int64_t) * (n ? n : 1));
+    int64_t *tmp = scratch_get(sizeof(int64_t) * n);
     sort_ints_with(xs, tmp, n);
-    free(tmp);
+    scratch_put(tmp);
 }
 
 /* Sorts pairs by key, stably. Returns false (with the kinds in a and b) when
  * two keys can't be compared. */
 bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b) {
-    lc_kv *tmp = xmalloc(sizeof(lc_kv) * (n ? n : 1));
+    lc_kv *tmp = scratch_get(sizeof(lc_kv) * n);
     g_sort_ok = true;
     bool ints = true;
     for (int64_t i = 0; i < n && ints; i++) ints = xs[i].key.tag == T_INT;
     if (ints) {
         if (!radix_sort_ints(xs, tmp, n)) merge_sort_ints(xs, tmp, n);
-        free(tmp);
+        scratch_put(tmp);
         return true;
     }
     merge_sort(xs, tmp, n);
-    free(tmp);
+    scratch_put(tmp);
     if (!g_sort_ok) {
         strcpy(a, g_bad_a);
         strcpy(b, g_bad_b);
@@ -1012,14 +1051,16 @@ bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b) {
     return g_sort_ok;
 }
 
-lc_kv *lc_pairs_new(int64_t n) { return xmalloc(sizeof(lc_kv) * (n ? n : 1)); }
+lc_kv *lc_pairs_new(int64_t n) { return scratch_get(sizeof(lc_kv) * n); }
+
+void lc_pairs_done(lc_kv *kv) { scratch_put(kv); }
 
 void lc_pairs_free(lc_kv *kv, int64_t n) {
     for (int64_t i = 0; i < n; i++) {
         lc_release(kv[i].key);
         lc_release(kv[i].val);
     }
-    free(kv);
+    lc_pairs_done(kv);
 }
 
 lc_v lc_sorted_pairs(lc_kv *kv, int64_t n, bool by, const char *site) {
@@ -1033,19 +1074,41 @@ lc_v lc_sorted_pairs(lc_kv *kv, int64_t n, bool by, const char *site) {
         lc_vec_push(out, kv[i].val);
         lc_release(kv[i].key);
     }
-    free(kv);
+    lc_pairs_done(kv);
     return out;
+}
+
+void lc_pairs_free_keys(lc_kv *kv, int64_t n) {
+    for (int64_t i = 0; i < n; i++) lc_release(kv[i].key);
+    lc_pairs_done(kv);
+}
+
+lc_v lc_sort_pairs_into(lc_v xs, lc_kv *kv, int64_t n, const char *site) {
+    char a[64], b[64];
+    if (!lc_sort_kv(kv, n, a, b)) lc_panic("E0301", site, "cannot sort: keys %s and %s are not comparable", a, b);
+    lc_vec *x = VEC(xs);
+    for (int64_t i = 0; i < n; i++) {
+        switch (x->kind) {
+        case K_INT: x->ints[i] = kv[i].val.u.i; break;
+        case K_FLOAT: x->floats[i] = kv[i].val.u.f; break;
+        case K_BOOL: x->bools[i] = kv[i].val.u.i != 0; break;
+        default: x->boxed[i] = kv[i].val;
+        }
+        lc_release(kv[i].key);
+    }
+    lc_pairs_done(kv);
+    return xs;
 }
 
 lc_v lc_heap_sorted(lc_v h) {
     lc_vec *x = VEC(h);
-    lc_kv *kv = xmalloc(sizeof(lc_kv) * (x->len ? x->len : 1));
+    lc_kv *kv = lc_pairs_new(x->len);
     for (int64_t i = 0; i < x->len; i++) kv[i] = (lc_kv){x->boxed[i], x->boxed[i]};
     char a[64], b[64];
     lc_sort_kv(kv, x->len, a, b);
     lc_v out = lc_list_new(x->len);
     for (int64_t i = 0; i < x->len; i++) lc_vec_push(out, lc_retain(kv[i].val));
-    free(kv);
+    lc_pairs_done(kv);
     return out;
 }
 
