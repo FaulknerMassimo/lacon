@@ -5,7 +5,7 @@
 //! one when the previous line ends in a binary operator, or when the line
 //! starts with `.name`, `and`, `or` or `??`.
 
-use crate::diag::Diag;
+use crate::diag::{Diag, Fix};
 use crate::span::Span;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -677,6 +677,15 @@ impl<'a> Lexer<'a> {
                                 Option::None => self.err(esc_start, self.pos, "bad unicode escape"),
                             }
                         }
+                        // Python's, JavaScript's and Java's `\u0001`.
+                        b'u' if self.bytes.get(self.pos..self.pos + 4).is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit)) => {
+                            let hex = &self.src[self.pos..self.pos + 4];
+                            self.pos += 4;
+                            match u32::from_str_radix(hex, 16).ok().and_then(char::from_u32) {
+                                Some(ch) => lit.push(ch),
+                                Option::None => self.err(esc_start, self.pos, "bad unicode escape"),
+                            }
+                        }
                         _ => self.err(esc_start, self.pos, "unknown escape"),
                     }
                 }
@@ -702,12 +711,24 @@ impl<'a> Lexer<'a> {
                     // closing quote, at a line end, never closed, or before a
                     // `\`) is literal, so "{", "([{" and "{\n" need no escaping.
                     let next = self.peek(0);
-                    let end = if next == q || next == b'\n' || next == 0 { None } else { self.scan_interp() };
-                    let Some(end) = end else {
+                    let end = if next == q || next == b'\n' || next == 0 || next == b'\\' { None } else { self.scan_interp(q) };
+                    let Some((end, escaped)) = end else {
                         self.pos = expr_start;
                         lit.push('{');
                         continue;
                     };
+                    if escaped {
+                        // `{s.pad_left(2, \"0\")}` would otherwise be literal
+                        // text, printed as written with no error.
+                        let text = &self.src[brace..end + 1];
+                        let esc = format!("\\{}", q as char);
+                        let fix = (!text.contains('\'')).then(|| Fix::at(self.span(brace, end + 1), text.replace(&esc, "'")));
+                        let msg = format!("inside `{{...}}`, `{esc}` doesn't quote a string; use `'`");
+                        self.diags.push(Diag::new("E0101", self.span(brace, end + 1), msg).with_fix(fix));
+                        self.pos = expr_start;
+                        lit.push('{');
+                        continue;
+                    }
                     if !lit.is_empty() {
                         parts.push(StrPart::Lit(std::mem::take(&mut lit)));
                     }
@@ -736,8 +757,10 @@ impl<'a> Lexer<'a> {
     }
 
     /// Finds the `}` closing an interpolation, skipping nested brackets and
-    /// strings. Returns its byte offset.
-    fn scan_interp(&mut self) -> Option<usize> {
+    /// strings. Returns its byte offset, and whether a nested string was
+    /// quoted with the outer quote escaped (`\"0\"`), which is an error.
+    fn scan_interp(&mut self, q: u8) -> Option<(usize, bool)> {
+        let mut escaped = false;
         let mut depth = 0;
         while self.pos < self.bytes.len() {
             let c = self.bytes[self.pos];
@@ -746,9 +769,21 @@ impl<'a> Lexer<'a> {
                 b')' | b']' => depth -= 1,
                 b'}' => {
                     if depth == 0 {
-                        return Some(self.pos);
+                        return Some((self.pos, escaped));
                     }
                     depth -= 1;
+                }
+                b'\\' if self.bytes.get(self.pos + 1) == Some(&q) => {
+                    // A string quoted `\"...\"`, ending on this line.
+                    self.pos += 2;
+                    while !(self.bytes.get(self.pos) == Some(&b'\\') && self.bytes.get(self.pos + 1) == Some(&q)) {
+                        if self.pos >= self.bytes.len() || self.bytes[self.pos] == b'\n' {
+                            return Option::None;
+                        }
+                        self.pos += 1;
+                    }
+                    self.pos += 1;
+                    escaped = true;
                 }
                 b'"' | b'\'' => {
                     let q = c;
@@ -763,8 +798,8 @@ impl<'a> Lexer<'a> {
                         self.pos += 1;
                     }
                 }
-                // No expression holds a `\` outside a string, so the `{` is
-                // literal: "{\n" + body + "\n}" isn't one interpolation.
+                // No other expression holds a `\` outside a string, so the
+                // `{` is literal: "{ \n" + body + "\n}" isn't one interpolation.
                 b'\n' | b'\\' => return Option::None,
                 _ => {}
             }

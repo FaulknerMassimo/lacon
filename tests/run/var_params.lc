@@ -1,0 +1,19 @@
+# A `var` parameter is the body's own copy: changing it leaves the
+# caller's value alone. `A` is `\u{41}`, as in Python and JavaScript.
+fn emit(xs [int], var out [str]) [str] =
+  for x in xs:
+    out.push(str(x))
+  out
+
+fn count_down(var n int) [int] =
+  var seen = []
+  while n > 0:
+    seen.push(n)
+    n -= 1
+  seen
+
+fn main() =
+  base = ["a"]
+  print(emit([1, 2], base), base)
+  print(count_down(3))
+  print("xAyé", "A" == "\u{41}")

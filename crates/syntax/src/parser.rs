@@ -191,6 +191,20 @@ impl<'a> Parser<'a> {
         Ok(Ident { name, span: t.span })
     }
 
+    /// Rust's `[x; n]`, after the `;`: an error with the fix `[x] * n`,
+    /// and parsed as that, so the variable it declares isn't lost too.
+    fn list_repeat(&mut self, open: Span, x: Expr) -> P<Expr> {
+        let n = self.expr()?;
+        let span = open.to(self.expect(&Tok::RBracket, "`]`")?);
+        let text = |s: Span| &self.src[s.start as usize..s.end as usize];
+        let count = text(n.span);
+        let count = if count.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') { count.to_string() } else { format!("({count})") };
+        let fix = Fix::at(span, format!("[{}] * {count}", text(x.span)));
+        self.diags.push(Diag::new("E0149", span, "`[x; n]` is Rust's; repeat a list with `[x] * n`").with_fix(Some(fix)));
+        let list = Expr { span: open.to(x.span), kind: ExprKind::List(vec![x]) };
+        Ok(Expr { kind: ExprKind::Binary { op: BinOp::Mul, lhs: Box::new(list), rhs: Box::new(n) }, span })
+    }
+
     fn line_of(&self, span: Span) -> &'a str {
         let s = self.line_span(span);
         &self.src[s.start as usize..s.end as usize]
@@ -454,8 +468,16 @@ impl<'a> Parser<'a> {
         let generics = self.generics()?;
         self.expect(&Tok::LParen, "`(`")?;
         let mut params = Vec::new();
+        // `var x T` is a parameter the body changes as its own copy, so the
+        // body starts with `var x = x`.
+        let mut copies = Vec::new();
         while !self.at(&Tok::RParen) {
-            params.push(self.param()?);
+            let copy = self.eat(&Tok::Var);
+            let p = self.param()?;
+            if copy {
+                copies.push(p.name.clone());
+            }
+            params.push(p);
             if !self.eat(&Tok::Comma) {
                 break;
             }
@@ -477,7 +499,12 @@ impl<'a> Parser<'a> {
             return Err(());
         }
         let head = start.to(self.prev_span());
-        let body = self.block()?;
+        let mut body = self.block()?;
+        let copies = copies.into_iter().map(|n| {
+            let value = Expr { kind: ExprKind::Name(n.name.clone()), span: n.span };
+            Stmt::Var { name: n, ty: None, value, mutable: true }
+        });
+        body.stmts.splice(0..0, copies);
         Ok(FnDecl { name, generics, params, ret, body, doc, span: start, head })
     }
 
@@ -1437,7 +1464,16 @@ impl<'a> Parser<'a> {
                         },
                         _ => None,
                     };
-                    if matches!(self.peek_at(1), Tok::Lt) {
+                    let parse_as = match (&e.kind, self.peek_at(1), self.peek_at(2), self.peek_at(3), self.peek_at(4), self.peek_at(5)) {
+                        (ExprKind::Field { obj, name }, Tok::Lt, Tok::Ident(t), Tok::Gt, Tok::LParen, Tok::RParen) if name.name == "parse" => Some((obj.span, t.clone())),
+                        _ => None,
+                    };
+                    if let Some((obj, t)) = parse_as {
+                        // `s.parse::<f64>()` is `f64(s)`, a `f64!` as `parse` is.
+                        let span = e.span.to(self.toks[(self.pos + 5).min(self.toks.len() - 1)].span);
+                        let fix = Fix::at(span, format!("{t}({})", &self.src[obj.start as usize..obj.end as usize]));
+                        self.diags.push(Diag::new("E0125", self.span(), format!("no turbofish; convert with `{t}(s)`")).with_fix(Some(fix)));
+                    } else if matches!(self.peek_at(1), Tok::Lt) {
                         self.hint("E0125", self.span(), "no turbofish: methods return lists, so `.collect()` and type arguments aren't needed", None);
                     } else if let Some(empty) = empty {
                         self.hint("E0125", self.span(), format!("no `::` paths; {empty}"), None);
@@ -1552,13 +1588,16 @@ impl<'a> Parser<'a> {
                 }
             }
             Tok::LBracket => {
-                self.bump();
+                let open = self.bump().span;
                 let mut items = Vec::new();
                 while !self.at(&Tok::RBracket) {
                     items.push(self.expr()?);
                     if self.at(&Tok::For) {
                         self.hint("E0133", self.span(), "no comprehensions; use `xs.filter(cond).map(expr)` with `it`", None);
                         return Err(());
+                    }
+                    if items.len() == 1 && self.eat(&Tok::Semi) {
+                        return self.list_repeat(open, items.pop().unwrap());
                     }
                     if !self.eat(&Tok::Comma) {
                         break;

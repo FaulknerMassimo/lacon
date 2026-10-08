@@ -1,0 +1,4 @@
+E0201 assign_targets.lc:7:3 `cuonts` is not defined | fix: counts
+E0201 assign_targets.lc:8:3 `coutns` is not defined | fix: counts
+E0210 assign_targets.lc:9:3 can only assign to a variable, a field or an index
+[exit 1]

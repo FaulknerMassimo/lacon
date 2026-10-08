@@ -1,0 +1,18 @@
+fixed E0149 targets.lc:5:14 var grid = [[0] * n] * (n + 1)
+fixed E0149 targets.lc:5:15 var grid = [[0] * n] * (n + 1)
+fixed E0149 targets.lc:6:16 var counts = [0] * 2
+fixed E0201 targets.lc:7:3 counts[1] = 5
+fixed E0125 targets.lc:9:10 half = f64("0.5")?
+ok
+[exit 0]
+--- targets.lc
+# `[x; n]` becomes `[x] * n`, nested too, `s.parse::<f64>()` becomes
+# `f64(s)`, and an assignment through a misspelled name gets the name's fix.
+fn main()! =
+  n = 3
+  var grid = [[0] * n] * (n + 1)
+  var counts = [0] * 2
+  counts[1] = 5
+  grid[0][1] = 7
+  half = f64("0.5")?
+  print(grid, counts, half)

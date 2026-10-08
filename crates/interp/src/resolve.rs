@@ -976,8 +976,15 @@ impl<'a> Resolver<'a> {
     fn place(&mut self, e: &Expr) -> Option<Place> {
         let p = self.place_opt(e);
         if p.is_none() {
-            match &e.kind {
-                ExprKind::Name(n) => self.undefined(n, e.span),
+            // `xs[i] = v` or `u.f = v` on a name that isn't defined says so,
+            // with the name's fix, and is dropped after a parse error like
+            // any other use of the name.
+            let mut root = e;
+            while let ExprKind::Field { obj, .. } | ExprKind::Index { obj, .. } = &root.kind {
+                root = obj;
+            }
+            match &root.kind {
+                ExprKind::Name(n) if !self.is_local(n) && !self.const_ids.contains_key(n) && !self.fn_ids.contains_key(n) => self.undefined(n, root.span),
                 _ => self.err("E0210", e.span, "can only assign to a variable, a field or an index"),
             }
         }

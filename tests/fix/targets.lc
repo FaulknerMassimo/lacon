@@ -1,0 +1,10 @@
+# `[x; n]` becomes `[x] * n`, nested too, `s.parse::<f64>()` becomes
+# `f64(s)`, and an assignment through a misspelled name gets the name's fix.
+fn main()! =
+  n = 3
+  var grid = [[0; n]; n + 1]
+  var counts = [0; 2]
+  cuonts[1] = 5
+  grid[0][1] = 7
+  half = "0.5".parse::<f64>()?
+  print(grid, counts, half)

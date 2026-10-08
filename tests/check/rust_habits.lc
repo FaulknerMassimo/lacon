@@ -8,3 +8,6 @@ fn main() =
   assert_eq!(ys.len, 3)
   print("{}", ys)
   if ys is none: print("none")
+  var dp = [0; ys.len + 1]
+  dp[0] = 1
+  n = "2.5".parse::<f64>()?

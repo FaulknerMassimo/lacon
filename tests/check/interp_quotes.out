@@ -1,3 +1,4 @@
-E0110 interp_quotes.lc:4:14 a `{` right before `"` is a literal brace, so the string ended there; inside `{...}`, quote strings with `'`: "{'-' * n}"
-E0110 interp_quotes.lc:5:13 a `{` right before `"` is a literal brace, so the string ended there; inside `{...}`, quote strings with `'`: "{'-' * n}"
+E0110 interp_quotes.lc:5:14 a `{` right before `"` is a literal brace, so the string ended there; inside `{...}`, quote strings with `'`: "{'-' * n}"
+E0110 interp_quotes.lc:6:13 a `{` right before `"` is a literal brace, so the string ended there; inside `{...}`, quote strings with `'`: "{'-' * n}"
+E0101 interp_quotes.lc:7:10 inside `{...}`, `\"` doesn't quote a string; use `'` | fix: {str(depth).pad_left(3, '0')}
 [exit 1]

@@ -19,6 +19,17 @@ from collections import defaultdict
 from pathlib import Path
 
 ORDER = ["lacon", "python", "rust", "go"]
+# How the program was written: `python`, `python-write`, `lacon-tools`.
+EDITS = ["", "write", "tools"]
+
+
+def order(key: str) -> tuple[int, int]:
+    base, _, edit = key.partition("-")
+    return (ORDER.index(base) if base in ORDER else 99, EDITS.index(edit) if edit in EDITS else 99)
+
+
+def base(key: str) -> str:
+    return key.partition("-")[0]
 
 
 def load(paths: list[Path]) -> list[dict]:
@@ -54,7 +65,7 @@ def main() -> int:
     by_lang: dict[str, list[dict]] = defaultdict(list)
     for r in recs:
         by_lang[r["lang"]].append(r)
-    langs = sorted(by_lang, key=lambda k: ORDER.index(k) if k in ORDER else 99)
+    langs = sorted(by_lang, key=order)
 
     # Runs from before `served_by` was recorded fall back to the requested model.
     served = sorted({m for r in recs for m in (r.get("served_by") or [r.get("model")]) if m})
@@ -92,24 +103,38 @@ def main() -> int:
             if passed and all(r.get("cost_usd") for r in passed):
                 green_cost[(t, lang)] = statistics.mean(r["cost_usd"] for r in passed)
 
-    if "lacon" in langs and len(langs) > 1:
+    # Each Lacon variant against the other languages, and each variant of a
+    # language against its earlier ones (lacon-tools against lacon-write).
+    pairs = [(a, b) for a in langs for b in langs if base(a) == "lacon" != base(b) or base(a) == base(b) and order(b) < order(a)]
+    if pairs:
         print()
-        rows = [["Lacon vs", "tasks both solved", "Lacon tokens relative", "Lacon saves", "Lacon cost relative"]]
-        for other in langs:
-            if other == "lacon":
-                continue
-            both = [t for t in tasks if (t, "lacon") in green and (t, other) in green and green[(t, other)] > 0]
+        rows = [["", "against", "tasks both solved", "tokens relative", "saves", "cost relative"]]
+        for a, b in pairs:
+            both = [t for t in tasks if (t, a) in green and (t, b) in green and green[(t, b)] > 0]
             if not both:
-                rows.append([other, "0", "-", "-", "-"])
+                rows.append([a, b, "0", "-", "-", "-"])
                 continue
-            ratio = math.exp(statistics.mean(math.log(green[(t, "lacon")] / green[(t, other)]) for t in both))
-            priced = [t for t in both if (t, "lacon") in green_cost and (t, other) in green_cost]
-            cost = math.exp(statistics.mean(math.log(green_cost[(t, "lacon")] / green_cost[(t, other)]) for t in priced)) if priced else None
-            rows.append([other, str(len(both)), f"{ratio:.2f}x", f"{1 - ratio:.0%}", f"{cost:.2f}x" if cost else "-"])
+            ratio = math.exp(statistics.mean(math.log(green[(t, a)] / green[(t, b)]) for t in both))
+            priced = [t for t in both if (t, a) in green_cost and (t, b) in green_cost]
+            cost = math.exp(statistics.mean(math.log(green_cost[(t, a)] / green_cost[(t, b)]) for t in priced)) if priced else None
+            rows.append([a, b, str(len(both)), f"{ratio:.2f}x", f"{1 - ratio:.0%}", f"{cost:.2f}x" if cost else "-"])
         print(table(rows, args.md))
-        lacon_builds = [r["first_build_ok"] for r in by_lang["lacon"] if r["first_build_ok"] is not None]
-        if lacon_builds:
-            print(f"\nLacon first attempts that build: {pct(sum(lacon_builds), len(lacon_builds))} (Phase 0 target: 90%)")
+    for lang in langs:
+        builds = [r["first_build_ok"] for r in by_lang[lang] if r["first_build_ok"] is not None]
+        if base(lang) == "lacon" and builds:
+            print(f"\n{lang} first attempts that build: {pct(sum(builds), len(builds))} (Phase 0 target: 90%)")
+
+    # The episodes' own commands besides run and submit: `./write`, or
+    # lacon-tools' `./lacon put`, `fix`, `q`...
+    rows = [["language", "command", "calls per episode", "episodes using it"]]
+    for lang in langs:
+        rs = by_lang[lang]
+        for c in sorted({c for r in rs for c in r.get("commands") or {}}, key=lambda c: (c not in ("put", "write"), c)):
+            n = [(r.get("commands") or {}).get(c, 0) for r in rs]
+            rows.append([lang, c, f"{statistics.mean(n):.2f}", pct(sum(x > 0 for x in n), len(n))])
+    if len(rows) > 1:
+        print()
+        print(table(rows, args.md))
 
     print()
     rows = [["task", *langs]]

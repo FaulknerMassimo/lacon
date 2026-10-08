@@ -83,6 +83,10 @@ class Lang:
     ext = ""
     # One line telling the model what it is writing for.
     environment = ""
+    # How a Claude Code episode writes the program: `files` (Claude Code's
+    # Read, Write and Edit), `write` (Bash only: `./write` saves stdin as the
+    # program) or `tools` (Bash only, with Lacon's own tools; Lacon only).
+    edit = "files"
 
     def unavailable(self) -> str | None:
         """Why this language can't run here, or None."""
@@ -118,6 +122,12 @@ class Lacon(Lang):
         if r.exit_code != 0:
             return Build(False, (r.stdout + r.stderr).strip())
         return Build(True, cmd=[self.exe, "run", src.name])
+
+    # The `lacon` commands a `tools` episode may run; none runs the program.
+    COMMANDS = ("put", "fix", "q", "sig", "check", "explain")
+
+    def command(self, args: list[str], workdir: Path, stdin: str) -> Result:
+        return sandboxed([self.exe, *args], workdir, stdin, timeout=BUILD_TIMEOUT)
 
 
 class Python(Lang):
@@ -177,6 +187,22 @@ class Go(Lang):
 
 
 LANGS: dict[str, type[Lang]] = {"lacon": Lacon, "python": Python, "rust": Rust, "go": Go}
+
+
+def make(key: str, build: bool = True) -> Lang:
+    """A language by key: `python`, or `python-write` for Python written
+    with `./write` and no file tools, or `lacon-tools`. Raises KeyError."""
+    base, _, edit = key.partition("-")
+    cls = LANGS[base]
+    if edit not in ("", "write", "tools") or (edit == "tools" and cls is not Lacon):
+        raise KeyError(key)
+    lang = cls(build=build) if cls is Lacon else cls()
+    lang.key, lang.edit = key, edit or "files"
+    return lang
+
+
+def keys() -> list[str]:
+    return [*LANGS, *(f"{k}-write" for k in LANGS), "lacon-tools"]
 
 
 def norm(s: str) -> str:

@@ -1,5 +1,8 @@
-# Inside `{...}` in a string, a `"` ends the string; quote with `'`.
+# Inside `{...}` in a string, a `"` ends the string and `\"` doesn't quote
+# one; quote with `'`. A `{` right before `\` is literal, as in JSON.
 fn main() =
   depth = 2
   print("{"  " * depth}x")
   print("[{"ab":<4}]")
+  print("{str(depth).pad_left(3, \"0\")}")
+  print("{\"depth\": {depth}}")

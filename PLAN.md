@@ -347,6 +347,12 @@ variable stayed an int, so `/` truncated. Stores now take the declared
 type, and native code reads and updates struct fields in place: nbody
 went to 4.5x, and the nine programs' geometric mean is 1.51x, at the
 bar rather than under it.
+An agent has now finished every task with no file tools, writing the
+program only through `lacon put` (§24), which meets the tool criterion
+in its narrow sense. On these small tasks the tools saved nothing over
+writing the whole file with a plain script: none of 60 episodes used
+`fix`, `q` or `sig`. Taking away Claude Code's file tools saved 35% of
+Lacon's tokens, which says more about the harness than about Lacon.
 
 ### Phase 3 — Speed and scale
 
@@ -1559,6 +1565,7 @@ so no run has measured them, and `rename`, `add-field` and mode checking
 aren't built. Next: a harness mode in which Lacon episodes edit with
 `lacon put` and `lacon fix` and read with `lacon q` and `lacon sig`, in
 place of Write, Edit and Read, to see whether they cut tokens-to-green.
+§24 runs it.
 
 ---
 
@@ -1667,3 +1674,118 @@ not under it: nbody is 4.5x, and fib, knapsack and collatz pay for
 overflow checks (§20, §21). Holding a struct's fields unboxed, or proving
 the tests on a field access once for a whole loop, would close most of
 nbody's gap.
+
+---
+
+## 24. Phase 2: Lacon's own tools in the harness
+
+Phase 2 is done when an agent finishes tasks with Lacon's own tools
+(§22). A harness mode now tests that, along with a control that the first
+episodes showed was needed.
+
+**Three ways to write the program.** Through Claude Code, episodes have
+used Claude Code's Read, Write and Edit tools. Two variants take those
+away and leave only Bash (`bench/harness/run.py`):
+
+- `lacon-tools`: `./lacon put main.lc`, with the program on stdin in a
+  heredoc, writes it, and putting one function again replaces that
+  function. `./lacon fix`, `q`, `sig`, `check` and `explain` are
+  allowed. Only `./run` and `./submit` run the program.
+- `<lang>-write`, for any language: `./write` saves stdin as the whole
+  program. This is the control, the same Bash-only setup without Lacon's
+  tools.
+
+The control was added after the first lacon-tools episodes read about
+930 fewer tokens a call than plain Lacon ones, despite a longer system
+prompt. The definitions of Read, Write and Edit are about 1,130 tokens on
+every call; without the control, that saving would have been credited
+to `put`.
+
+**Results.** 30 tasks, two trials each, the short primer and the
+chaining hint, Opus 5.5 through Claude Code, all on the same compiler
+(`bench/results/20261007-tools`, not committed). The account's usage
+limit cut off 27 episodes mid-run, and they were rerun. The harness now
+leaves an episode cut off by an API error unrecorded, so resuming a run
+retries it; such episodes had been recorded as `gave_up`.
+
+| | Lacon (file tools) | `lacon-write` | `lacon-tools` |
+|---|---|---|---|
+| Passed | 60/60 | 60/60 | 60/60 |
+| First attempt builds | 100% | 98% | 95% |
+| Median tokens-to-green | 17,700 | 9,658 | 10,221 |
+| Mean API calls | 2.6 | 2.1 | 2.2 |
+| Episodes done in two calls | 26 | 53 | 50 |
+| First call's context (median) | 5,159 | 4,026 | 4,225 |
+| Mean cost | $0.042 | $0.033 | $0.035 |
+
+- **Dropping the file tools saves 35%**: 0.65x the tokens and 0.79x the
+  cost, as a geometric mean of per-task ratios. Every call reads about
+  1,130 fewer tokens, and most episodes take two calls: one command
+  that writes the program, runs it and submits, then a summary. With
+  file tools, the Write and the `./run && ./submit` are separate tool
+  calls, and the model often read the run's output before submitting.
+  That was §13's last open item, the separate run and submit calls, and
+  in a Bash-only setup it goes away for any language.
+- **Lacon's tools add nothing on these tasks.** lacon-tools took 1.07x
+  lacon-write's tokens; on episodes whose first build worked, 1.05x,
+  which is the 200 tokens describing the tools, read on every call.
+  Every episode wrote its program with one `put` of the whole program
+  (1.08 puts an episode), and none used `fix`, `q` or `sig`. The programs
+  are about 30 lines, written whole in one go: there is nothing to look
+  up and little to change. Where a change was needed, a `put` of only the
+  changed items did what it should (`ledger` put `main` and a new `fmt`
+  again, not `parse_amt`), but rewriting 30 lines costs little more.
+- **Phase 2's tool criterion is met in its narrow sense:** an agent
+  finished all 30 tasks, twice, with no file tools, writing only through
+  `lacon put`. Whether the tools pay needs tasks in which an agent changes
+  a program it didn't just write: several functions, a few hundred lines
+  and a change to make. The current suite can't show that.
+- **The cross-language comparison (§13) gave every language file
+  tools,** so all four paid the 1,130 tokens a call. With Python, Rust
+  and Go in `-write` mode, the remaining gap would be Lacon's own: the
+  primer, about 1,400 tokens a call.
+
+**Five of the 180 first attempts failed to build,** each on a guess that
+nothing caught:
+
+- `[0; w + 1]`, Rust's repeated list, in `knapsack`. It was a parse
+  error, and the variable it declared then failed too: `dp[c] = ...`
+  reported "can only assign to a variable, a field or an index". It is
+  now E0149 with the fix `[0] * (w + 1)`, and parses as that, so nothing
+  follows from it. Separately, an assignment through any name that isn't
+  defined (`dq[0] = 1`) had reported the same misleading E0210. It now
+  says "`dq` is not defined" with the name's fix, and is dropped after a
+  parse error like any other use of the name.
+- `p[1].parse::<f64>()?` in `group-stats`. E0125 said "no turbofish"
+  without a fix; the fix is now `f64(p[1])`, an `f64!` as `parse` is.
+- `fn emit(v Json, ind int, var out [str])` in `json-format`: a `var`
+  parameter, the body's own copy to change. It is now accepted, and the
+  body starts with `var out = out`, which was already valid.
+- `"\u0001"` in `ini-query`, the escape of Python, JavaScript and Java.
+  It is now accepted alongside Rust's `\u{1}`.
+- In `ledger`, `"{str(b % 100).pad_left(2, \"0\")}"` built and printed the
+  interpolation as text, because any `\` inside `{...}` made the `{`
+  literal (§13, for `"{\n"`). It cost a call and a rewrite. A string
+  quoted `\"...\"` inside an interpolation is now an error with the fix
+  `{str(b % 100).pad_left(2, '0')}`. A `{` directly before a `\` stays
+  literal, so JSON such as `"{\"a\": {n}}"` prints as before.
+
+Two of the five now build and pass every hidden test unchanged; the
+other three pass after one `lacon fix`. `tests/check/assign_targets.lc`,
+`tests/fix/targets.lc` and `tests/run/var_params.lc` are new, and
+`rust_habits.lc` and `interp_quotes.lc` cover the rest.
+
+**`put` keeps a whole program's layout.** Putting a program into an
+empty file added a blank line between two constants on adjacent lines
+and dropped the comments between items. Items added in a row now keep
+the text between them, and in an empty file the text above the first,
+so the file comes out as written (`tests/put/whole`). Each task
+solution put into an empty file is now the same, byte for byte.
+
+Verified as before: the golden tests (typed and native) and
+`bench/tasks/check.py`, interpreted and `--native`, pass on every task.
+No other golden output changed.
+
+Next: tasks that change an existing program, to see whether `put`, `fix`
+and `q` pay where they should, and Python, Rust and Go in `-write` mode
+to redo §13's comparison without the file tools' overhead.

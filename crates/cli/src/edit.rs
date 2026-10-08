@@ -37,6 +37,11 @@ pub fn put(path: &str) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    // Where the last item added ends on stdin, while items are being added
+    // in a row: the text between two of them is kept as it was, and so is
+    // the text above the first in an empty file, so a whole program put
+    // into an empty file comes out as written.
+    let mut added_to: Option<usize> = None;
     for it in &items {
         // A new doc comment replaces the old one; without one, the old stays.
         let new = &input[it.doc..it.end];
@@ -45,15 +50,22 @@ pub fn put(path: &str) -> ExitCode {
                 let from = if it.doc < it.start { old.doc } else { old.start };
                 text.replace_range(from..old.end, new);
                 println!("replaced {}", it.label());
+                added_to = None;
             }
             None => {
                 let kept = text.trim_end().len();
                 text.truncate(kept);
-                if !text.is_empty() {
-                    text.push_str("\n\n");
-                }
-                text.push_str(new);
+                let from = match added_to {
+                    Some(end) => end,
+                    None if text.is_empty() => 0,
+                    None => {
+                        text.push_str("\n\n");
+                        it.doc
+                    }
+                };
+                text.push_str(&input[from..it.end]);
                 println!("added {}", it.label());
+                added_to = Some(it.end);
             }
         }
     }

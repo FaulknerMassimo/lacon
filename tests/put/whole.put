@@ -1,0 +1,11 @@
+# A whole program put into an empty file comes out as written: this
+# comment, constants on adjacent lines, and a comment between items.
+
+LIMIT = 2
+NAMES = ["ann", "bo", "cy"]
+
+# ---- output ----
+
+fn main() =
+  for i in range(LIMIT):
+    print(NAMES[i])

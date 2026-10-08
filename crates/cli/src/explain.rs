@@ -1,14 +1,14 @@
 //! Long forms of diagnostic codes, for `lacon explain`.
 
 const ENTRIES: &[(&str, &str)] = &[
-    ("E0101", "Lexical error: a character or literal the lexer cannot read (stray character, unterminated string, bad escape, bad indentation). Indent with spaces; a dedent must return to an earlier indentation level."),
+    ("E0101", "Lexical error: a character or literal the lexer cannot read (stray character, unterminated string, bad escape, bad indentation). Indent with spaces; a dedent must return to an earlier indentation level. Inside `{...}` in a string, quote strings with `'`, not `\\\"`: \"{s.pad_left(2, '0')}\"."),
     ("E0110", "Syntax error: the parser expected one thing and found another. Blocks follow `:` (or `=` for functions) and are either the rest of the line or an indented block on the next lines."),
     ("E0120", "There is no `let`/`const`. `x = 1` binds an immutable name; `var x = 0` binds a mutable one. Rebinding an immutable name in the same block is allowed (`line = line.trim()`)."),
     ("E0121", "Functions are declared `fn name(param Type, ...) Ret =` followed by the body. The return type is omitted when nothing is returned; `T!` marks a function that can fail."),
     ("E0122", "Struct types are declared `type Name {field Type, ...}`; sum types are `enum Name = A(T) | B`. There are no classes."),
     ("E0123", "Blocks use `:` and indentation, not braces:\n  if x > 0:\n    print(x)\n  else: print(0)"),
     ("E0124", "`//` is not an operator. Comments start with `#`. Integer `/` already truncates."),
-    ("E0125", "There are no `::` paths. Use `.`: `Shape.Circle(1.0)`, or just `Circle(1.0)` when the variant name is unique."),
+    ("E0125", "There are no `::` paths. Use `.`: `Shape.Circle(1.0)`, or just `Circle(1.0)` when the variant name is unique. There is no turbofish either: `s.parse::<f64>()` is `f64(s)`, and `.collect()` isn't needed."),
     ("E0126", "There is no `:=`. Write `x = 1`, or `var x = 0` for a mutable binding."),
     ("E0127", "There is no `++`/`--`. Write `x += 1` on a `var`."),
     ("E0128", "There are no exceptions. A function that can fail returns `T!` and fails with `fail \"msg\"`. `f()?` passes an error up; `f() ?? default` replaces it; `match r` with an `err(e):` arm handles it."),
@@ -30,6 +30,7 @@ const ENTRIES: &[(&str, &str)] = &[
     ("E0146", "Inside brackets, line breaks do not make blocks. A `match` there takes arms on their own lines, each one expression:\n  print(match op\n    \"+\": a + b\n    _: a - b)\nWhen an arm needs statements, bind the match first: `v = match op` with indented arms, then use `v`."),
     ("E0147", "There is no `if let` or `while let`. An optional is the value itself or `none`: `x = m.get(k)` then `if x != none:`, or `match` with a `none:` arm. Loop with `while !stack.is_empty():` and `x = stack.pop().unwrap()`."),
     ("E0148", "There is no `del`. Remove a map entry with `m.remove(k)` and a list item by index with `xs.remove(i)`; both need a `var`."),
+    ("E0149", "There is no `[x; n]`. A list of `n` copies of `x` is `[x] * n`, as in Python; `[[0] * w] * h` is a grid whose rows are separate values, since assignment copies."),
     ("E0201", "The name is not defined at this point. Names bound inside a block (`if`, `for`, a match arm) end with the block: declare `var x = ...` before it, or bind the block's value: `x = if c: 1 else: 2`."),
     ("E0202", "The binding is immutable. Declare it with `var` to assign to it, change its fields or call `push`/`insert`/`remove` on it. A parameter can be changed when declared `mut p T`; the caller's variable is updated."),
     ("E0203", "No such field or method. Zero-argument methods may be written without parentheses (`xs.len`). Any function `fn f(x T, ...)` is also a method on `T`: `x.f(...)`."),

@@ -1,0 +1,10 @@
+# Assigning through a name that isn't defined says so, with the name's fix,
+# rather than that the target can't be assigned; a constant still can't be.
+LIMITS = [1, 2]
+
+fn main() =
+  var counts = [0, 0]
+  cuonts[0] = 1
+  coutns.x = 2
+  LIMITS[0] = 3
+  print(counts)
