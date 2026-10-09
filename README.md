@@ -28,9 +28,9 @@ checks a list of structs once before a loop that updates their fields,
 and moves a variable's value on its last read, so `s = s + x`,
 `xs = xs.sort()` or `xs.map(...).filter(...)` changes a list or string
 nothing else holds in place.
-On eleven benchmark programs it takes 0.9-2.6x Rust's time (geometric
-mean 1.33x). fib (2.6x) and nbody (1.9x) are the slowest, fib paying for
-overflow checks. `fix` applies
+On eleven benchmark programs it takes 0.8-1.9x Rust's time (geometric
+mean 1.18x). knapsack (1.9x) and nbody (1.6x) are the slowest: knapsack
+pays for overflow checks, and Rust's nbody loop is vectorized. `fix` applies
 the fixes diagnostics carry, `put` replaces a function by name, and `q`
 answers queries (an item's source, its callers, a type). An agent has
 finished every task with these in place of file tools, but on tasks this

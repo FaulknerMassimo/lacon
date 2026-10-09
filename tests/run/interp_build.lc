@@ -1,0 +1,19 @@
+# Native code evaluates an interpolation's values in order, formatting any
+# with a spec as it goes, then allocates the string at its length and
+# fills it; a value of another kind may take it past its guess.
+
+fn noisy(x int) int =
+  print("eval {x}")
+  x
+
+fn main() =
+  print("{noisy(1)} and {noisy(2):>5} and {noisy(3)}")
+  s = "{-12}|{0}|{9223372036854775807}|{-9223372036854775807 - 1}|{'é'}|{1.5}"
+  print(s, s.len)
+  t = "{[1, 2, 3]} {(1, "a")} {none} {true} {[10000000000, 20000000000, 30000000000]}"
+  print(t, t.len)
+  var acc = ""
+  for i in 0..5: acc = acc + "{i}é,"
+  print(acc, acc.len)
+  print("{'x'} {1:05} {3.14159:.2} {'r':-^5}")
+  print("{noisy(4)} {noisy(5):.2}")

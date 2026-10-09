@@ -1,0 +1,13 @@
+# Strings sort in byte order, a prefix before what extends it; native code
+# compares the first 8 bytes as one int and the rest only on a tie.
+fn main() =
+  xs = ["b", "", "abcdefgh2", "abcdefgh1", "abcdefgh", "abcdefg", "ab\0", "ab", "é", "e", "Z", "abcdefghij", "abcdefgh10", "ab\0c"]
+  print(xs.sort())
+  ws = ["pear", "fig", "apple", "fig", "banana", "kiwi"]
+  print(ws.sort_by(it.len), ws.sort_by(it))
+  var ys = []
+  for i in 0..100: ys.push("key-{(i * 37) % 100}")
+  ys = ys.sort()
+  print(ys[0], ys[1], ys[50], ys[99])
+  ps = [("b", 1), ("a", 2), ("b", 0), ("a", 1)]
+  print(ps.sort_by(it.0))

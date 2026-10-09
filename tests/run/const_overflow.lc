@@ -1,0 +1,22 @@
+# An overflow check against a constant operand tests the other operand's
+# range in native code, so that `3 * n + 1` needs no multiply to check;
+# the edges and the error are the interpreter's.
+fn add1(x int) int = x + 1
+fn sub1(x int) int = x - 1
+fn add_neg(x int) int = x + -5
+fn sub_neg(x int) int = x - -5
+fn sub_min(x int) int = x - (-9223372036854775807 - 1)
+fn times3(x int) int = 3 * x
+fn times_big(x int) int = x * 1000000007
+fn step(n int) int = 3 * n + 1
+
+fn main() =
+  big = 9223372036854775807
+  small = -big - 1
+  print(add1(big - 1), sub1(small + 1), add_neg(small + 5), sub_neg(big - 5), sub_min(-1))
+  print(times3(3074457345618258602), times3(-3074457345618258602), times_big(9223371972), times_big(-9223371972))
+  print(step(3074457345618258601), step(-3074457345618258602))
+  var k = 0
+  for i in 0..10: k += 1
+  print(k)
+  print(step(3074457345618258603))

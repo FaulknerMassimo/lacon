@@ -409,6 +409,40 @@ typedef struct {
 } lc_fmt;
 void lc_buf_format(lc_buf *b, lc_v v, const lc_fmt *spec, const char *site);
 
+/* An interpolated string, built in place: `lc_str_buf` gives an empty
+ * string with room for `cap` bytes, `lc_show_len(v)` of each value, and
+ * each piece is appended to it, so the string is allocated once, at its
+ * length, rather than built in an `lc_buf` and copied. `nchars` is the
+ * piece's count of characters. */
+lc_v lc_str_buf(int64_t cap);
+lc_v lc_str_put_slow(lc_v a, const char *s, int64_t n, int64_t nchars);
+static inline __attribute__((always_inline)) lc_v lc_str_put(lc_v a, const char *s, int64_t n, int64_t nchars) {
+    lc_str *x = (lc_str *)a.u.o;
+    if (__builtin_expect(n > x->cap - x->len, 0)) return lc_str_put_slow(a, s, n, nchars);
+    memcpy(x->data + x->len, s, (size_t)n);
+    x->len += n;
+    x->data[x->len] = 0;
+    x->nchars += nchars;
+    return a;
+}
+/* Appends `v` as `lc_buf_display` shows it, or what a buffer holds,
+ * freeing it. */
+lc_v lc_str_show(lc_v a, lc_v v);
+lc_v lc_str_put_buf(lc_v a, lc_buf *b);
+/* The length `lc_str_show` gives a str or an int; a guess for the rest,
+ * which the string grows past if it must. */
+static inline __attribute__((always_inline)) int64_t lc_show_len(lc_v v) {
+    if (v.tag == T_STR) return ((lc_str *)v.u.o)->len;
+    if (v.tag != T_INT) return 16;
+    uint64_t u = v.u.i < 0 ? (uint64_t)0 - (uint64_t)v.u.i : (uint64_t)v.u.i;
+    int64_t n = 1 + (v.u.i < 0);
+    while (u >= 10) {
+        u /= 10;
+        n++;
+    }
+    return n;
+}
+
 /* ----- builtins ----- */
 
 void lc_print(int argc, lc_v *args, bool err, const char *site);
@@ -484,6 +518,18 @@ static inline __attribute__((always_inline)) lc_v lc_arith_own(int op, lc_v a, l
         case OP_MUL:
             if (!__builtin_mul_overflow(a.u.i, b.u.i, &r)) return lc_int(r);
             break;
+        }
+    }
+    /* `s = s + t` on a string nothing else holds, with room for `t`. */
+    if (op == OP_ADD && a.tag == T_STR && b.tag == T_STR && a.u.o->rc == 1) {
+        lc_str *x = STR(a), *y = STR(b);
+        if (y->len <= x->cap - x->len) {
+            memcpy(x->data + x->len, y->data, (size_t)y->len);
+            x->len += y->len;
+            x->data[x->len] = 0;
+            x->nchars += y->nchars;
+            lc_release(b);
+            return a;
         }
     }
     lc_v r = lc_binop_own(op, a, b, site);
@@ -593,18 +639,38 @@ static inline __attribute__((always_inline)) bool lc_fcmp(int op, double a, doub
     default: return a >= b;
     }
 }
+/* With a constant operand, the overflow checks test the other operand's
+ * range and compute with wrapping arithmetic: the check then sits beside
+ * the result rather than in front of it, and `3 * n + 1` can be one `lea`
+ * where `__builtin_mul_overflow` needs an `imul` and a `jo` (collatz ran
+ * in 0.65x the time). */
+#define LC_CONST(x) __builtin_constant_p(x)
 static inline __attribute__((always_inline)) int64_t lc_iadd(int64_t a, int64_t b, const char *site) {
     int64_t r;
+    if (LC_CONST(a) && !LC_CONST(b)) { r = a; a = b; b = r; }
+    if (LC_CONST(b)) {
+        if (b >= 0 ? a > INT64_MAX - b : a < INT64_MIN - b) lc_panic("E0405", site, "integer overflow in `%s`", "+");
+        return (int64_t)((uint64_t)a + (uint64_t)b);
+    }
     if (__builtin_add_overflow(a, b, &r)) lc_panic("E0405", site, "integer overflow in `%s`", "+");
     return r;
 }
 static inline __attribute__((always_inline)) int64_t lc_isub(int64_t a, int64_t b, const char *site) {
     int64_t r;
+    if (LC_CONST(b)) {
+        if (b >= 0 ? a < INT64_MIN + b : a > INT64_MAX + b) lc_panic("E0405", site, "integer overflow in `%s`", "-");
+        return (int64_t)((uint64_t)a - (uint64_t)b);
+    }
     if (__builtin_sub_overflow(a, b, &r)) lc_panic("E0405", site, "integer overflow in `%s`", "-");
     return r;
 }
 static inline __attribute__((always_inline)) int64_t lc_imul(int64_t a, int64_t b, const char *site) {
     int64_t r;
+    if (LC_CONST(a) && !LC_CONST(b)) { r = a; a = b; b = r; }
+    if (LC_CONST(b) && b > 0) {
+        if (a > INT64_MAX / b || a < INT64_MIN / b) lc_panic("E0405", site, "integer overflow in `%s`", "*");
+        return (int64_t)((uint64_t)a * (uint64_t)b);
+    }
     if (__builtin_mul_overflow(a, b, &r)) lc_panic("E0405", site, "integer overflow in `%s`", "*");
     return r;
 }

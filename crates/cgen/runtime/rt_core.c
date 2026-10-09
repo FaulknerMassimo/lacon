@@ -288,6 +288,49 @@ lc_v lc_str_append(lc_v a, const char *s, int64_t n) {
     return lc_obj_v(T_STR, x);
 }
 
+lc_v lc_str_buf(int64_t cap) {
+    lc_str *x = mem_alloc(STR_SIZE(cap));
+    x->rc = 1;
+    x->len = 0;
+    x->nchars = 0;
+    x->cap = cap;
+    x->data[0] = 0;
+    return lc_obj_v(T_STR, x);
+}
+
+lc_v lc_str_put_slow(lc_v a, const char *s, int64_t n, int64_t nchars) {
+    lc_str *x = STR(a);
+    int64_t cap = x->cap * 2 > x->len + n ? x->cap * 2 : x->len + n;
+    x = mem_realloc(x, STR_SIZE(x->cap), STR_SIZE(cap));
+    x->cap = cap;
+    memcpy(x->data + x->len, s, (size_t)n);
+    x->len += n;
+    x->data[x->len] = 0;
+    x->nchars += nchars;
+    return lc_obj_v(T_STR, x);
+}
+
+lc_v lc_str_show(lc_v a, lc_v v) {
+    if (v.tag == T_STR) return lc_str_put(a, STR(v)->data, STR(v)->len, STR(v)->nchars);
+    if (v.tag == T_INT) {
+        char t[24];
+        int n = lc_fmt_int(t, v.u.i);
+        return lc_str_put(a, t, n, n);
+    }
+    lc_buf b = {0};
+    lc_buf_display(&b, v);
+    a = lc_str_put(a, b.p ? b.p : "", b.len, count_chars(b.p, b.len));
+    free(b.p);
+    return a;
+}
+
+lc_v lc_str_put_buf(lc_v a, lc_buf *b) {
+    a = lc_str_put(a, b->p ? b->p : "", b->len, count_chars(b->p, b->len));
+    free(b->p);
+    b->p = NULL;
+    return a;
+}
+
 void lc_buf_put(lc_buf *b, const char *s, int64_t n) {
     if (b->len + n + 1 > b->cap) {
         int64_t cap = b->cap ? b->cap * 2 : 64;
@@ -918,6 +961,73 @@ static void merge_sort_ints(lc_kv *xs, lc_kv *tmp, int64_t n) {
     memcpy(xs, tmp, sizeof(lc_kv) * n);
 }
 
+/* `lc_cmp` on two strings. */
+static inline int str_cmp(const lc_str *x, const lc_str *y) {
+    int64_t n = x->len < y->len ? x->len : y->len;
+    int r = memcmp(x->data, y->data, n);
+    if (r) return r;
+    return (x->len > y->len) - (x->len < y->len);
+}
+
+static void *scratch_get(size_t n);
+static void scratch_put(void *p);
+
+/* A string key to sort: its first 8 bytes, big-endian and zero-padded, so
+ * that comparing two of them as ints orders them as `memcmp` would, and
+ * its string, compared whole only when those are equal. */
+typedef struct { uint64_t pre; const lc_str *s; int64_t at; } str_item;
+
+static inline uint64_t str_prefix(const lc_str *s) {
+    uint64_t p = 0;
+    memcpy(&p, s->data, s->len < 8 ? (size_t)s->len : 8);
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    p = __builtin_bswap64(p);
+#endif
+    return p;
+}
+
+static inline bool str_item_lt(const str_item *a, const str_item *b) {
+    if (a->pre != b->pre) return a->pre < b->pre;
+    return str_cmp(a->s, b->s) < 0;
+}
+
+static void merge_sort_str_items(str_item *xs, str_item *tmp, int64_t n) {
+    if (n <= 16) {
+        for (int64_t i = 1; i < n; i++) {
+            str_item x = xs[i];
+            int64_t j = i;
+            while (j > 0 && str_item_lt(&x, &xs[j - 1])) {
+                xs[j] = xs[j - 1];
+                j--;
+            }
+            xs[j] = x;
+        }
+        return;
+    }
+    int64_t m = n / 2;
+    merge_sort_str_items(xs, tmp, m);
+    merge_sort_str_items(xs + m, tmp, n - m);
+    int64_t i = 0, j = m, k = 0;
+    while (i < m && j < n) tmp[k++] = str_item_lt(&xs[j], &xs[i]) ? xs[j++] : xs[i++];
+    while (i < m) tmp[k++] = xs[i++];
+    while (j < n) tmp[k++] = xs[j++];
+    memcpy(xs, tmp, sizeof(str_item) * n);
+}
+
+/* `merge_sort` for string keys, which always compare: the same stable
+ * order, without `lc_cmp`'s dispatch, and mostly without reading the
+ * strings. concat's sort of 400,000 strings took 0.6x the time. */
+static void merge_sort_strs(lc_kv *xs, lc_kv *tmp, int64_t n) {
+    /* The items' merges use `tmp`, which is free until the pairs go there
+     * in the items' order. */
+    str_item *it = scratch_get(sizeof(str_item) * n);
+    for (int64_t i = 0; i < n; i++) it[i] = (str_item){str_prefix(STR(xs[i].key)), STR(xs[i].key), i};
+    merge_sort_str_items(it, (str_item *)tmp, n);
+    for (int64_t i = 0; i < n; i++) tmp[i] = xs[it[i].at];
+    memcpy(xs, tmp, sizeof(lc_kv) * n);
+    scratch_put(it);
+}
+
 /* A stable LSD radix sort of pairs with int keys, by each key's offset from
  * the smallest, 11 bits a pass. Returns false, sorting nothing, when
  * `merge_sort_ints` would be faster: below 4096 pairs, unless there are at
@@ -1039,6 +1149,13 @@ bool lc_sort_kv(lc_kv *xs, int64_t n, char *a, char *b) {
     for (int64_t i = 0; i < n && ints; i++) ints = xs[i].key.tag == T_INT;
     if (ints) {
         if (!radix_sort_ints(xs, tmp, n)) merge_sort_ints(xs, tmp, n);
+        scratch_put(tmp);
+        return true;
+    }
+    bool strs = true;
+    for (int64_t i = 0; i < n && strs; i++) strs = xs[i].key.tag == T_STR;
+    if (strs) {
+        merge_sort_strs(xs, tmp, n);
         scratch_put(tmp);
         return true;
     }

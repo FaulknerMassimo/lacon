@@ -135,6 +135,26 @@ struct Cx {
     tys: Vec<T>,
     /// The reads that move their slot's value out (`moves::last_uses`).
     moves: Rc<std::collections::HashSet<usize>>,
+    /// The slots the body has reached as `S[s]` (`slot`), boxed or not.
+    stack_refs: std::collections::BTreeSet<u32>,
+    /// What the statement just generated found clean, for the next one in
+    /// its block (`versioned`), and what the one before the loop being
+    /// generated found, for it.
+    clean_after: Vec<CleanFact>,
+    clean_before: Vec<CleanFact>,
+    /// The C bools those facts test, declared with the unboxed slots.
+    flags: Vec<String>,
+}
+
+/// A loop's clean test passed when C bool `flag` is set: list slot `slot`
+/// held only structs `id`, and with `writes`, nothing else held the list
+/// or any of them. The loop that ran then keeps that so (`keeps_clean`).
+#[derive(Clone)]
+struct CleanFact {
+    slot: u32,
+    id: u32,
+    writes: bool,
+    flag: String,
 }
 
 impl Cx {
@@ -149,6 +169,10 @@ impl Cx {
             versioned: false,
             tys,
             moves: Rc::default(),
+            stack_refs: Default::default(),
+            clean_after: Vec::new(),
+            clean_before: Vec::new(),
+            flags: Vec::new(),
         }
     }
 }
@@ -356,6 +380,23 @@ fn pat_slots(p: &PatIr, out: &mut Vec<u32>) {
         PatIr::Struct { fields, .. } => fields.iter().for_each(|(_, p)| pat_slots(p, out)),
         PatIr::Err(p) | PatIr::Ok(p) | PatIr::Some(p) => pat_slots(p, out),
         PatIr::Wild | PatIr::Lit(_) | PatIr::Range { .. } | PatIr::None => {}
+    }
+}
+
+/// Whether a range bound only reads locals: `0..n`, `i + 1..xs.len`.
+/// Evaluating it changes no list and holds none.
+fn pure_bound(e: &Ex) -> bool {
+    match e {
+        Ex::Lit(..) | Ex::Local(..) => true,
+        Ex::Field { obj, name, user: None, .. } => &**name == "len" && matches!(**obj, Ex::Local(..)),
+        Ex::Method { recv, name, user: None, args, .. } if &**name == "len" && args.is_empty() => match recv {
+            Recv::Place(Place { root: Root::Local(_), path, .. }) => path.is_empty(),
+            Recv::Place(_) => false,
+            Recv::Value(x) => matches!(**x, Ex::Local(..)),
+        },
+        Ex::Unary { e, .. } => pure_bound(e),
+        Ex::Binary { l, r, .. } => pure_bound(l) && pure_bound(r),
+        _ => false,
     }
 }
 
@@ -690,6 +731,9 @@ impl<'p> Gen<'p> {
     /// Declarations of the current frame's unboxed slots.
     fn native_decls(&self) -> String {
         let mut out = String::new();
+        for f in &self.cx.flags {
+            let _ = writeln!(out, "    bool {f} = 0;");
+        }
         for (i, r) in self.cx.slots.iter().enumerate() {
             match r {
                 Rep::Int => {
@@ -942,19 +986,38 @@ impl<'p> Gen<'p> {
         out
     }
 
+    /// The slots of the current frame that `S` holds: the boxed ones, and
+    /// any the body reached as `S[s]`. The rest of `S` is never touched.
+    fn stack_slots(&self) -> Vec<u32> {
+        let boxed = (0..self.cx.slots.len() as u32).filter(|&s| self.cx.slots[s as usize] == Rep::Boxed);
+        let all: std::collections::BTreeSet<u32> = boxed.chain(self.cx.stack_refs.iter().copied()).collect();
+        all.into_iter().collect()
+    }
+
     /// The prologue that gives a function its slots: `S`, and `FR` when
-    /// they live in a heap frame.
-    fn frame_setup(nslots: u32, heap: bool, parent: &str) -> (String, String) {
+    /// they live in a heap frame. On the C stack only the `live` slots are
+    /// set to unit and released: a function of unboxed locals called in a
+    /// loop (nbody's `advance`) otherwise clears and releases every slot on
+    /// each call.
+    fn frame_setup(nslots: u32, heap: bool, parent: &str, live: &[u32]) -> (String, String) {
         let n = nslots.max(1);
         if heap {
             (
                 format!("    lc_frame *FR = lc_frame_new({n}, {parent});\n    lc_v *S = FR->slots;\n"),
                 "    lc_release(lc_obj_v(T_FRAME, FR));\n".to_string(),
             )
-        } else {
+        } else if live.len() as u32 == n {
             let mut setup = format!("    lc_v S[{n}];\n");
             let _ = writeln!(setup, "    for (int _i = 0; _i < {n}; _i++) S[_i] = LC_UNIT;");
             (setup, format!("    for (int _i = 0; _i < {n}; _i++) lc_release(S[_i]);\n"))
+        } else {
+            let mut setup = format!("    lc_v S[{n}];\n");
+            let mut teardown = String::new();
+            for s in live {
+                let _ = writeln!(setup, "    S[{s}] = LC_UNIT;");
+                let _ = writeln!(teardown, "    lc_release(S[{s}]);");
+            }
+            (setup, teardown)
         }
     }
 
@@ -974,8 +1037,9 @@ impl<'p> Gen<'p> {
         let heap = has_lambda(body);
         let e = self.expr(body);
         let natives = self.native_decls();
+        let live = self.stack_slots();
         self.cx = saved;
-        let (setup, teardown) = Self::frame_setup(nslots, heap, "NULL");
+        let (setup, teardown) = Self::frame_setup(nslots, heap, "NULL", &live);
         let mut f = String::new();
         f.push_str(Self::macros(Kind::Nested));
         let _ = writeln!(f, "static lc_v {name}(void) {{\n    lc_v ret = LC_UNIT;\n{setup}{natives}    ret = {e};\n    goto out;\nout:\n{teardown}    return ret;\n}}\n");
@@ -1070,8 +1134,9 @@ impl<'p> Gen<'p> {
             Rep::Boxed => self.expr(&fd.body),
         };
         let natives = self.native_decls();
+        let live = self.stack_slots();
         self.cx = saved;
-        let (setup, teardown) = Self::frame_setup(fd.nslots, false, "NULL");
+        let (setup, teardown) = Self::frame_setup(fd.nslots, false, "NULL", &live);
         let fname = cstr(&fd.name);
         let fsite = self.site(fd.span);
         let rt = c_type(en.ret);
@@ -1286,9 +1351,10 @@ impl<'p> Gen<'p> {
         let heap = has_lambda(&fd.body);
         let body = self.expr(&fd.body);
         let natives = self.native_decls();
+        let live = self.stack_slots();
         let param_reps: Vec<Rep> = (0..fd.params.len()).map(|i| self.slot_rep(i as u32)).collect();
         self.cx = saved;
-        let (setup, teardown) = Self::frame_setup(fd.nslots, heap, "NULL");
+        let (setup, teardown) = Self::frame_setup(fd.nslots, heap, "NULL", &live);
         let fname = cstr(&fd.name);
         let fsite = self.site(fd.span);
         let mut f = String::new();
@@ -1423,6 +1489,7 @@ impl<'p> Gen<'p> {
 
     fn slot(&mut self, depth: u32, s: u32) -> String {
         if depth == 0 {
+            self.cx.stack_refs.insert(s);
             format!("S[{s}]")
         } else {
             self.cx.max_up = self.cx.max_up.max(depth);
@@ -2291,7 +2358,7 @@ impl<'p> Gen<'p> {
     /// after it (`close_views`). Last, the views of lists of structs the
     /// loop keeps clean, each with its slot, struct and the C test that
     /// finds it clean, for `versioned`.
-    fn open_views(&mut self, cond: Option<&Ex>, body: &[St]) -> (String, usize, Vec<(u32, u32, String)>) {
+    fn open_views(&mut self, cond: Option<&Ex>, body: &[St]) -> (String, usize, Vec<(u32, u32, bool, String)>) {
         let mut code = String::new();
         let mut n = 0;
         let mut cleans = Vec::new();
@@ -2305,7 +2372,7 @@ impl<'p> Gen<'p> {
             if let Some(T::List(e)) = self.cx.tys.get(s as usize) {
                 if let T::Struct(id, _) = **e {
                     if let Some(writes) = self.keeps_clean(id, s, cond, body) {
-                        cleans.push((s, id, format!("lc_view_clean({w}, {id}, {writes})")));
+                        cleans.push((s, id, writes, format!("lc_view_clean({w}, {id}, {writes})")));
                     }
                 }
             }
@@ -2355,19 +2422,39 @@ impl<'p> Gen<'p> {
     /// them, for when the tests find them clean as the loop starts, and as
     /// usual. A loop inside one so generated, or with a lambda in it, is
     /// generated once.
-    fn versioned(&mut self, cleans: &[(u32, u32, String)], lambdas: bool, make: &mut dyn FnMut(&mut Gen<'p>) -> String) -> String {
+    ///
+    /// The tests' result goes in a flag, which the next statement of the
+    /// block, if it is such a loop of the same lists, tests first: nbody's
+    /// `advance` runs two loops over its bodies, and the second needn't look
+    /// at them again. `consume` says whether anything the loop runs before
+    /// its tests leaves the lists as the last loop left them.
+    fn versioned(&mut self, cleans: &[(u32, u32, bool, String)], lambdas: bool, consume: bool, make: &mut dyn FnMut(&mut Gen<'p>) -> String) -> String {
+        let before = std::mem::take(&mut self.cx.clean_before);
+        self.cx.clean_after.clear();
         if cleans.is_empty() || lambdas || self.cx.versioned {
-            return make(self);
+            let code = make(self);
+            self.cx.clean_after.clear();
+            return code;
         }
         self.cx.versioned = true;
         let n = self.cx.clean.len();
-        self.cx.clean.extend(cleans.iter().map(|(s, id, _)| (*s, *id)));
+        self.cx.clean.extend(cleans.iter().map(|(s, id, ..)| (*s, *id)));
         let fast = make(self);
         self.cx.clean.truncate(n);
         let slow = make(self);
         self.cx.versioned = false;
-        let tests: Vec<&str> = cleans.iter().map(|c| c.2.as_str()).collect();
-        format!("if ({}) {{ {fast}}} else {{ {slow}}} ", tests.join(" && "))
+        let tests: Vec<String> = cleans
+            .iter()
+            .map(|(s, id, writes, test)| match before.iter().find(|f| consume && f.slot == *s && f.id == *id && (f.writes || !*writes)) {
+                Some(f) => format!("({} || {test})", f.flag),
+                None => test.clone(),
+            })
+            .collect();
+        self.tmp += 1;
+        let flag = format!("_c{}", self.tmp);
+        self.cx.flags.push(flag.clone());
+        self.cx.clean_after = cleans.iter().map(|&(slot, id, writes, _)| CleanFact { slot, id, writes, flag: flag.clone() }).collect();
+        format!("if (({flag} = ({}))) {{ {fast}}} else {{ {slow}}} ", tests.join(" && "))
     }
 
     /// Whether the loop being generated may trust the view of slot `s` as a
@@ -2979,29 +3066,37 @@ impl<'p> Gen<'p> {
         format!("lc_convert({v}, {}, {site})", conv_args(to))
     }
 
+    /// An interpolated string. Its values are evaluated, checked and, with
+    /// a format spec, formatted in order; then the string is allocated at
+    /// its length, when its values are strs and ints, and filled.
     fn interp(&mut self, pieces: &[StrPiece]) -> String {
         let b = self.t();
-        let mut code = format!("({{ lc_buf {b} = {{0}}; ");
+        let (mut eval, mut puts, mut release) = (String::new(), String::new(), String::new());
+        let mut size = String::new();
+        let mut lits = 0;
         for p in pieces {
             match p {
                 StrPiece::Lit(s) => {
-                    let _ = write!(code, "lc_buf_put(&{b}, {}, {}); ", cstr(s), s.len());
+                    lits += s.len();
+                    let _ = write!(puts, "{b} = lc_str_put({b}, {}, {}, {}); ", cstr(s), s.len(), s.chars().count());
                 }
                 StrPiece::Expr(x, spec, args) => {
                     let site = self.site(x.span());
                     let t = self.t();
                     let v = self.expr(x);
                     let _ = write!(
-                        code,
+                        eval,
                         "lc_v {t} = {v}; if ({t}.tag == T_ERR) {{ lc_buf _e = {{0}}; lc_buf_display(&_e, {t}); lc_panic(\"E0406\", {site}, \"interpolating an error (%s); add `?`\", _e.p); }} "
                     );
                     match spec {
                         None => {
-                            let _ = write!(code, "lc_buf_display(&{b}, {t}); ");
+                            let _ = write!(size, " + lc_show_len({t})");
+                            let _ = write!(puts, "{b} = lc_str_show({b}, {t}); ");
+                            let _ = write!(release, "lc_release({t}); ");
                         }
                         Some(sp) => {
-                            let f = self.t();
-                            let _ = write!(code, "lc_fmt {f} = {}; ", fmt_init(sp));
+                            let (f, fb) = (self.t(), self.t());
+                            let _ = write!(eval, "lc_fmt {f} = {}; ", fmt_init(sp));
                             let mut ai = args.iter();
                             for (has, field) in [(sp.width_arg.is_some(), "width"), (sp.precision_arg.is_some(), "precision")] {
                                 if !has {
@@ -3012,19 +3107,19 @@ impl<'p> Gen<'p> {
                                 let (at, an) = (self.t(), self.t());
                                 let av = self.expr(a);
                                 let _ = write!(
-                                    code,
+                                    eval,
                                     "lc_v {at} = {av}; int64_t {an} = lc_int_of({at}, {asite}); lc_release({at}); if ({an} < 0) lc_panic(\"E0301\", {asite}, \"format width and precision must not be negative\"); {f}.{field} = {an}; "
                                 );
                             }
-                            let _ = write!(code, "lc_buf_format(&{b}, {t}, &{f}, {site}); ");
+                            let _ = write!(eval, "lc_buf {fb} = {{0}}; lc_buf_format(&{fb}, {t}, &{f}, {site}); lc_release({t}); ");
+                            let _ = write!(size, " + {fb}.len");
+                            let _ = write!(puts, "{b} = lc_str_put_buf({b}, &{fb}); ");
                         }
                     }
-                    let _ = write!(code, "lc_release({t}); ");
                 }
             }
         }
-        let _ = write!(code, "lc_buf_finish(&{b}); }})");
-        code
+        format!("({{ {eval}lc_v {b} = lc_str_buf({lits}{size}); {puts}{release}{b}; }})")
     }
 
     /// The first-argument check the interpreter's `pick_opt` makes:
@@ -3360,6 +3455,7 @@ impl<'p> Gen<'p> {
         let body = self.expr(&def.body);
         let max_up = self.cx.max_up.max(1);
         let natives = self.native_decls();
+        let live = self.stack_slots();
         let lsite = self.site(def.span);
         let params: Vec<String> = def.params.iter().enumerate().map(|(i, &s)| self.store(s, &format!("lc_retain(args[{i}])"), &lsite)).collect();
         self.cx = saved;
@@ -3370,7 +3466,7 @@ impl<'p> Gen<'p> {
         for d in 2..=max_up {
             let _ = writeln!(f, "    lc_frame *P{d} = P{}->parent;", d - 1);
         }
-        let (setup, teardown) = Self::frame_setup(def.nslots, heap, "P1");
+        let (setup, teardown) = Self::frame_setup(def.nslots, heap, "P1", &live);
         let _ = writeln!(f, "    lc_v ret = LC_UNIT;");
         f.push_str(&setup);
         f.push_str(&natives);
@@ -3402,6 +3498,7 @@ impl<'p> Gen<'p> {
         let body = self.expr(&def.body);
         let max_up = self.cx.max_up.max(1);
         let natives = self.native_decls();
+        let live = self.stack_slots();
         let lsite = self.site(def.span);
         let p = def.params[0];
         let borrow = self.slot_rep(p) == Rep::Boxed && only_read(self.prog, &def.body, p);
@@ -3413,7 +3510,7 @@ impl<'p> Gen<'p> {
         for d in 2..=max_up {
             let _ = writeln!(f, "    lc_frame *P{d} = P{}->parent;", d - 1);
         }
-        let (setup, teardown) = Self::frame_setup(def.nslots, false, "P1");
+        let (setup, teardown) = Self::frame_setup(def.nslots, false, "P1", &live);
         let _ = writeln!(f, "    lc_v ret = LC_UNIT;");
         f.push_str(&setup);
         f.push_str(&natives);
@@ -3566,7 +3663,21 @@ impl<'p> Gen<'p> {
 
     // ----- statements -----
 
+    /// A statement, passing what a loop found clean (`versioned`) on to the
+    /// next statement only, and only when that is a loop.
     fn stmt(&mut self, s: &St) -> String {
+        let is_loop = matches!(s, St::For { .. } | St::While { .. });
+        let after = std::mem::take(&mut self.cx.clean_after);
+        let saved = std::mem::replace(&mut self.cx.clean_before, if is_loop { after } else { Vec::new() });
+        let code = self.stmt_inner(s);
+        self.cx.clean_before = saved;
+        if !is_loop {
+            self.cx.clean_after.clear();
+        }
+        code
+    }
+
+    fn stmt_inner(&mut self, s: &St) -> String {
         match s {
             St::Expr(e, span) if self.typed => {
                 let site = self.site(*span);
@@ -3752,7 +3863,8 @@ impl<'p> Gen<'p> {
                     _ => String::new(),
                 };
                 let (views, nv, cleans) = self.open_views(None, body);
-                let lp = self.versioned(&cleans, stmts_have_lambda(body), &mut |g| {
+                let pure = start.as_deref().map_or(true, pure_bound) && pure_bound(end);
+                let lp = self.versioned(&cleans, stmts_have_lambda(body), pure, &mut |g| {
                     let mut bd = String::new();
                     for s in body {
                         bd.push_str(&g.stmt(s));
@@ -3776,7 +3888,7 @@ impl<'p> Gen<'p> {
                     } {
                         // An unboxed loop variable: packed elements go straight into it.
                         let (views, nv, cleans) = self.open_views(None, body);
-                        let lp = self.versioned(&cleans, stmts_have_lambda(body), &mut |g| {
+                        let lp = self.versioned(&cleans, stmts_have_lambda(body), false, &mut |g| {
                             let mut b = String::new();
                             for s in body {
                                 b.push_str(&g.stmt(s));
@@ -3798,7 +3910,7 @@ impl<'p> Gen<'p> {
                     }
                 };
                 let (views, nv, cleans) = self.open_views(None, body);
-                let lp = self.versioned(&cleans, stmts_have_lambda(body), &mut |g| {
+                let lp = self.versioned(&cleans, stmts_have_lambda(body), false, &mut |g| {
                     let mut b = String::new();
                     for s in body {
                         b.push_str(&g.stmt(s));
@@ -3814,7 +3926,7 @@ impl<'p> Gen<'p> {
                 let site = self.site(cond.span());
                 let (views, nv, cleans) = self.open_views(Some(cond), body);
                 let lambdas = has_lambda(cond) || stmts_have_lambda(body);
-                let lp = self.versioned(&cleans, lambdas, &mut |g| {
+                let lp = self.versioned(&cleans, lambdas, true, &mut |g| {
                     let c = g.cond_at(cond, &site);
                     let mut b = String::new();
                     for s in body {

@@ -12,10 +12,12 @@ fn cc() -> String {
 /// No fused multiply-add: unboxed float arithmetic must round as the
 /// interpreter's does.
 const CFLAGS: &[&str] = &["-std=gnu11", "-D_GNU_SOURCE", "-w", "-ffp-contract=off"];
-/// Both get `-O2`. `-O1` builds programs in about 60% of the time, but on
-/// unboxed code it runs mandel at twice `-O2`'s time and collatz at 1.2x.
-const RUNTIME_OPT: &str = "-O2";
-const PROGRAM_OPT: &str = "-O2";
+/// Both get `-O3`. `-O1` builds programs in about 60% of `-O2`'s time, but
+/// on unboxed code it runs mandel at twice `-O2`'s time and collatz at
+/// 1.2x. `-O3` builds 60 agent programs in 1.03x `-O2`'s median time, and
+/// runs fib in 0.6x: it inlines a recursive call into itself.
+const RUNTIME_OPT: &str = "-O3";
+const PROGRAM_OPT: &str = "-O3";
 
 /// Extra C compiler flags from `LACON_CFLAGS` (e.g. `-fsanitize=address`).
 fn extra() -> Vec<String> {

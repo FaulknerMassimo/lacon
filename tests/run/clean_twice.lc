@@ -1,0 +1,36 @@
+# Two loops in a row over one list of structs: the second trusts what the
+# first found, when that covers what it needs, and tests again otherwise.
+
+type P {x int, y f64}
+
+fn twice(mut ps [P]) =
+  for i in 0..ps.len: ps[i].x += 1
+  for i in 0..ps.len: ps[i].y *= 2
+
+# The first loop only reads, so it never asked whether the elements are
+# the function's own; the second must.
+fn read_then_write(mut ps [P]) f64 =
+  var t = 0.0
+  for i in 0..ps.len: t += ps[i].y
+  for i in 0..ps.len: ps[i].x -= 1
+  t
+
+fn main() =
+  var a = [P{1, 0.5}, P{2, 1.5}]
+  twice(a)
+  print(a)
+  # Shared with b: the first loop copies the list, the second finds it clean.
+  b = a
+  twice(a)
+  print(a, b)
+  # An element held elsewhere.
+  e = a[0]
+  print(read_then_write(a), a, e)
+  # A while loop, then a for loop, over the same list.
+  var c = [P{5, 1}]
+  var k = 0
+  while k < 2:
+    c[0].x += 1
+    k += 1
+  for i in 0..c.len: c[i].y += c[i].x
+  print(c)

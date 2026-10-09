@@ -393,6 +393,12 @@ else holds (§29), as §3.3 promised of `xs.map(...).filter(...)`: a
 `map` over 100,000 ints went from 0.141 s to 0.075 s. An eleventh
 benchmark, `pipeline`, went from 1.31x Rust to 1.03x, records from
 1.06x to 0.93x, and the eleven's geometric mean is 1.33x.
+Overflow checks against a constant test the other operand's range,
+functions touch only the slots they use, a loop over a list of structs
+trusts the test the loop before it made, strings sort by their first 8
+bytes, an interpolation allocates its string once, and C is compiled at
+`-O3` (§30): fib went from 2.61x Rust to 1.54x, collatz from 1.57x to
+1.33x, and the eleven's geometric mean is 1.18x, under §6's 1.2x.
 
 ### Phase 3 — Speed and scale
 
@@ -2427,3 +2433,120 @@ are about what the fast mode's are.
 
 Next: the primer (§26) is still the larger lever on tokens-to-green,
 and mode checking is the piece of Phase 2's memory model left.
+
+---
+
+## 30. Phase 2: overflow checks against constants, `-O3`, and strings built once
+
+§29 left the eleven benchmarks at 1.33x Rust, against §6's 1.2x. Each
+change below was measured alone, pinned, best of seven runs.
+
+- **Overflow checks against a constant.** `lc_iadd`, `lc_isub` and
+  `lc_imul` used `__builtin_*_overflow`, which on x86 is the operation
+  and a `jo`. When one operand is a constant, the check now tests the
+  other operand's range, and the result is computed with wrapping
+  arithmetic. The check then no longer stands between the operands and
+  the result: `3 * n + 1` is one `lea`, where checking it needed an
+  `imul` (three cycles) and two `jo`s on collatz's critical path.
+  collatz went from 0.389 s to 0.281 s. The error and its site are the
+  same.
+- **Slots cleared only if used.** Every function set all its slots to
+  unit on entry and released them on exit, even those of unboxed
+  locals, which live in C variables. Now only boxed slots, and slots the
+  body reaches as `S[s]`, are touched. nbody's `advance`, called
+  6,000,000 times, has 13 slots of which four are boxed; nbody went from
+  0.300 s to 0.274 s.
+- **Two loops in a row over one list of structs.** §27's test that a
+  list is clean runs as each loop starts, and `advance` runs two loops
+  over its bodies. A loop's test result now goes in a flag, which the
+  next statement tests first if it is a loop over the same list: a
+  `while`, or a `for` over a range whose bounds only read locals. A
+  read-only loop's flag doesn't stand for a loop that assigns. nbody
+  went from 0.273 s to 0.261 s.
+- **Strings.** A sort of strings went through `lc_cmp` for each
+  comparison. Strings now sort as items holding the key's first 8 bytes
+  as a big-endian int and the string, which is compared whole only when
+  those are equal, with insertion sort below 17 items. concat's build
+  and sort of 400,000 strings went from 0.183 s to 0.156 s (Rust:
+  0.112 s), of which building them is 0.080 s. `s = s + t`, on a string
+  nothing else holds, appends inline when there is room. An
+  interpolation was built in an `lc_buf`, malloc'd and then copied into
+  a new string. It now evaluates its values in order, formatting any
+  with a spec as it goes so that errors come in the same order,
+  allocates the string at its length when its values are strs and
+  ints, and appends to it. A loop building 2,400,000 `"{n},"` pieces
+  went from 0.092 s to 0.072 s, and a program holding 1,300,000
+  interpolated strings from 0.065 s to 0.047 s, at the same peak memory
+  (84.8 MB). A first version, which gave each value 16 bytes, took
+  110.5 MB.
+- **`-O3`**, for the runtime and for programs. fib went from 0.709 s to
+  0.437 s: at `-O3` GCC inlines `fib`'s recursive calls into it. 60
+  agent programs built in 1.03x `-O2`'s median time (0.316 s against
+  0.308 s), and came out 1% larger.
+
+**Tried and dropped.**
+
+- fib's call records (§20) are 0.2 s of its 0.71 s at `-O2`. Storing
+  only the site took 0.759 s. Passing the depth as an argument, so that
+  the callee needn't load it, took 0.666 s; that would change every
+  typed entry for 6%.
+- One branch an element in `lc_view_clean`: 0.282 s against 0.273 s.
+- A branchless merge for strings, choosing the side by pointer: 0.184 s
+  against 0.156 s. Each step's loads then wait on the last comparison.
+- `restrict` on a clean view's data, `cold` on the panic functions, and
+  a cold call for a view's miss changed nothing measurable.
+- clang, at `-O2`, on the generated code: fib took 1.22 s and nbody
+  0.476 s.
+
+**What's left.**
+
+- knapsack (1.8x) makes three overflow checks an element, two on
+  operands that aren't constants. Written by hand in C with the same
+  checks it takes 1.5x Rust, and without them 1.0x; Rust's release
+  build doesn't check.
+- nbody (1.6x): LLVM vectorizes Rust's inner loop (`sqrtpd`, `divpd`,
+  two pairs at once). The same program in plain C takes 0.21-0.23 s
+  with gcc or clang, against Rust's 0.162 s.
+- fib (1.5x): the call records, and the check on `+`, which keeps GCC
+  from reassociating the recursion as LLVM does for Rust.
+- collatz (1.3x) is at the mercy of GCC's loop layout. With the
+  constant checks alone it took 0.281 s; trimming the slots changed
+  GCC's choice of loop shape, and it takes 0.333 s, from C that differs
+  only in dead stores. Dropping the check on the step counter `k += 1`
+  would save 0.02 s.
+
+`tests/run/const_overflow.lc` covers each operator against a constant
+on both sides at the edges of the int range, and an overflow;
+`sort_strs.lc` prefixes, ties past 8 bytes, NUL bytes, non-ASCII and
+stable `sort_by`; `clean_twice.lc` a shared list, a shared element, a
+read-only loop followed by one that assigns, and a `while` followed by
+a `for`; `interp_build.lc` the order values are evaluated in, int
+extremes, other kinds and format specs. Verified as before: every
+golden program gives the same output from the interpreter and from
+native code, also under AddressSanitizer and
+UndefinedBehaviorSanitizer; `bench/tasks/check.py --native` passes
+every task; and the 526 agent programs, typed, with `LACON_BOXED=1`
+and under both sanitizers, give the interpreter's output on all their
+tasks' inputs.
+
+**Results**, before and after, pinned, best of seven runs:
+
+| Program | Before | After |
+|---|---|---|
+| collatz | 1.57x | 1.33x |
+| concat | 1.67x | 1.37x |
+| fib | 2.61x | 1.54x |
+| knapsack | 1.85x | 1.87x |
+| mandel | 1.05x | 1.05x |
+| nbody | 1.86x | 1.65x |
+| pipeline | 1.02x | 0.90x |
+| records | 0.89x | 0.81x |
+| sieve | 1.13x | 1.13x |
+| trees | 0.90x | 0.86x |
+| wordfreq | 0.99x | 0.93x |
+| geometric mean | 1.33x | 1.18x |
+
+(Native time as a multiple of Rust's, `rustc -O`.) The suite is under
+§6's 1.2x for the first time; knapsack, nbody and fib are not.
+
+Next: the primer (§26) is still the larger lever on tokens-to-green.
