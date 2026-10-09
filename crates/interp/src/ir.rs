@@ -63,6 +63,8 @@ pub struct StructDef {
     pub name: String,
     pub generics: Vec<String>,
     pub fields: Vec<FieldDef>,
+    /// The comment lines above the declaration, joined.
+    pub doc: Option<String>,
 }
 
 pub struct FieldDef {
@@ -75,6 +77,8 @@ pub struct EnumDef {
     pub name: String,
     pub generics: Vec<String>,
     pub variants: Vec<VariantDef>,
+    /// The comment lines above the declaration, joined.
+    pub doc: Option<String>,
 }
 
 pub struct VariantDef {

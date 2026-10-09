@@ -1,0 +1,7 @@
+type Point {x int, y int = 0}  # A point; y defaults to 0.
+fn one(x int) int        # pure: A doc on one line.
+fn split(src str) [str]  # pure: The statements in src: split at semicolons outside strings, with -- comments removed. Text after the last semicolon is a statement too.
+fn paragraphs() int      # pure: A first paragraph. A second, after an empty comment line.
+fn bare(s str) str!      # pure
+fn main()                # io
+[exit 0]

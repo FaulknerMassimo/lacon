@@ -302,7 +302,7 @@ impl<'a> Resolver<'a> {
                     for f in &s.fields {
                         self.field_names.insert(f.name.name.clone());
                     }
-                    self.prog.structs.push(ir::StructDef { name: s.name.name.clone(), generics: s.generics.iter().map(|g| g.name.name.clone()).collect(), fields: Vec::new() });
+                    self.prog.structs.push(ir::StructDef { name: s.name.name.clone(), generics: s.generics.iter().map(|g| g.name.name.clone()).collect(), fields: Vec::new(), doc: s.doc.clone() });
                 }
                 Item::Enum(e) => {
                     let id = self.prog.enums.len() as u32;
@@ -310,7 +310,7 @@ impl<'a> Resolver<'a> {
                     for (tag, v) in e.variants.iter().enumerate() {
                         self.variants.entry(v.name.name.clone()).or_default().push((id, tag as u32));
                     }
-                    self.prog.enums.push(ir::EnumDef { name: e.name.name.clone(), generics: e.generics.iter().map(|g| g.name.name.clone()).collect(), variants: Vec::new() });
+                    self.prog.enums.push(ir::EnumDef { name: e.name.name.clone(), generics: e.generics.iter().map(|g| g.name.name.clone()).collect(), variants: Vec::new(), doc: e.doc.clone() });
                 }
                 Item::Alias(a) => {
                     self.aliases.insert(a.name.name.clone(), a.ty.clone());

@@ -259,9 +259,14 @@ source ─▶ parser (continues past errors) ─▶ name resolution ─▶ type 
 |---|---|
 | `lacon check` after a change | < 100 ms |
 | Debug build, 10,000 lines | < 1 s |
-| Release runtime | ≤ 1.2× Rust on the benchmark suite |
+| Release runtime | ≤ 1.0× Rust on the benchmark suite |
 | Peak memory | ≤ 1.2× Rust, no GC |
-| Tokens-to-green | ≥ 30% below Rust and Go, at or below Python |
+| Tokens-to-green | 0.4× Rust when changing a large program; below Rust when writing a small one |
+
+The runtime and token targets were raised in October 2026, from 1.2× Rust
+and "30% below Rust and Go, at or below Python". §31 shows why 0.4× can
+only be met on large programs: on a 30-line task, most of an episode is
+context that every call reads whatever the language.
 
 ---
 
@@ -497,7 +502,7 @@ tests/           golden tests: run/ (stdout), check/ (diagnostics), unit/ (`laco
 bench/tokens/    the same program in Rust, Go, Python and Lacon, plus a token counter
 bench/tasks/     Phase 0 tasks (prompt, hidden tests, reference) and a checker
 bench/edits/     tasks that change an existing program: the program before
-                 and after, in Python and Lacon, and hidden tests
+                 and after, in Python, Lacon and Rust, and hidden tests
 bench/perf/      native speed: the same programs in Lacon and Rust, and a timer
 bench/harness/   has Claude solve the tasks in each language and reports tokens-to-green
 bench/results/   harness runs (created by the harness)
@@ -1984,6 +1989,7 @@ means:
   see §27.)
 - `lacon sig` prints `type Parser {toks [Tok], pos int}`, without the
   default of `pos int = 0`, so `Parser{toks}` looks invalid to a reader.
+  (It prints defaults now; see §31.)
 - `put` adds an item it doesn't find at the end of the file, not where it
   stands in the input. Putting a whole solution over its start passes
   every test, but only ini-diamond, which adds no item, comes out the
@@ -2655,8 +2661,16 @@ eat what Lacon saves on `self.`, `isinstance`, `return` and dispatch.
   possibly a call, and only plain field reads narrowed. A read the
   checker resolves to a struct's field now narrows like any field.
 
-`tests/run/opt_results.lc` and `tests/run/narrow_named_fields.lc` are
-new. Verified as before: the golden tests, typed and native;
+**`sig`, for reading by signature.** A doc was only the comment line
+directly above an item, so a doc of several lines lost its start:
+sql-groups' `split_statements` read "comments removed. Text after the
+last semicolon is a statement too." A doc is now every comment line
+directly above, joined. Struct fields show their defaults (`pos int =
+0`, an open item of §25), and types and enums show their docs, in `sig`
+and `q type`. `tests/sig/` is a new golden directory.
+
+`tests/run/opt_results.lc`, `tests/run/narrow_named_fields.lc` and
+`tests/sig/docs.lc` are new. Verified as before: the golden tests, typed and native;
 `check.py` interpreted and `--native` on both suites; and the 526 agent
 programs, typed, boxed and under AddressSanitizer and
 UndefinedBehaviorSanitizer, give the interpreter's output on all their

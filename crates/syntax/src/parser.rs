@@ -219,12 +219,15 @@ impl<'a> Parser<'a> {
         Span::new(start + lead, start + lead + line.trim().len())
     }
 
-    /// The comment line directly above `span`, used as a one-line doc.
+    /// The comment lines directly above `span`, joined into one line: the
+    /// item's doc.
     fn doc_above(&self, span: Span) -> Option<String> {
         let before = &self.src[..span.start as usize];
         let line_start = before.rfind('\n')?;
-        let prev = before[..line_start].rsplit('\n').next()?.trim();
-        prev.strip_prefix('#').map(|d| d.trim().to_string())
+        let mut lines: Vec<&str> = before[..line_start].rsplit('\n').map_while(|l| l.trim().strip_prefix('#')).map(str::trim).collect();
+        lines.retain(|l| !l.is_empty());
+        lines.reverse();
+        (!lines.is_empty()).then(|| lines.join(" "))
     }
 
     // ----- recovery -----

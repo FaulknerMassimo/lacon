@@ -2,6 +2,7 @@
 //! - `tests/run/X.lc`: `lacon run` stdout+stderr must equal `X.out`
 //! - `tests/check/X.lc`: `lacon check` output must equal `X.out`
 //! - `tests/unit/X.lc`: `lacon test` output must equal `X.out`
+//! - `tests/sig/X.lc`: `lacon sig` output must equal `X.out`
 //! - `tests/run/X.lc` again, built with `lacon build`: the native program's
 //!   output must equal the same `X.out` (skipped without a C compiler)
 //! - `tests/fix/X.lc`: `lacon fix` on a copy; its output, then the file it
@@ -69,6 +70,11 @@ fn check_diagnostics() {
 #[test]
 fn inline_tests() {
     check_dir("unit", "test");
+}
+
+#[test]
+fn signatures() {
+    check_dir("sig", "sig");
 }
 
 #[test]

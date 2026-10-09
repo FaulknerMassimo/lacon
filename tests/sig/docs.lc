@@ -1,0 +1,25 @@
+# ----- a section header, apart from what follows -----
+
+# A doc on one line.
+fn one(x int) int = x + 1
+
+# The statements in src: split at semicolons outside strings, with --
+# comments removed. Text after the last semicolon is a statement too.
+fn split(src str) [str] = src.split(";")
+
+# A first paragraph.
+#
+# A second, after an empty comment line.
+fn paragraphs() int = 2
+
+# Not a doc: a blank line separates it.
+
+fn bare(s str) str! =
+  if s.is_empty(): fail "empty"
+  s
+
+# A point; y defaults to 0.
+type Point {x int, y int = 0}
+
+fn main() =
+  print(one(1), split("a;b"), paragraphs(), bare("x") ?? "", Point{1})

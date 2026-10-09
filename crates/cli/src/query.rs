@@ -15,7 +15,7 @@ use lacon_interp::ir::{walk_ex, Ex, FnId, Node, PatIr, Program, St};
 use lacon_interp::value::{Func, Value};
 use lacon_syntax::{Source, Span};
 
-use crate::{analyze, edit, enum_line, fn_line, read, report, struct_line, usage_err};
+use crate::{analyze, doc_suffix, edit, enum_line, fn_line, read, report, struct_line, usage_err};
 
 const USAGE: &str = "q def <file.lc> <name>... | q callers <file.lc> <fn> | q type <file.lc>:<line>:<col> | q type <file.lc> <name>";
 
@@ -216,8 +216,8 @@ fn type_of(path: &str, name: &str) -> ExitCode {
     let a = analyze(path, text);
     let p = &a.prog;
     let mut lines = Vec::new();
-    lines.extend(p.structs.iter().filter(|s| s.name == name).map(|s| struct_line(s, p)));
-    lines.extend(p.enums.iter().filter(|e| e.name == name).map(|e| enum_line(e, p)));
+    lines.extend(p.structs.iter().filter(|s| s.name == name).map(|s| struct_line(s, p, &a.src.text) + &doc_suffix(&s.doc)));
+    lines.extend(p.enums.iter().filter(|e| e.name == name).map(|e| enum_line(e, p) + &doc_suffix(&e.doc)));
     let fns: Vec<_> = p.fns.iter().filter(|f| f.name == name).collect();
     let width = fns.iter().map(|f| f.sig.len()).max().unwrap_or(0);
     lines.extend(fns.iter().map(|f| fn_line(f, width)));

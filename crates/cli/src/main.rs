@@ -320,14 +320,14 @@ fn build(args: &[String]) -> ExitCode {
 }
 
 fn sig(path: &str) -> ExitCode {
-    let Some((_, prog, _)) = load(path) else {
+    let Some((src, prog, _)) = load(path) else {
         return ExitCode::from(1);
     };
     for s in &prog.structs {
-        println!("{}", struct_line(s, &prog));
+        println!("{}{}", struct_line(s, &prog, &src.text), doc_suffix(&s.doc));
     }
     for e in &prog.enums {
-        println!("{}", enum_line(e, &prog));
+        println!("{}{}", enum_line(e, &prog), doc_suffix(&e.doc));
     }
     for c in &prog.consts {
         println!("{} = ...", c.name);
@@ -342,9 +342,21 @@ fn sig(path: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn struct_line(s: &lacon_interp::ir::StructDef, prog: &Program) -> String {
-    let fields: Vec<String> = s.fields.iter().map(|f| format!("{} {}", f.name, ty_name(&f.ty, prog))).collect();
+/// A struct's declaration, with each field's default as written in `src`.
+fn struct_line(s: &lacon_interp::ir::StructDef, prog: &Program, src: &str) -> String {
+    let fields: Vec<String> = s
+        .fields
+        .iter()
+        .map(|f| {
+            let default = f.default.as_ref().map(|d| format!(" = {}", &src[d.span.start as usize..d.span.end as usize])).unwrap_or_default();
+            format!("{} {}{default}", f.name, ty_name(&f.ty, prog))
+        })
+        .collect();
     format!("type {} {{{}}}", s.name, fields.join(", "))
+}
+
+fn doc_suffix(doc: &Option<String>) -> String {
+    doc.as_ref().map(|d| format!("  # {d}")).unwrap_or_default()
 }
 
 fn enum_line(e: &lacon_interp::ir::EnumDef, prog: &Program) -> String {
