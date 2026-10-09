@@ -1,0 +1,34 @@
+CREATE TABLE
+user | count(*)
+-----+---------
+(0 rows)
+INSERT 5
+BEGIN
+UPDATE 2
+user | action | total
+-----+--------+------
+ana  | buy    |    50
+ana  | login  |     1
+ben  | login  |     1
+cy   | login  |     1
+(4 rows)
+ROLLBACK
+user | total | rows
+-----+-------+-----
+ana  |     6 |    3
+(1 row)
+action | count(*)
+-------+---------
+(0 rows)
+ALTER TABLE
+UPDATE 3
+day  | n
+-----+--
+   2 | 3
+NULL | 2
+(2 rows)
+a
+-----
+buy
+login
+(2 rows)

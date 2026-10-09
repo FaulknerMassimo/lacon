@@ -1,0 +1,11 @@
+CREATE TABLE t (k TEXT, g INT, v INT);
+INSERT INTO t VALUES ('a', 1, 10), ('b', 1, 20), ('c', 2, 30);
+SELECT k, sum(v) FROM t GROUP BY g;
+SELECT g FROM t GROUP BY g HAVING v > 10;
+SELECT g, sum(v) FROM t GROUP BY g ORDER BY k;
+SELECT g FROM t GROUP BY nope;
+SELECT g, count(*) FROM t HAVING count(*) > 1;
+SELECT g FROM t GROUP BY;
+SELECT g, sum(v) AS s FROM t GROUP BY g ORDER BY s DESC;
+SELECT g * 2 + sum(v) AS x FROM t GROUP BY g;
+SELECT v FROM t WHERE g = 1 ORDER BY v DESC;

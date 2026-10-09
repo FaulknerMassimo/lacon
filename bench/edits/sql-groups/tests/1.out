@@ -1,0 +1,12 @@
+CREATE TABLE
+INSERT 5
+region | orders | sum(units)
+-------+--------+-----------
+north  |      3 |         20
+south  |      2 |         16
+(2 rows)
+product | total
+--------+------
+pen     |    17
+pad     |    12
+(2 rows)

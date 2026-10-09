@@ -9,7 +9,7 @@ tokens it spends getting to passing tests (tokens-to-green).
     uv run bench/harness/run.py --langs lacon,python --tasks rpn,calc --trials 3
     uv run bench/harness/run.py --agent claude-code            # through Claude Code: no API key
     uv run bench/harness/run.py --agent replay                 # no model: submit the reference solutions
-    uv run bench/harness/run.py --langs lacon --primer docs/primer-short.md   # try another primer
+    uv run bench/harness/run.py --langs lacon --primer docs/primer-short.md   # try another primer (or `none`)
     uv run bench/harness/run.py --agent claude-code --langs lacon,lacon-write,lacon-tools   # how the program is written
     uv run bench/harness/run.py --agent claude-code --suite edits   # change an existing program
     uv run bench/harness/report.py bench/results/<run>         # summarize a run
@@ -17,7 +17,8 @@ tokens it spends getting to passing tests (tokens-to-green).
 In each episode the model gets the task prompt, one example, and two tools:
 `run` builds a program and runs it on input of its choice, and `submit` runs
 the hidden tests and returns the first failing one. The episode is green when a
-submission passes. Lacon episodes also get the primer in the system prompt;
+submission passes. Lacon episodes also get the primer in the system prompt
+(`--primer none` leaves it out and says there is no documentation);
 nothing else differs between languages.
 
 Through Claude Code, the model writes the program with Claude Code's Read,
@@ -232,17 +233,23 @@ CHAIN_HINT = {
 SCRATCH = {"write": ("new{ext}", "./write new{ext}"), "tools": ("items.lc", "./lacon put main.lc items.lc")}
 
 
-def system_prompt(lang: L.Lang, agent: str = "claude", primer: Path = PRIMER, chain_hint: bool = False, edit_task: bool = False) -> str:
+# The environment line of a Lacon episode run with `--primer none`.
+NO_PRIMER = "Lacon. There is no documentation: write what you would guess from Python and Rust, and the compiler's errors say what to write instead."
+
+
+def system_prompt(lang: L.Lang, agent: str = "claude", primer: Path | None = PRIMER, chain_hint: bool = False, edit_task: bool = False) -> str:
     template = {"write": SYSTEM_CC_WRITE, "tools": SYSTEM_CC_TOOLS}.get(lang.edit, SYSTEM_CC if agent == "claude-code" else SYSTEM)
     goal = (GOAL_EDIT if edit_task else GOAL_NEW).format(lang=lang.name, ext=lang.ext)
     show = {"write": " `./show` prints it.", "tools": " `./show` prints all of it."}.get(lang.edit, "") if edit_task else ""
     own = "`./show`, " if edit_task else ""
-    s = template.format(goal=goal, lang=lang.name, ext=lang.ext, environment=lang.environment, show=show, own=own)
+    lacon = isinstance(lang, L.Lacon)
+    environment = NO_PRIMER if lacon and primer is None else lang.environment
+    s = template.format(goal=goal, lang=lang.name, ext=lang.ext, environment=environment, show=show, own=own)
     if chain_hint:
         hint = "bash" if lang.edit != "files" else "claude-code" if agent == "claude-code" else "claude"
         file, save = (x.format(ext=lang.ext) for x in SCRATCH.get(lang.edit, ("", "")))
         s += "\n\n" + CHAIN_HINT[hint].format(ext=lang.ext, file=file, save=save)
-    if isinstance(lang, L.Lacon):
+    if lacon and primer is not None:
         s += "\n\n" + primer.read_text()
     return s
 
@@ -700,7 +707,7 @@ def main() -> int:
     ap.add_argument("--claude", default="claude", help="the Claude Code executable (claude-code agent)")
     ap.add_argument("--max-budget", type=float, default=2.0, help="claude-code: --max-budget-usd per episode")
     ap.add_argument("--session-timeout", type=int, default=1800, help="claude-code: seconds per episode")
-    ap.add_argument("--primer", type=Path, default=PRIMER, help="the primer Lacon episodes get (default: docs/primer.md)")
+    ap.add_argument("--primer", type=lambda s: None if s == "none" else Path(s), default=PRIMER, help="the primer Lacon episodes get (default: docs/primer.md), or `none`")
     ap.add_argument("--chain-hint", action="store_true", help="tell every language that a failed submission has no penalty")
     args = ap.parse_args()
 
@@ -753,7 +760,7 @@ def main() -> int:
         "max_tokens": args.max_tokens,
         "sandbox": L.SANDBOX,
         "languages": {lang.key: lang.environment for lang in langs},
-        "primer": {"path": str(args.primer), "chars": len(args.primer.read_text())},
+        "primer": {"path": str(args.primer), "chars": len(args.primer.read_text())} if args.primer else None,
         "chain_hint": args.chain_hint,
         "tasks": tasks,
     }

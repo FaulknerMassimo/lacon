@@ -1,0 +1,11 @@
+-- grouping with HAVING, aliases in ORDER BY, and aggregates only in HAVING
+CREATE TABLE emp (id INT PRIMARY KEY, name TEXT NOT NULL, dept TEXT, salary INT, boss INT);
+INSERT INTO emp VALUES (1, 'Ann', 'eng', 120, NULL), (2, 'Bob', 'eng', 95, 1),
+  (3, 'Cid', 'ops', 70, 1), (4, 'Dee', 'ops', 88, 2), (5, 'Eve', 'ops', 64, 2),
+  (6, 'Fay', 'sales', 50, 3), (7, 'Gus', 'eng', 101, 1);
+SELECT dept, count(*) AS n, min(salary) AS low, max(salary) AS high, avg(salary) FROM emp GROUP BY dept ORDER BY n DESC, dept;
+SELECT dept FROM emp GROUP BY dept HAVING max(salary) > 100;
+SELECT dept, sum(salary) AS payroll FROM emp WHERE name != 'Ann' GROUP BY dept HAVING count(*) >= 2 ORDER BY payroll;
+SELECT upper(dept) AS team, count(*) * 10 AS score FROM emp GROUP BY dept ORDER BY score DESC LIMIT 2;
+SELECT boss, count(*) FROM emp GROUP BY boss ORDER BY boss;
+SELECT dept, boss, count(*) AS n FROM emp GROUP BY dept, boss HAVING count(*) > 1;

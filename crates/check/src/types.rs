@@ -212,7 +212,9 @@ impl Subst {
             (T::Var(_), _) | (_, T::Var(_)) => self.unify(&f, &t),
             (T::Int(_), T::Float) => true,
             (T::Opt(a), T::Opt(b)) | (T::Res(a), T::Res(b)) => self.coerce(a, b),
-            (T::Opt(_), T::Res(_)) => false,
+            // An optional is a result only where the result holds an
+            // optional (`T?!`); elsewhere it wants `?` or `??`.
+            (T::Opt(_), T::Res(b)) => matches!(self.resolve(b), T::Opt(_) | T::Var(_)) && self.coerce(&f, b),
             (_, T::Opt(b)) | (_, T::Res(b)) => self.coerce(&f, b),
             (T::Range, T::List(e)) => self.coerce(&INT, e),
             (T::List(a), T::List(b)) => {
@@ -236,7 +238,7 @@ impl Subst {
             (_, T::Unknown) | (T::Unknown, _) | (T::Never, _) | (T::Var(_), _) | (_, T::Var(_)) => true,
             (T::Int(_), T::Float) => true,
             (T::Opt(a), T::Opt(b)) | (T::Res(a), T::Res(b)) => self.could_coerce(a, b),
-            (T::Opt(_), T::Res(_)) => false,
+            (T::Opt(_), T::Res(b)) => matches!(self.resolve(b), T::Opt(_) | T::Var(_)) && self.could_coerce(&f, b),
             (_, T::Opt(b)) | (_, T::Res(b)) => self.could_coerce(&f, b),
             (T::Range, T::List(e)) => self.could_coerce(&INT, e),
             (T::List(a), T::List(b)) => {

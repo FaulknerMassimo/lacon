@@ -1,0 +1,33 @@
+# A `T?!` is an error, `none` or a value. `none` and `T?` values flow into
+# it, and `?` on it passes only the error up: `none` stays a value.
+enum Value = Null | Int(int) | Text(str)
+
+fn truth(v Value) bool?! = match v
+  Null: none
+  Int(n): n != 0
+  Text(_): fail "a condition must be INT, not TEXT"
+
+fn first_even(xs [int]) int?! =
+  if xs.is_empty(): fail "empty"
+  xs.find(it % 2 == 0)
+
+fn keeps(v Value) bool! =
+  t = truth(v)?
+  t == true
+
+fn describe(v Value) str! =
+  t = truth(v)?
+  if t == none: return "unknown"
+  if t: "yes" else: "no"
+
+fn main()! =
+  print(keeps(Null)?, keeps(Int(3))?, keeps(Int(0))?)
+  print(describe(Null)?, describe(Int(1))?, describe(Int(0))?)
+  print(first_even([1, 3])? ?? -1, first_even([1, 4, 6])? ?? -1)
+  match first_even([])
+    err(e): print("error:", e)
+    v: print(v)
+  match keeps(Text("x"))
+    err(e): print("error:", e)
+    v: print(v)
+  print(keeps(Text("y"))?)

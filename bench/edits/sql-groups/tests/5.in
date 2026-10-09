@@ -1,0 +1,18 @@
+-- no grouping: the program as it was
+CREATE TABLE items (id INT PRIMARY KEY, name TEXT NOT NULL, qty INT, tag TEXT);
+INSERT INTO items VALUES (1, 'bolt', 40, 'hw'), (2, 'nut', 55, 'hw'), (3, 'glue', 3, NULL);
+INSERT INTO items (id, name) VALUES (4, 'tape');
+SELECT * FROM items ORDER BY qty DESC;
+SELECT count(*), count(tag), sum(qty), min(name), max(qty), avg(qty) FROM items;
+SELECT name || '-' || coalesce(tag, 'none') AS label, qty BETWEEN 10 AND 50 AS mid FROM items WHERE name LIKE '%t%';
+SELECT name, qty FROM items WHERE qty IN (3, 40) OR qty IS NULL ORDER BY name;
+UPDATE items SET qty = qty * 2 WHERE tag = 'hw';
+SELECT name, qty, -qty / 7, qty % 7 FROM items WHERE NOT qty < 20;
+SELECT name, count(*) FROM items;
+INSERT INTO items VALUES (2, 'washer', 1, 'hw');
+BEGIN;
+DELETE FROM items WHERE qty IS NULL;
+SHOW TABLES;
+ROLLBACK;
+DESCRIBE items;
+SELECT 7 / 0;

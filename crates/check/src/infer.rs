@@ -188,6 +188,11 @@ pub struct Checker<'p> {
     pub parse_to: Vec<(Span, ConvTo)>,
     /// `x.map(f)` calls on an optional, for `Program::opt_map`.
     pub opt_map: Vec<Span>,
+    /// `x?` on a `T?!`, for `Program::res_try`.
+    pub res_try: Vec<Span>,
+    /// `r.name` nodes, by address, that read a struct's field although a
+    /// function `name` exists too: they narrow as any field does.
+    real_fields: HashSet<usize>,
     /// The type of every expression checked, by node address, in order;
     /// a later entry for the same node wins.
     pub ex_log: Vec<(usize, T)>,
@@ -220,6 +225,8 @@ impl<'p> Checker<'p> {
             fields: Vec::new(),
             parse_to: Vec::new(),
             opt_map: Vec::new(),
+            res_try: Vec::new(),
+            real_fields: HashSet::new(),
             ex_log: Vec::new(),
             frame_log: Vec::new(),
             loose_parses: Vec::new(),
@@ -298,7 +305,7 @@ impl<'p> Checker<'p> {
         for _ in 0..4 {
             let snap = self.s.snapshot();
             let nd = self.diags.len();
-            let (np, no) = (self.parse_to.len(), self.opt_map.len());
+            let (np, no, nr) = (self.parse_to.len(), self.opt_map.len(), self.res_try.len());
             let (ne, nf, nl) = (self.ex_log.len(), self.frame_log.len(), self.loose_parses.len());
             self.widen_hit = false;
             self.fn_once(id);
@@ -309,6 +316,7 @@ impl<'p> Checker<'p> {
             self.diags.truncate(nd);
             self.parse_to.truncate(np);
             self.opt_map.truncate(no);
+            self.res_try.truncate(nr);
             self.ex_log.truncate(ne);
             self.frame_log.truncate(nf);
             self.loose_parses.truncate(nl);
@@ -622,7 +630,7 @@ impl<'p> Checker<'p> {
     /// `r.a.ms` as the slot `r` and the fields `a`, `ms`.
     fn field_key(&self, e: &Ex) -> Option<FieldKey> {
         match e {
-            Ex::Field { obj, name, user: None, .. } => {
+            Ex::Field { obj, name, user, .. } if user.is_none() || self.real_fields.contains(&(e as *const Ex as usize)) => {
                 let (key, mut path) = match &**obj {
                     Ex::Field { .. } => self.field_key(obj)?,
                     o => (self.key_of(o)?, Vec::new()),
@@ -1020,6 +1028,13 @@ impl<'p> Checker<'p> {
             Ex::Variant { id, tag, args, span } => self.variant(*id, *tag, args, *span, exp),
             Ex::Field { obj, name, user, span } => {
                 let t = self.infer(obj);
+                if user.is_some() {
+                    if let T::Struct(id, _) = self.s.resolve(&t) {
+                        if self.prog.structs[id as usize].fields.iter().any(|f| f.name == **name) {
+                            self.real_fields.insert(e as *const Ex as usize);
+                        }
+                    }
+                }
                 let ft = self.field_type(&t, name, user.as_ref(), obj.span(), *span);
                 self.narrowed_field(self.field_key(e), ft)
             }
@@ -2352,6 +2367,9 @@ impl<'p> Checker<'p> {
             T::Res(inner) => {
                 if !self.ctx.passes_err(&self.s) {
                     self.err_cant_pass(span, false);
+                }
+                if matches!(self.s.resolve(&inner), T::Opt(_)) {
+                    self.res_try.push(span);
                 }
                 *inner
             }

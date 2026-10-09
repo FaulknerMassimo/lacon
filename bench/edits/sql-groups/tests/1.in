@@ -1,0 +1,5 @@
+CREATE TABLE sales (id INT PRIMARY KEY, region TEXT, product TEXT, units INT);
+INSERT INTO sales VALUES (1, 'north', 'pen', 10), (2, 'south', 'pen', 4),
+  (3, 'north', 'ink', 7), (4, 'north', 'pen', 3), (5, 'south', 'pad', 12);
+SELECT region, count(*) AS orders, sum(units) FROM sales GROUP BY region;
+SELECT product, sum(units) AS total FROM sales GROUP BY product HAVING sum(units) > 8 ORDER BY total DESC;

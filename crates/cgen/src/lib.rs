@@ -2988,13 +2988,17 @@ impl<'p> Gen<'p> {
                     end.is_some()
                 )
             }
-            Ex::Try { e: x, fn_optional, .. } => {
+            Ex::Try { e: x, fn_optional, span } => {
                 let t = self.t();
                 let v = self.expr(x);
                 let none_ret = if *fn_optional { "{ lc_release(" .to_string() + &t + "); RETURN(LC_NONE) }" } else { format!("RETURN({t})") };
-                format!(
-                    "({{ lc_v {t} = {v}; if ({t}.tag == T_ERR) {none_ret} if ({t}.tag == T_NONE) RETURN(lc_try_none({fn_optional})) {t}; }})"
-                )
+                // `?` on a `T?!` passes only the error up.
+                let none_check = if self.prog.res_try.contains(span) {
+                    String::new()
+                } else {
+                    format!("if ({t}.tag == T_NONE) RETURN(lc_try_none({fn_optional})) ")
+                };
+                format!("({{ lc_v {t} = {v}; if ({t}.tag == T_ERR) {none_ret} {none_check}{t}; }})")
             }
             Ex::Lambda(def) => self.lambda(def),
             Ex::If { cond, then, els, span } => {

@@ -47,8 +47,8 @@ pub fn show(t: &T, prog: &Program) -> String {
 
 /// Type-checks a resolved program. `src` is its source text, used for the
 /// snippets in messages and fixes. Records in `prog.parse_to` the type each
-/// `s.parse()` with a declared type reads, and in `prog.opt_map` each `map`
-/// on an optional.
+/// `s.parse()` with a declared type reads, in `prog.opt_map` each `map` on
+/// an optional, and in `prog.res_try` each `?` on a `T?!`.
 pub fn check(prog: &mut Program, src: &str) -> (Vec<Diag>, Types) {
     let mut c = Checker::new(prog, src);
     c.run();
@@ -59,8 +59,9 @@ pub fn check(prog: &mut Program, src: &str) -> (Vec<Diag>, Types) {
     for (k, ts) in &c.frame_log {
         types.frames.insert(*k, ts.iter().map(|t| c.s.zonk(t)).collect());
     }
-    let (diags, parse_to, opt_map) = (c.diags, c.parse_to, c.opt_map);
+    let (diags, parse_to, opt_map, res_try) = (c.diags, c.parse_to, c.opt_map, c.res_try);
     prog.parse_to = parse_to.into_iter().collect();
     prog.opt_map = opt_map.into_iter().collect();
+    prog.res_try = res_try.into_iter().collect();
     (diags, types)
 }

@@ -1,0 +1,23 @@
+CREATE TABLE
+INSERT 3
+error: column k must be in GROUP BY or used in an aggregate
+error: column v must be in GROUP BY or used in an aggregate
+error: column k must be in GROUP BY or used in an aggregate
+error: no such column nope
+error: HAVING needs GROUP BY
+error: unexpected end of statement
+g | s
+--+---
+1 | 30
+2 | 30
+(2 rows)
+x
+--
+32
+34
+(2 rows)
+v
+--
+20
+10
+(2 rows)

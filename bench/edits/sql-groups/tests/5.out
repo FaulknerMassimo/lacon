@@ -1,0 +1,49 @@
+CREATE TABLE
+INSERT 3
+INSERT 1
+id | name | qty  | tag
+---+------+------+-----
+ 2 | nut  |   55 | hw
+ 1 | bolt |   40 | hw
+ 3 | glue |    3 | NULL
+ 4 | tape | NULL | NULL
+(4 rows)
+count(*) | count(tag) | sum(qty) | min(name) | max(qty) | avg(qty)
+---------+------------+----------+-----------+----------+---------
+       4 |          2 |       98 | bolt      |       55 |       32
+(1 row)
+label     | mid
+----------+-----
+bolt-hw   |    1
+nut-hw    |    0
+tape-none | NULL
+(3 rows)
+name | qty
+-----+-----
+bolt |   40
+glue |    3
+tape | NULL
+(3 rows)
+UPDATE 2
+name | qty | (-qty) / 7 | qty % 7
+-----+-----+------------+--------
+bolt |  80 |        -11 |       3
+nut  | 110 |        -15 |       5
+(2 rows)
+error: column name must be used in an aggregate
+error: duplicate key 2 in column id
+BEGIN
+DELETE 1
+table | rows
+------+-----
+items |    3
+(1 row)
+ROLLBACK
+column | type | null | key
+-------+------+------+----
+id     | INT  | NO   | PRI
+name   | TEXT | NO   |
+qty    | INT  | YES  |
+tag    | TEXT | YES  |
+(4 rows)
+error: division by zero

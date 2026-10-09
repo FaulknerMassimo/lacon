@@ -1,0 +1,914 @@
+# A small SQL database. Reads statements separated by semicolons from
+# standard input and prints each one's result.
+
+KEYWORDS = {
+  "add", "alter", "and", "as", "asc", "begin", "between", "by", "column",
+  "commit", "create", "delete", "desc", "describe", "drop", "from", "group",
+  "having", "in", "insert", "int", "into", "is", "key", "like", "limit",
+  "not", "null", "or",
+  "order", "primary", "rollback", "select", "set", "show", "table", "tables",
+  "text", "update", "values", "where",
+}
+AGGREGATES = {"count", "sum", "min", "max", "avg"}
+# Scalar functions and how many arguments each takes (0: one or more).
+FUNCTIONS = {"upper": 1, "lower": 1, "length": 1, "abs": 1, "coalesce": 0}
+COMPARISONS = ["=", "!=", "<", "<=", ">", ">="]
+
+# ----- reading statements -----
+
+# The statements in src: split at semicolons outside strings, with --
+# comments removed. Text after the last semicolon is a statement too.
+fn split_statements(src str) [str] =
+  var stmts = []
+  var cur = ""
+  var quoted = false
+  var i = 0
+  while i < src.len:
+    c = src[i]
+    if quoted:
+      cur += c
+      if c == "'": quoted = false
+    elif c == "'":
+      quoted = true
+      cur += c
+    elif c == "-" and i + 1 < src.len and src[i + 1] == "-":
+      while i < src.len and src[i] != "\n": i += 1
+      continue
+    elif c == ";":
+      stmts.push(cur)
+      cur = ""
+    else:
+      cur += c
+    i += 1
+  stmts.push(cur)
+  stmts.filter(!it.trim().is_empty())
+
+# kind is "num", "str", "name", "kw", "op", or "end" past the last token
+type Tok {kind str, text str}
+
+# A statement's tokens. Names and keywords are lowercased.
+fn tokenize(src str) [Tok]! =
+  var toks = []
+  var i = 0
+  while i < src.len:
+    c = src[i]
+    if c.is_space():
+      i += 1
+    elif c.is_digit():
+      var j = i
+      while j < src.len and src[j].is_digit(): j += 1
+      toks.push(Tok{"num", src[i..j]})
+      i = j
+    elif c.is_alpha() or c == "_":
+      var j = i
+      while j < src.len and (src[j].is_alnum() or src[j] == "_"): j += 1
+      word = src[i..j].lower()
+      toks.push(Tok{if word in KEYWORDS: "kw" else: "name", word})
+      i = j
+    elif c == "'":
+      var text = ""
+      var j = i + 1
+      while true:
+        if j >= src.len: fail "unterminated string"
+        if src[j] == "'":
+          if j + 1 < src.len and src[j + 1] == "'":
+            text += "'"
+            j += 2
+            continue
+          break
+        text += src[j]
+        j += 1
+      toks.push(Tok{"str", text})
+      i = j + 1
+    elif src[i..i + 2] in ["<=", ">=", "!=", "<>", "||"]:
+      toks.push(Tok{"op", src[i..i + 2]})
+      i += 2
+    elif "(),*+-/%=<>".contains(c):
+      toks.push(Tok{"op", c})
+      i += 1
+    else:
+      fail "unexpected character '{c}'"
+  toks
+
+# ----- syntax -----
+
+# A value is NULL, an INT or a TEXT.
+enum Value = Null | Int(int) | Text(str)
+
+# Bin is arithmetic, comparison, ||, and, or. IsNull's flag means IS NOT
+# NULL. An Agg without an argument is count(*).
+enum Expr =
+  | Lit(Value)
+  | Col(str)
+  | Neg(Expr)
+  | Not(Expr)
+  | Bin(str, Expr, Expr)
+  | IsNull(Expr, bool)
+  | Like(Expr, Expr)
+  | In(Expr, [Expr])
+  | Between(Expr, Expr, Expr)
+  | Call(str, [Expr])
+  | Agg(str, Expr?)
+
+# ty is "INT" or "TEXT"
+type Column {name str, ty str, not_null bool = false, primary bool = false}
+
+# A select list entry; expr is none for *.
+type Item {expr Expr?, alias str?}
+type Order {expr Expr, desc bool}
+# group: the GROUP BY column names
+type Select {items [Item], table str?, where Expr?, group [str], having Expr?, order [Order], limit int?}
+
+enum Stmt =
+  | Sel(Select)
+  | Insert(str, [str]?, [[Expr]])  # table, columns (none: every one), rows
+  | Update(str, [(str, Expr)], Expr?)  # table, assignments, WHERE
+  | Delete(str, Expr?)
+  | Create(str, [Column])
+  | Drop(str)
+  | AlterAdd(str, Column)
+  | Describe(str)
+  | Simple(str)  # only keywords: "show" (SHOW TABLES), "begin", "commit" or "rollback"
+
+type Parser {toks [Tok], pos int = 0}
+
+fn peek(p Parser, ahead int = 0) Tok =
+  i = p.pos + ahead
+  if i < p.toks.len: p.toks[i] else: Tok{"end", ""}
+
+fn next(mut p Parser) Tok! =
+  t = p.peek()
+  if t.kind == "end": fail "unexpected end of statement"
+  p.pos += 1
+  t
+
+# Whether a token is the keyword or operator text.
+fn at(p Parser, text str, ahead int = 0) bool =
+  t = p.peek(ahead)
+  (t.kind == "kw" or t.kind == "op") and t.text == text
+
+fn accept(mut p Parser, text str) bool =
+  if !p.at(text): return false
+  p.pos += 1
+  true
+
+fn expect(mut p Parser, text str) ()! =
+  if !p.accept(text): fail p.unexpected()
+
+# The error for the token at p.
+fn unexpected(p Parser) str =
+  t = p.peek()
+  if t.kind == "end": "unexpected end of statement" else: "syntax error at '{t.text}'"
+
+fn name(mut p Parser) str! =
+  if p.peek().kind != "name": fail p.unexpected()
+  p.next()?.text
+
+# Names separated by commas, through a closing parenthesis.
+fn names(mut p Parser) [str]! =
+  var names = [p.name()?]
+  while p.accept(","): names.push(p.name()?)
+  p.expect(")")?
+  names
+
+fn done(p Parser) ()! =
+  if p.pos < p.toks.len: fail p.unexpected()
+
+# Expressions, loosest-binding first.
+
+fn expr(mut p Parser) Expr! =
+  var e = conjunction(p)?
+  while p.accept("or"): e = Bin("or", e, conjunction(p)?)
+  e
+
+fn conjunction(mut p Parser) Expr! =
+  var e = negation(p)?
+  while p.accept("and"): e = Bin("and", e, negation(p)?)
+  e
+
+fn negation(mut p Parser) Expr! =
+  if p.accept("not"): return Not(negation(p)?)
+  comparison(p)
+
+fn comparison(mut p Parser) Expr! =
+  e = additive(p)?
+  if p.accept("is"):
+    negated = p.accept("not")
+    p.expect("null")?
+    return IsNull(e, negated)
+  negated = p.at("not") and ["like", "in", "between"].any(p.at(it, 1))
+  if negated: p.next()?
+  var r = e
+  if p.accept("like"):
+    r = Like(e, additive(p)?)
+  elif p.accept("in"):
+    p.expect("(")?
+    var items = [expr(p)?]
+    while p.accept(","): items.push(expr(p)?)
+    p.expect(")")?
+    r = In(e, items)
+  elif p.accept("between"):
+    low = additive(p)?
+    p.expect("and")?
+    r = Between(e, low, additive(p)?)
+  else:
+    t = p.peek()
+    if t.kind == "op" and (t.text in COMPARISONS or t.text == "<>"):
+      p.next()?
+      return Bin(if t.text == "<>": "!=" else: t.text, e, additive(p)?)
+    return e
+  if negated: Not(r) else: r
+
+fn additive(mut p Parser) Expr! =
+  var e = multiplicative(p)?
+  while p.peek().kind == "op" and p.peek().text in ["+", "-", "||"]:
+    op = p.next()?.text
+    e = Bin(op, e, multiplicative(p)?)
+  e
+
+fn multiplicative(mut p Parser) Expr! =
+  var e = unary(p)?
+  while p.peek().kind == "op" and p.peek().text in ["*", "/", "%"]:
+    op = p.next()?.text
+    e = Bin(op, e, unary(p)?)
+  e
+
+fn unary(mut p Parser) Expr! =
+  if p.accept("-"): return Neg(unary(p)?)
+  primary(p)
+
+fn primary(mut p Parser) Expr! =
+  t = p.peek()
+  if t.kind == "num":
+    p.pos += 1
+    return Lit(Int(int(t.text)?))
+  if t.kind == "str":
+    p.pos += 1
+    return Lit(Text(t.text))
+  if p.accept("null"): return Lit(Null)
+  if p.accept("("):
+    e = expr(p)?
+    p.expect(")")?
+    return e
+  if t.kind == "name":
+    p.pos += 1
+    if p.accept("("): return parse_call(p, t.text)
+    return Col(t.text)
+  fail p.unexpected()
+
+# A function call, after its opening parenthesis.
+fn parse_call(mut p Parser, name str) Expr! =
+  if name in AGGREGATES:
+    if name == "count" and p.accept("*"):
+      p.expect(")")?
+      return Agg(name, none)
+    arg = expr(p)?
+    p.expect(")")?
+    return Agg(name, arg)
+  if name not in FUNCTIONS: fail "no such function {name}"
+  var args = []
+  if !p.accept(")"):
+    args.push(expr(p)?)
+    while p.accept(","): args.push(expr(p)?)
+    p.expect(")")?
+  want = FUNCTIONS[name]
+  if want == 0 and args.is_empty(): fail "{name}() needs at least one argument"
+  if want != 0 and args.len != want:
+    s = if want == 1: "" else: "s"
+    fail "{name}() takes {want} argument{s}"
+  Call(name, args)
+
+fn parse_statement(toks [Tok]) Stmt! =
+  var p = Parser{toks}
+  var stmt = Simple("")
+  if p.accept("select"):
+    stmt = Sel(parse_select(p)?)
+  elif p.accept("insert"):
+    stmt = parse_insert(p)?
+  elif p.accept("update"):
+    stmt = parse_update(p)?
+  elif p.accept("delete"):
+    p.expect("from")?
+    table = p.name()?
+    stmt = Delete(table, parse_where(p)?)
+  elif p.accept("create"):
+    p.expect("table")?
+    stmt = parse_create(p)?
+  elif p.accept("drop"):
+    p.expect("table")?
+    stmt = Drop(p.name()?)
+  elif p.accept("alter"):
+    p.expect("table")?
+    table = p.name()?
+    p.expect("add")?
+    p.accept("column")
+    stmt = AlterAdd(table, parse_column(p)?)
+  elif p.accept("show"):
+    p.expect("tables")?
+    stmt = Simple("show")
+  elif p.accept("describe"):
+    stmt = Describe(p.name()?)
+  elif p.at("begin") or p.at("commit") or p.at("rollback"):
+    stmt = Simple(p.next()?.text)
+  else:
+    fail p.unexpected()
+  p.done()?
+  stmt
+
+fn parse_where(mut p Parser) Expr?! =
+  if p.accept("where"): expr(p)? else: none
+
+fn parse_select(mut p Parser) Select! =
+  var items = []
+  while true:
+    if p.accept("*"):
+      items.push(Item{none, none})
+    else:
+      e = expr(p)?
+      items.push(Item{e, if p.accept("as"): p.name()? else: none})
+    if !p.accept(","): break
+  table = if p.accept("from"): p.name()? else: none
+  where = parse_where(p)?
+  var group = []
+  if p.accept("group"):
+    p.expect("by")?
+    group.push(p.name()?)
+    while p.accept(","): group.push(p.name()?)
+  having = if p.accept("having"): expr(p)? else: none
+  var order = []
+  if p.accept("order"):
+    p.expect("by")?
+    while true:
+      e = expr(p)?
+      desc = p.accept("desc")
+      if !desc: p.accept("asc")
+      order.push(Order{e, desc})
+      if !p.accept(","): break
+  var limit int? = none
+  if p.accept("limit"):
+    if p.peek().kind != "num": fail p.unexpected()
+    limit = int(p.next()?.text)?
+  Select{items, table, where, group, having, order, limit}
+
+fn parse_insert(mut p Parser) Stmt! =
+  p.expect("into")?
+  table = p.name()?
+  columns = if p.accept("("): p.names()? else: none
+  p.expect("values")?
+  var rows = []
+  while true:
+    p.expect("(")?
+    var values = [expr(p)?]
+    while p.accept(","): values.push(expr(p)?)
+    p.expect(")")?
+    rows.push(values)
+    if !p.accept(","): break
+  Insert(table, columns, rows)
+
+fn parse_update(mut p Parser) Stmt! =
+  table = p.name()?
+  p.expect("set")?
+  var assignments = []
+  while true:
+    name = p.name()?
+    p.expect("=")?
+    assignments.push((name, expr(p)?))
+    if !p.accept(","): break
+  Update(table, assignments, parse_where(p)?)
+
+# A column definition: a name, a type and constraints.
+fn parse_column(mut p Parser) Column! =
+  var c = Column{p.name()?, ""}
+  if p.accept("int"): c.ty = "INT"
+  elif p.accept("text"): c.ty = "TEXT"
+  else: fail p.unexpected()
+  while true:
+    if p.accept("not"):
+      p.expect("null")?
+      c.not_null = true
+    elif p.accept("primary"):
+      p.expect("key")?
+      c.primary = true
+      c.not_null = true
+    else:
+      return c
+  c
+
+fn parse_create(mut p Parser) Stmt! =
+  name = p.name()?
+  p.expect("(")?
+  var columns = [parse_column(p)?]
+  while p.accept(","): columns.push(parse_column(p)?)
+  p.expect(")")?
+  Create(name, columns)
+
+# The subexpressions of e.
+fn children(e Expr) [Expr] = match e
+  Neg(x): [x]
+  Not(x): [x]
+  IsNull(x, _): [x]
+  Bin(_, l, r): [l, r]
+  Like(x, pattern): [x, pattern]
+  In(x, items): [x] + items
+  Between(x, low, high): [x, low, high]
+  Call(_, args): args
+  Agg(_, arg): if arg == none: [] else: [arg]
+  _: []
+
+# The columns e refers to, in order.
+fn columns_in(e Expr) [str] = match e
+  Col(name): [name]
+  _: children(e).flat_map(columns_in(it))
+
+# The aggregates in e, outermost first.
+fn aggregates_in(e Expr) [Expr] = match e
+  Agg(_, _): [e]
+  _: children(e).flat_map(aggregates_in(it))
+
+# The columns e refers to outside any aggregate.
+fn bare_columns(e Expr) [str] = match e
+  Agg(_, _): []
+  Col(name): [name]
+  _: children(e).flat_map(bare_columns(it))
+
+fn agg_name(e Expr) str = match e
+  Agg(name, _): name
+  _: ""
+
+# e as SQL text, to head a result column that has no alias.
+fn render(e Expr) str = match e
+  Lit(v):
+    match v
+      Null: "null"
+      Int(n): str(n)
+      Text(s): "'" + s.replace("'", "''") + "'"
+  Col(name): name
+  Neg(x): "-" + operand(x)
+  Not(x): "not " + operand(x)
+  IsNull(x, negated): operand(x) + (if negated: " is not null" else: " is null")
+  Bin(op, l, r): "{operand(l)} {op} {operand(r)}"
+  Like(x, pattern): "{operand(x)} like {operand(pattern)}"
+  In(x, items): "{operand(x)} in ({items.map(render(it)).join(', ')})"
+  Between(x, low, high): "{operand(x)} between {operand(low)} and {operand(high)}"
+  Call(name, args): "{name}({args.map(render(it)).join(', ')})"
+  Agg(name, arg):
+    inner = if arg == none: "*" else: render(arg)
+    "{name}({inner})"
+
+# e rendered as part of a larger expression: in parentheses if it has
+# operators of its own.
+fn operand(e Expr) str = match e
+  Lit(_) | Col(_) | Call(_, _) | Agg(_, _): render(e)
+  _: "({render(e)})"
+
+# ----- values -----
+
+fn type_name(v Value) str = match v
+  Null: "NULL"
+  Int(_): "INT"
+  Text(_): "TEXT"
+
+fn show(v Value) str = match v
+  Null: "NULL"
+  Int(n): str(n)
+  Text(s): s
+
+# A condition's value: none for NULL, else whether it is nonzero.
+fn truth(v Value) bool?! = match v
+  Null: none
+  Int(n): n != 0
+  Text(_): fail "a condition must be INT, not TEXT"
+
+fn compare(op str, a Value, b Value) bool! =
+  c = match (a, b)
+    (Int(x), Int(y)): if x < y: -1 elif x > y: 1 else: 0
+    (Text(x), Text(y)): if x < y: -1 elif x > y: 1 else: 0
+    _: fail "cannot compare {type_name(a)} with {type_name(b)}"
+  if op == "=": c == 0
+  elif op == "!=": c != 0
+  elif op == "<": c < 0
+  elif op == "<=": c <= 0
+  elif op == ">": c > 0
+  else: c >= 0
+
+fn binary(op str, a Value, b Value) Value! =
+  if op == "and":
+    x = truth(a)?
+    y = truth(b)?
+    if x == false or y == false: return Int(0)
+    return if x == none or y == none: Null else: Int(1)
+  if op == "or":
+    x = truth(a)?
+    y = truth(b)?
+    if x == true or y == true: return Int(1)
+    return if x == none or y == none: Null else: Int(0)
+  if a == Null or b == Null: return Null
+  if op == "||": return Text(show(a) + show(b))
+  if op in COMPARISONS: return Int(if compare(op, a, b)?: 1 else: 0)
+  match (a, b)
+    (Int(x), Int(y)): arith(op, x, y)?
+    _: fail "cannot apply {op} to TEXT"
+
+# `/` and `%` truncate toward zero.
+fn arith(op str, a int, b int) Value! =
+  if op == "+": return Int(a + b)
+  if op == "-": return Int(a - b)
+  if op == "*": return Int(a * b)
+  if b == 0: fail "division by zero"
+  Int(if op == "/": a / b else: a % b)
+
+# Whether s matches pattern, in which % is any run of characters and _ any
+# one character.
+fn like(s str, pattern str) bool =
+  # matched[i]: whether the pattern so far matches s[..i]
+  var matched = [true] + [false] * s.len
+  for c in pattern.chars():
+    if c == "%":
+      for i in 1..s.len + 1: matched[i] = matched[i] or matched[i - 1]
+    else:
+      for i in (1..s.len + 1).rev(): matched[i] = matched[i - 1] and (c == "_" or c == s[i - 1])
+      matched[0] = false
+  matched[s.len]
+
+fn call(name str, args [Value]) Value! =
+  if name == "coalesce": return args.find(it != Null) ?? Null
+  v = args[0]
+  if v == Null: return Null
+  if name == "abs":
+    match v
+      Int(n): return Int(n.abs())
+      _: fail "abs() needs INT, not TEXT"
+  match v
+    Text(s):
+      if name == "upper": Text(s.upper())
+      elif name == "lower": Text(s.lower())
+      else: Int(s.len)
+    _: fail "{name}() needs TEXT, not INT"
+
+# The value of e for row, a map from column name to value. In a query with
+# aggregates, group holds the rows they range over.
+fn evaluate(e Expr, row {str: Value}, group [{str: Value}]? = none) Value! = match e
+  Lit(v): v
+  Col(name):
+    if name not in row: fail "no such column {name}"
+    row[name]
+  Neg(x):
+    match evaluate(x, row, group)?
+      Null: Null
+      Int(n): Int(-n)
+      _: fail "cannot apply - to TEXT"
+  Not(x):
+    t = truth(evaluate(x, row, group)?)?
+    if t == none: Null else: Int(if t: 0 else: 1)
+  IsNull(x, negated): Int(if (evaluate(x, row, group)? == Null) != negated: 1 else: 0)
+  Bin(op, l, r): binary(op, evaluate(l, row, group)?, evaluate(r, row, group)?)?
+  Like(x, pat):
+    s = evaluate(x, row, group)?
+    pattern = evaluate(pat, row, group)?
+    match (s, pattern)
+      (Text(a), Text(b)): Int(if like(a, b): 1 else: 0)
+      _:
+        if s == Null or pattern == Null: Null
+        else: fail "LIKE needs TEXT, not INT"
+  In(x, items):
+    v = evaluate(x, row, group)?
+    var saw_null = false
+    for item in items:
+      r = binary("=", v, evaluate(item, row, group)?)?
+      if r == Int(1): return Int(1)
+      if r == Null: saw_null = true
+    if saw_null: Null else: Int(0)
+  Between(x, low, high):
+    v = evaluate(x, row, group)?
+    lo = binary(">=", v, evaluate(low, row, group)?)?
+    binary("and", lo, binary("<=", v, evaluate(high, row, group)?)?)?
+  Call(name, args): call(name, args.map(evaluate(it, row, group)?))?
+  Agg(name, arg):
+    if group == none: fail "{name}() is not allowed here"
+    aggregate(name, arg, group)?
+
+# An aggregate's value over the rows in group; arg is none for count(*).
+fn aggregate(name str, arg Expr?, group [{str: Value}]) Value! =
+  if arg == none: return Int(group.len)
+  values = group.map(evaluate(arg, it)?).filter(it != Null)
+  if name == "count": return Int(values.len)
+  if values.is_empty(): return Null
+  if name == "min" or name == "max":
+    var best = values[0]
+    for v in values[1..]:
+      if compare(if name == "min": "<" else: ">", v, best)?: best = v
+    return best
+  var total = 0
+  for v in values:
+    match v
+      Int(n): total += n
+      _: fail "{name}() needs INT, not TEXT"
+  if name == "sum": return Int(total)
+  Int(total / values.len)  # avg truncates toward zero
+
+# ----- tables -----
+
+type Table {name str, columns [Column], rows [[Value]] = []}
+
+fn names(t Table) [str] = t.columns.map(it.name)
+
+fn column_index(t Table, name str) int! =
+  match t.columns.position(it.name == name)
+    none: fail "no such column {name}"
+    i: i
+
+# saved: the tables as BEGIN found them, in a transaction
+type Db {tables {str: Table} = {}, saved {str: Table}? = none}
+
+fn table(db Db, name str) Table! =
+  if name not in db.tables: fail "no such table {name}"
+  db.tables[name]
+
+fn row_map(names [str], row [Value]) {str: Value} = names.zip(row).to_map()
+
+# Fails on the first column e refers to that isn't in names.
+fn check_columns(e Expr, names [str]) ()! =
+  for name in columns_in(e):
+    if name not in names: fail "no such column {name}"
+
+fn forbid_aggregates(e Expr, clause str) ()! =
+  aggs = aggregates_in(e)
+  if !aggs.is_empty(): fail "{agg_name(aggs[0])}() is not allowed in {clause}"
+
+fn check_nesting(e Expr) ()! =
+  for agg in aggregates_in(e):
+    if children(agg).any(!aggregates_in(it).is_empty()): fail "aggregates cannot be nested"
+
+fn check_value(c Column, v Value) ()! =
+  if v == Null:
+    if c.not_null: fail "column {c.name} cannot be NULL"
+  elif type_name(v) != c.ty:
+    fail "column {c.name} is {c.ty}, not {type_name(v)}"
+
+# Fails if two rows share a primary key.
+fn check_keys(t Table, rows [[Value]]) ()! =
+  for i, c in t.columns.enumerate():
+    if !c.primary: continue
+    var seen = set()
+    for row in rows:
+      if row[i] in seen: fail "duplicate key {show(row[i])} in column {c.name}"
+      seen.add(row[i])
+
+# Whether a WHERE clause keeps a row: there is none, or it is true.
+fn keeps(where Expr?, row {str: Value}) bool! =
+  if where == none: return true
+  truth(evaluate(where, row)?)? == true
+
+# A result as lines of aligned columns: numbers to the right, the rest to
+# the left.
+fn format_table(headers [str], rows [[Value]]) [str] =
+  cells = rows.map(|row| row.map(show(it)))
+  var widths = headers.map(it.len)
+  for row in cells:
+    for i, t in row.enumerate(): widths[i] = widths[i].max(t.len)
+  var head = []
+  for i, h in headers.enumerate(): head.push(h.pad_right(widths[i]))
+  var lines = [head.join(" | ").trim_end(), widths.map("-".repeat(it)).join("-+-")]
+  for r, row in rows.enumerate():
+    var parts = []
+    for i, v in row.enumerate():
+      t = cells[r][i]
+      parts.push(if type_name(v) == "INT": t.pad_left(widths[i]) else: t.pad_right(widths[i]))
+    lines.push(parts.join(" | ").trim_end())
+  n = rows.len
+  lines.push("({n} {if n == 1: 'row' else: 'rows'})")
+  lines
+
+# ----- statements -----
+
+fn run_create(mut db Db, name str, columns [Column]) [str]! =
+  if name in db.tables: fail "table {name} already exists"
+  var seen = set()
+  for c in columns:
+    if c.name in seen: fail "duplicate column {c.name}"
+    seen.add(c.name)
+  if columns.count(it.primary) > 1: fail "a table has at most one primary key"
+  db.tables[name] = Table{name, columns}
+  ["CREATE TABLE"]
+
+fn run_drop(mut db Db, name str) [str]! =
+  db.table(name)?
+  db.tables.remove(name)
+  ["DROP TABLE"]
+
+fn run_alter(mut db Db, name str, c Column) [str]! =
+  var t = db.table(name)?
+  if c.name in t.names(): fail "duplicate column {c.name}"
+  if c.primary: fail "cannot add a primary key"
+  if c.not_null and !t.rows.is_empty(): fail "column {c.name} cannot be NULL"
+  t.columns.push(c)
+  t.rows = t.rows.map(it + [Null])
+  db.tables[name] = t
+  ["ALTER TABLE"]
+
+fn run_insert(mut db Db, name str, columns [str]?, rows [[Expr]]) [str]! =
+  var t = db.table(name)?
+  var indexes = []
+  for col in columns ?? t.names():
+    i = t.column_index(col)?
+    if i in indexes: fail "duplicate column {col}"
+    indexes.push(i)
+  var new_rows = []
+  for values in rows:
+    if values.len != indexes.len: fail "expected {indexes.len} values, got {values.len}"
+    var row = [Null] * t.columns.len
+    for k, e in values.enumerate():
+      forbid_aggregates(e, "VALUES")?
+      row[indexes[k]] = evaluate(e, {})?
+    for i, c in t.columns.enumerate(): check_value(c, row[i])?
+    new_rows.push(row)
+  check_keys(t, t.rows + new_rows)?
+  t.rows = t.rows + new_rows
+  db.tables[name] = t
+  ["INSERT {new_rows.len}"]
+
+fn run_update(mut db Db, name str, assignments [(str, Expr)], where Expr?) [str]! =
+  var t = db.table(name)?
+  names = t.names()
+  var targets = []
+  for (col, e) in assignments:
+    i = t.column_index(col)?
+    if targets.any(it.0 == i): fail "duplicate column {col}"
+    check_columns(e, names)?
+    forbid_aggregates(e, "SET")?
+    targets.push((i, e))
+  if where != none:
+    check_columns(where, names)?
+    forbid_aggregates(where, "WHERE")?
+  var new_rows = []
+  var count = 0
+  for row in t.rows:
+    ctx = row_map(names, row)
+    var new = row
+    if keeps(where, ctx)?:
+      for (i, e) in targets:
+        new[i] = evaluate(e, ctx)?
+        check_value(t.columns[i], new[i])?
+      count += 1
+    new_rows.push(new)
+  check_keys(t, new_rows)?
+  t.rows = new_rows
+  db.tables[name] = t
+  ["UPDATE {count}"]
+
+fn run_delete(mut db Db, name str, where Expr?) [str]! =
+  var t = db.table(name)?
+  names = t.names()
+  var keep = []
+  if where != none:
+    check_columns(where, names)?
+    forbid_aggregates(where, "WHERE")?
+    for row in t.rows:
+      if !keeps(where, row_map(names, row))?: keep.push(row)
+  count = t.rows.len - keep.len
+  t.rows = keep
+  db.tables[name] = t
+  ["DELETE {count}"]
+
+# NULL sorts first, then numbers, then text.
+fn sort_key(v Value) (int, int, str) = match v
+  Null: (0, 0, "")
+  Int(n): (1, n, "")
+  Text(s): (2, 0, s)
+
+# rows ordered by their keys: one stable sort per key, from the last.
+fn sort_rows(rows [[Value]], keys [[Value]], descending [bool]) [[Value]] =
+  var order = (0..rows.len).to_list()
+  for k in (0..descending.len).rev():
+    if descending[k]:
+      order = order.rev().sort_by(sort_key(keys[it][k])).rev()
+    else:
+      order = order.sort_by(sort_key(keys[it][k]))
+  order.map(rows[it])
+
+# One result row per row. ORDER BY sees the row's columns and the result's
+# column names, which win.
+fn plain_query(exprs [Expr], headers [str], order [Order], rows [{str: Value}]) [[Value]]! =
+  var out = []
+  var keys = []
+  for r in rows:
+    values = exprs.map(evaluate(it, r)?)
+    out.push(values)
+    if !order.is_empty():
+      var ctx = r
+      for i, h in headers.enumerate(): ctx[h] = values[i]
+      keys.push(order.map(evaluate(it.expr, ctx)?))
+  sort_rows(out, keys, order.map(it.desc))
+
+# A single result row, the aggregates over every row.
+fn aggregate_query(exprs [Expr], rows [{str: Value}]) [[Value]]! =
+  for e in exprs:
+    for name in bare_columns(e): fail "column {name} must be used in an aggregate"
+  [exprs.map(evaluate(it, {}, rows)?)]
+
+# Fails if e uses a column outside aggregates that isn't in allowed.
+fn check_grouped(e Expr, allowed [str]) ()! =
+  for name in bare_columns(e):
+    if name not in allowed: fail "column {name} must be in GROUP BY or used in an aggregate"
+
+# One result row per group of rows that agree on the GROUP BY columns, the
+# groups in the order of their first rows. Outside aggregates, the select
+# list and HAVING see only the GROUP BY columns, and ORDER BY also the
+# result's column names.
+fn grouped_query(exprs [Expr], headers [str], s Select, rows [{str: Value}]) [[Value]]! =
+  for e in exprs: check_grouped(e, s.group)?
+  if s.having != none: check_grouped(s.having, s.group)?
+  for o in s.order: check_grouped(o.expr, s.group + headers)?
+  var groups = {}
+  for r in rows: groups[s.group.map(r[it])].push(r)
+  var out = []
+  var keys = []
+  for key, members in groups:
+    ctx = s.group.zip(key).to_map()
+    if s.having != none and truth(evaluate(s.having, ctx, members)?)? != true: continue
+    values = exprs.map(evaluate(it, ctx, members)?)
+    out.push(values)
+    if !s.order.is_empty():
+      var octx = ctx
+      for i, h in headers.enumerate(): octx[h] = values[i]
+      keys.push(s.order.map(evaluate(it.expr, octx, members)?))
+  sort_rows(out, keys, s.order.map(it.desc))
+
+fn run_select(db Db, s Select) [str]! =
+  var names = []
+  var rows = [{}]
+  if s.table != none:
+    t = db.table(s.table)?
+    names = t.names()
+    rows = t.rows.map(row_map(names, it))
+  var exprs = []
+  var headers = []
+  for item in s.items:
+    if item.expr == none:
+      if s.table == none: fail "SELECT * needs a table"
+      for n in names:
+        exprs.push(Col(n))
+        headers.push(n)
+    else:
+      check_columns(item.expr, names)?
+      check_nesting(item.expr)?
+      exprs.push(item.expr)
+      headers.push(item.alias ?? render(item.expr))
+  for name in s.group:
+    if name not in names: fail "no such column {name}"
+  if s.having != none:
+    if s.group.is_empty(): fail "HAVING needs GROUP BY"
+    check_columns(s.having, names)?
+    check_nesting(s.having)?
+  if s.where != none:
+    check_columns(s.where, names)?
+    forbid_aggregates(s.where, "WHERE")?
+    rows = rows.filter(keeps(s.where, it)?)
+  for o in s.order: check_columns(o.expr, names + headers)?
+  var out = if !s.group.is_empty(): grouped_query(exprs, headers, s, rows)?
+    elif exprs.any(!aggregates_in(it).is_empty()): aggregate_query(exprs, rows)?
+    else: plain_query(exprs, headers, s.order, rows)?
+  if s.limit != none: out = out.take(s.limit)
+  format_table(headers, out)
+
+fn run_simple(mut db Db, what str) [str]! =
+  if what == "show":
+    rows = db.tables.keys().sort().map([Text(it), Int(db.tables[it].rows.len)])
+    return format_table(["table", "rows"], rows)
+  if what == "begin":
+    if db.saved != none: fail "already in a transaction"
+    db.saved = db.tables
+  elif db.saved == none:
+    fail "no transaction"
+  elif what == "rollback":
+    db.tables = db.saved ?? {}
+    db.saved = none
+  else:
+    db.saved = none
+  [what.upper()]
+
+fn run_describe(db Db, name str) [str]! =
+  t = db.table(name)?
+  rows = t.columns.map([Text(it.name), Text(it.ty), Text(if it.not_null: "NO" else: "YES"), Text(if it.primary: "PRI" else: "")])
+  format_table(["column", "type", "null", "key"], rows)
+
+# Carries out one statement; returns the lines to print.
+fn execute(mut db Db, text str) [str]! =
+  match parse_statement(tokenize(text)?)?
+    Sel(s): run_select(db, s)?
+    Insert(t, columns, rows): run_insert(db, t, columns, rows)?
+    Update(t, assignments, where): run_update(db, t, assignments, where)?
+    Delete(t, where): run_delete(db, t, where)?
+    Create(t, columns): run_create(db, t, columns)?
+    Drop(t): run_drop(db, t)?
+    AlterAdd(t, c): run_alter(db, t, c)?
+    Describe(t): run_describe(db, t)?
+    Simple(what): run_simple(db, what)?
+
+fn main() =
+  var db = Db{}
+  for text in split_statements(io.read()):
+    lines = match execute(db, text)
+      err(e): ["error: {e}"]
+      out: out
+    for line in lines: print(line)

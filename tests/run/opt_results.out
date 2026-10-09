@@ -1,0 +1,7 @@
+false true false
+unknown yes no
+-1 4
+error: empty
+error: a condition must be INT, not TEXT
+error: a condition must be INT, not TEXT
+[exit 1]

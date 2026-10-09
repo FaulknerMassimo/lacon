@@ -59,7 +59,7 @@ def command(sol: Path, build_dir: Path) -> list[str] | None:
         return [sys.executable, str(sol)]
     if ext == ".rs":
         exe = build_dir / "rs"
-        subprocess.run(["rustc", "-O", "-o", str(exe), str(sol)], check=True, capture_output=True)
+        subprocess.run(["rustc", "-O", "--edition", "2021", "-o", str(exe), str(sol)], check=True, capture_output=True)
         return [str(exe)]
     if ext == ".go":
         exe = build_dir / "go"

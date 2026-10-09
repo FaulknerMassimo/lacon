@@ -1,0 +1,45 @@
+CREATE TABLE
+INSERT 9
+country | count(*) | count(ms) | sum(ms)
+--------+----------+-----------+--------
+fr      |        3 |         2 |     220
+NULL    |        4 |         3 |     390
+de      |        2 |         2 |     390
+(3 rows)
+page   | country | hits
+-------+---------+-----
+/      | fr      |    2
+/      | NULL    |    2
+/      | de      |    1
+/about | fr      |    1
+/about | de      |    1
+/shop  | NULL    |    2
+(6 rows)
+day | spread
+----+-------
+  2 |    240
+  3 |    160
+(2 rows)
+page
+------
+/
+/about
+(2 rows)
+c  | page   | avg(ms)
+---+--------+--------
+?? | /      |      70
+?? | /shop  |     250
+de | /      |      90
+de | /about |     300
+fr | /      |     110
+fr | /about | NULL
+(6 rows)
+page | count(*)
+-----+---------
+(0 rows)
+DELETE 2
+page   | n
+-------+--
+/about | 2
+/      | 5
+(2 rows)

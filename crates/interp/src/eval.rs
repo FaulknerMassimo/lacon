@@ -611,9 +611,11 @@ impl<'p> Interp<'p> {
                 }
                 Ok(Value::Range(Rc::new(RangeV { start: s, end: e2, step: 1 })))
             }
-            Ex::Try { e, fn_optional, span: _ } => {
+            Ex::Try { e, fn_optional, span } => {
                 let v = self.eval(e, f)?;
                 match v {
+                    // `?` on a `T?!` passes only the error up.
+                    Value::None if self.prog.res_try.contains(span) => Ok(v),
                     // In a `T?` function a failure of either kind is `none`.
                     Value::Err(_) if *fn_optional => Err(Ctrl::Return(Value::None)),
                     Value::Err(_) => Err(Ctrl::Return(v)),

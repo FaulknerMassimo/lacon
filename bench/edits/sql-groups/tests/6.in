@@ -1,0 +1,13 @@
+CREATE TABLE log (user TEXT, action TEXT, n INT);
+SELECT user, count(*) FROM log GROUP BY user;
+INSERT INTO log VALUES ('ana', 'login', 1), ('ben', 'login', 1), ('ana', 'buy', 3), ('ana', 'buy', 2), ('cy', 'login', 1);
+BEGIN;
+UPDATE log SET n = n * 10 WHERE action = 'buy';
+SELECT user, action, sum(n) AS total FROM log GROUP BY user, action ORDER BY total DESC, user;
+ROLLBACK;
+SELECT user, sum(n) AS total, count(*) AS rows FROM log GROUP BY user HAVING sum(n) > 1 OR count(*) > 2;
+SELECT action, count(*) FROM log GROUP BY action HAVING count(*) > 5;
+ALTER TABLE log ADD COLUMN day INT;
+UPDATE log SET day = 2 WHERE user = 'ana';
+SELECT day, count(*) AS n FROM log GROUP BY day ORDER BY day DESC;
+SELECT action AS a FROM log GROUP BY action ORDER BY a;

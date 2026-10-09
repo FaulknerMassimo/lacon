@@ -1,0 +1,14 @@
+# A field narrows as any field does when a function has its name too: in
+# `if s.table != none:`, `s.table` reads the field, not `table(s)`.
+type Sel {table str?, limit int?}
+type Db {names [str]}
+
+fn table(db Db, name str) str = "table {name} of {db.names.len}"
+fn limit(n int) int = n * 2
+
+fn main() =
+  db = Db{["a", "b"]}
+  for s in [Sel{"t", 3}, Sel{none, none}]:
+    if s.table != none: print(db.table(s.table))
+    if s.limit == none: continue
+    print(s.limit + 1, limit(s.limit))

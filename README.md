@@ -36,7 +36,11 @@ answers queries (an item's source, its callers, a type). An agent has
 finished every task with these in place of file tools, but on tasks this
 small they save nothing over writing the whole file. A second suite of
 tasks, in `bench/edits/`, starts the agent from an existing program to
-change, where reading and replacing items by name should pay.
+change, where reading and replacing items by name should pay. Its tasks
+have Rust ports, and the largest, `sql-groups`, is a SQL database of
+1,060 lines of Python (870 of Lacon, 1,290 of Rust) to add `GROUP BY` to.
+There Lacon's own tools took 0.50x Rust's tokens; with the same file
+tools as Rust, Lacon took 0.90x and Python 0.65x (PLAN §31).
 The design and build plan is in [PLAN.md](PLAN.md).
 
 ```

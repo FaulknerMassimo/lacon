@@ -2550,3 +2550,164 @@ tasks' inputs.
 §6's 1.2x for the first time; knapsack, nbody and fib are not.
 
 Next: the primer (§26) is still the larger lever on tokens-to-green.
+
+---
+
+## 31. Phase 2: where the tokens go, and a large program in three languages
+
+The goal set for the language is Rust's speed or better at 0.4x Rust's
+tokens. Native code is at 1.17x (§30, rerun). Tokens-to-green is at
+1.30x Rust's on the write tasks (§26), 0.87x without cached reads. This
+section asks where a token difference can come from at all, then builds
+the tasks that can show one.
+
+**Where a write task's tokens go.** Split by call from §26's 150
+episodes (program size counted with `o200k_base`, so as ratios only):
+
+| | Share of a rust-write episode |
+|---|---|
+| Context every call re-reads whatever the language: the Bash and Write definitions, the harness's instructions, the task (about 2,900 tokens a call) | 65% |
+| The program, written once and re-read by later calls | 11% |
+| Thinking, commands, outputs, the summary | 25% |
+
+- **A program of zero tokens would score 0.90x Rust.** Two calls of the
+  fixed context alone come to 0.64x of a Rust episode. No language can
+  reach 0.4x on these tasks; the language moves about a tenth of an
+  episode.
+- **Without the primer, Lacon would be 0.97x Rust,** and Python is
+  0.96x. The primer, 1,336 tokens a call, is what puts lacon-write at
+  1.30x.
+- **Agents don't write the short forms.** Agent-written Lacon is 0.69x
+  agent-written Rust; the reference solutions are 0.49x. Across the 502
+  passing agent programs in `bench/results`, Lacon is 1.35x its task's
+  reference (geometric mean), and the gap is on nearly every task:
+  loops that push where `[x] * n` would do, a struct of running totals
+  where `m[k].push(x)` and `xs.sum()`, `min()`, `max()` would, `t = h.pop()
+  ?? (0, 0)` then `t.0` where `(d, u) = h.pop()?` would. kv-store
+  inserted and removed a dummy key to fix a map's type. The full
+  primer, which lists every list method, gave code only 3% shorter
+  than the short one, paired by task (§13's 180 episodes); the one
+  construct it states outright, `a, b = pair`, was used in 23 programs
+  against 8.
+
+**No primer.** One episode (`rpn`, lacon-write, `--primer none`, which
+says only that there is no documentation and the errors say what to
+write) passed in 10 calls and 70,780 tokens, against 10,127 with the
+primer: the model learned the syntax one error a call, braces, then
+the `:` on block headers, `let`, `stdin`, `split_whitespace`, `pop()`
+being optional, `parse_int`, and `int()` being a result. The primer
+costs far less than what it saves. The remaining 29 tasks weren't run.
+
+**A primer that teaches by example.** `docs/primer-idioms.md` is the
+short primer with an example that uses the idioms agents miss
+(destructuring, `[0] * n`, `m[k].push(x)` then `sum` and `max`,
+`xs[1..]`, `map(parse(it)?)`, `count`, `unique`) and one line naming
+the list methods, 1,204 tokens by `o200k_base` against 961. Not run
+yet.
+
+**The edit suite in Rust.** The four edit tasks (§25) now have
+`start.rs` and `solution.rs`, and `check.py` builds Rust with
+`--edition 2021`, as the harness does. Each port was fuzzed against
+its Python: 300 mutations of the test inputs a task (400 for
+calc-power), comparing `start.*` with `start.py` and `solution.*` with
+`ref.py`, Lacon ports included. Every difference was an input outside
+the task's contract (calc-power's `2 ^73 / 0`, which overflows before
+it fails).
+
+**A large task.** `sql-groups` starts from a SQL database of 1,068
+lines of Python: a tokenizer, a recursive-descent parser for `SELECT`,
+`INSERT`, `UPDATE`, `DELETE`, `CREATE`/`DROP`/`ALTER TABLE`, `SHOW`,
+`DESCRIBE` and transactions; expressions with NULL logic, `LIKE`, `IN`,
+`BETWEEN`, functions and aggregates; type, NOT NULL and key checks; and
+aligned table output. The change is `GROUP BY` and `HAVING`: parsing,
+grouping in order of first rows, aggregates per group, which columns a
+grouped query may use, and `ORDER BY` over groups. Six hidden tests; the
+start passes the one without grouping. Lacon's start is 870 lines,
+Rust's 1,290. 1,400 fuzzed inputs found no difference between the ports
+and Python.
+
+**Program size on real structure.** By `o200k_base`:
+
+| Start | Python | Lacon | Rust | Lacon / Rust |
+|---|---|---|---|---|
+| bank-overdraft | 1,488 | 1,603 | 2,011 | 0.80 |
+| calc-power | 1,444 | 1,440 | 2,033 | 0.71 |
+| ini-diamond | 956 | 1,026 | 1,418 | 0.72 |
+| log-timing | 1,263 | 1,165 | 1,666 | 0.70 |
+| sql-groups | 7,987 | 8,128 | 11,246 | 0.72 |
+
+Lacon is Python's size here, not smaller, and 0.72x Rust, not §2's
+0.41x. In sql-groups, signatures take 897 tokens against Python's 480
+(every parameter and result is typed) and there are 191 `?`s; those
+eat what Lacon saves on `self.`, `isinstance`, `return` and dispatch.
+
+**Two checker gaps the port hit.**
+
+- A function returning `T?!` couldn't return `none` or a `T?`: "`truth`
+  returns bool?!, got bool?". `coerce` refused any optional flowing
+  into a result, a rule meant for `return m.get(k)` in a `V!`
+  function. An optional now flows into a result that holds an
+  optional. And `?` on a `T?!` treated `none` as a failure ("unexpected
+  none") in both back ends; the checker now records each such `?` in
+  `Program::res_try`, and there `?` passes only the error up.
+- `if s.table != none: db.table(s.table)` reported `s.table` may be
+  none when a function `table` exists: the resolver marks `s.table` as
+  possibly a call, and only plain field reads narrowed. A read the
+  checker resolves to a struct's field now narrows like any field.
+
+`tests/run/opt_results.lc` and `tests/run/narrow_named_fields.lc` are
+new. Verified as before: the golden tests, typed and native;
+`check.py` interpreted and `--native` on both suites; and the 526 agent
+programs, typed, boxed and under AddressSanitizer and
+UndefinedBehaviorSanitizer, give the interpreter's output on all their
+tasks' inputs.
+
+**Results** (`bench/results/20261009-sql-langs` and `20261009-edits-rust`,
+not committed): Opus 5.5 through Claude Code, the short primer and the
+chaining hint, run from a separate worktree so the compiler could change
+meanwhile. All 16 episodes passed and every first attempt built.
+sql-groups, two trials each (Lacon's first is the smoke episode, same
+compiler and settings):
+
+| | Rust | Lacon | Python | lacon-tools |
+|---|---|---|---|---|
+| Tokens-to-green (mean) | 137,633 | 123,386 | 90,039 | 68,449 |
+| Against Rust | 1.00x | 0.90x | 0.65x | 0.50x |
+| Mean cost | $0.343 | $0.277 | $0.238 | $0.231 |
+| Mean API calls | 5.5 | 6 | 5 | 4 |
+| Context a call after reading the program | 25-31k | 20-24k | 18-22k | 17-21k |
+
+The four mid-size tasks, against Rust with Read and Edit (one trial of
+Rust and rust-write; Lacon's and Python's are §25's two), as geometric
+means of per-task means:
+
+| | Tokens | Cost |
+|---|---|---|
+| python | 0.98x | 0.87x |
+| lacon | 1.15x | 0.89x |
+| lacon-tools | 0.71x | 0.81x |
+| rust-write | 0.77x | 1.65x |
+| python-write | 0.61x | 1.11x |
+| lacon-write | 0.85x | 1.25x |
+
+- **With the same tools, Lacon takes more tokens than Python**, and on
+  the mid-size tasks more than Rust. Its program is Python's size and
+  0.72x Rust's, but each call also reads the primer, and both Lacon
+  sql-groups episodes ran the program in one call and submitted in the
+  next, where Python and Rust chained them.
+- **The toolchain is where Lacon leads:** lacon-tools took 0.50x Rust's
+  tokens on the large task and 0.71x on the mid-size ones, and the
+  least money at both sizes. It printed the program once, Wrote all six
+  changed items to one file, then put, ran and submitted in one
+  command: 4 calls against 5 or 6. It also carries no Read or Edit
+  definitions, and `./show` prints no line numbers. None of this needs
+  Lacon's syntax; an edit-by-name tool for Python or Rust would do the
+  same.
+- **No episode used `sig` or `q`.** Every one read the whole program,
+  which is about 12k of each sql-groups call's 20k. Reading signatures
+  and then only the functions to change is the lever left toward 0.4x.
+
+Next: lacon-tools on sql-groups told to read with `sig` and `q def`; a
+second large task of another kind (business rules rather than a
+parser); the example-based primer on the write tasks; and the separate
+run and submit calls.

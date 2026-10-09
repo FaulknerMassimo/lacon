@@ -27,6 +27,9 @@ pub struct Program {
     /// `x.map(f)` calls on an optional `x`, by span: `none` stays `none`,
     /// and a value goes to `f`.
     pub opt_map: HashSet<Span>,
+    /// `x?` on a result that holds an optional (`T?!`), by span: only an
+    /// error passes up, and `none` is a value.
+    pub res_try: HashSet<Span>,
 }
 
 pub struct FnDef {

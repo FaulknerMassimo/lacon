@@ -1,0 +1,13 @@
+CREATE TABLE visits (day INT, page TEXT, country TEXT, ms INT);
+INSERT INTO visits VALUES (1, '/', 'fr', 120), (1, '/', NULL, 80), (1, '/about', 'fr', NULL),
+  (2, '/', 'fr', 100), (2, '/', NULL, 60), (2, '/about', 'de', 300), (3, '/', 'de', 90),
+  (3, '/shop', NULL, 250), (3, '/shop', NULL, NULL);
+-- NULL agrees with NULL
+SELECT country, count(*), count(ms), sum(ms) FROM visits GROUP BY country;
+SELECT page, country, count(*) AS hits FROM visits GROUP BY page, country ORDER BY page, hits DESC;
+SELECT day, max(ms) - min(ms) AS spread FROM visits WHERE ms IS NOT NULL GROUP BY day HAVING max(ms) - min(ms) > 50;
+SELECT page FROM visits GROUP BY page ORDER BY count(*) DESC, page LIMIT 2;
+SELECT coalesce(country, '??') AS c, page, avg(ms) FROM visits WHERE page LIKE '/%' GROUP BY country, page ORDER BY c, page;
+SELECT page, count(*) FROM visits WHERE day > 9 GROUP BY page;
+DELETE FROM visits WHERE page = '/shop';
+SELECT page, count(*) AS n FROM visits GROUP BY page HAVING count(*) >= 1 ORDER BY page DESC;
