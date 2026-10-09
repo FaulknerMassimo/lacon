@@ -1607,6 +1607,14 @@ _Noreturn void lc_panic(const char *code, const char *site, const char *fmt, ...
     lc_exit(1);
 }
 
+/* A loop trusted a list's view and the list changed under it: a bug in
+ * cgen, not in the program. */
+_Noreturn void lc_view_lost(const char *site) {
+    lc_flush();
+    fprintf(stderr, "lacon runtime: a loop's view of a list went stale at %s\n", site);
+    abort();
+}
+
 /* ----- entry point ----- */
 
 int lc_argc;

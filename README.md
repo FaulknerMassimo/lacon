@@ -10,7 +10,7 @@ The name comes from *laconic*: saying a lot in few words.
 
 | | Goal | Now |
 |---|---|---|
-| Native speed | at or under 1.0x Rust | 1.17x (geometric mean of 11 programs); 4 of them already beat Rust |
+| Native speed | at or under 1.0x Rust | 1.16x (geometric mean of 11 programs); 4 of them already beat Rust |
 | Tokens-to-green, changing a large program | 0.4x Rust | 0.36x with Lacon's own tools, reading by signature (two episodes); 0.90x with the same file tools Rust gets |
 | Tokens-to-green, writing a small program | below Rust | 1.30x Rust's tokens, 0.85x its cost |
 | First attempts that build | 90% or more | 97% |
@@ -23,32 +23,33 @@ That is the metric, rather than how short the code looks.
 ## Benchmarks
 
 Agent results are from Opus 5.5 through Claude Code, October 2026. The
-details are in [PLAN.md](PLAN.md) §26, §30, §31 and §32.
+details are in [PLAN.md](PLAN.md) §26, §30, §31, §32 and §33.
 
 ### Speed
 
 `lacon build` compiles through C. Each program is the same in Lacon and
-Rust (`rustc -O`); the times are the best of 5 runs pinned to one core.
+Rust (`rustc -O`); the times are the best of 7 runs pinned to one core.
 
 | Program | Lacon | Rust | Lacon / Rust | What the gap is |
 |---|---|---|---|---|
-| records | 0.209 s | 0.289 s | **0.72x** | |
-| trees | 0.235 s | 0.275 s | **0.85x** | |
-| pipeline | 0.375 s | 0.417 s | **0.90x** | |
-| wordfreq | 0.237 s | 0.254 s | **0.93x** | |
-| mandel | 0.219 s | 0.207 s | 1.06x | |
-| sieve | 0.340 s | 0.305 s | 1.11x | |
-| collatz | 0.330 s | 0.247 s | 1.34x | GCC's loop layout; a check on the step counter |
-| concat | 0.155 s | 0.112 s | 1.38x | building and sorting 400,000 strings |
-| nbody | 0.252 s | 0.157 s | 1.61x | LLVM vectorizes Rust's inner loop; GCC doesn't vectorize Lacon's C |
-| fib | 0.418 s | 0.259 s | 1.61x | call records kept for error traces; the overflow check on `+` |
-| knapsack | 0.324 s | 0.177 s | 1.83x | overflow checks: Rust's release builds don't check, and the same C without them runs at 1.0x |
-| **geometric mean** | | | **1.17x** | |
+| trees | 0.238 s | 0.283 s | **0.84x** | |
+| records | 0.216 s | 0.242 s | **0.89x** | |
+| pipeline | 0.379 s | 0.427 s | **0.89x** | |
+| wordfreq | 0.238 s | 0.258 s | **0.92x** | |
+| mandel | 0.217 s | 0.206 s | 1.05x | |
+| sieve | 0.331 s | 0.292 s | 1.13x | |
+| knapsack | 0.228 s | 0.176 s | 1.30x | GCC: the same C by hand takes 1.25x with GCC and 1.0x with clang |
+| collatz | 0.327 s | 0.247 s | 1.32x | GCC's loop layout; a check on the step counter |
+| concat | 0.161 s | 0.108 s | 1.49x | building and sorting 400,000 strings (1.37x–1.49x run to run) |
+| fib | 0.429 s | 0.269 s | 1.59x | call records kept for error traces; the overflow check on `+` |
+| nbody | 0.260 s | 0.156 s | 1.67x | LLVM vectorizes Rust's inner loop; GCC doesn't vectorize Lacon's C |
+| **geometric mean** | | | **1.16x** | |
 
 Lacon wins on programs that allocate many small values or rebuild lists:
 it takes small values from free lists, and updates a list or string in place
 when nothing else holds it. It loses on tight arithmetic, which pays for
-overflow checks that Rust's release builds skip.
+overflow checks that Rust's release builds skip, except where a loop's
+ranges prove them unnecessary.
 
 ### Tokens: changing a large program
 
@@ -163,6 +164,10 @@ solutions use list methods, so their Lacon is 1.35x the size of the reference.
   - A variable's last read moves its value, so `s = s + x`,
     `xs = xs.sort()` and `xs.map(...).filter(...)` reuse a string or list
     nothing else holds.
+  - A loop tests once, as it starts, what its ranges prove about its
+    `+`, `-` and `*` (`c - wi` in `while c >= wi: ...; c -= 1`), and
+    runs a copy that trusts the views of the packed lists it keeps packed,
+    so that nothing returns into it from a slow path.
   - Agent tools: `fix` applies the fixes errors carry, `put` replaces items
     by name, `q` and `sig` read a program by item.
   - 5 edit tasks that start the agent from an existing program, in Python,
@@ -177,14 +182,14 @@ solutions use list methods, so their Lacon is 1.35x the size of the reference.
 
 **Speed, toward 1.0x Rust:**
 
-1. Check overflow once per loop rather than at every operation: compute
-   with wrapping arithmetic, gather the overflow flags, and trap before
-   anything observable happens. Programs trap with the same error, and GCC
-   can then vectorize the loop. This is for knapsack, collatz and fib.
-2. Give error traces without runtime call records: frame pointers or unwind
+1. Give error traces without runtime call records: frame pointers or unwind
    tables, read only when a program fails, as Rust does. This is for fib.
-3. Store a list of structs as one array per field, or add an LLVM backend,
-   so nbody's loop vectorizes.
+2. Store a list of structs as one array per field, or add an LLVM backend,
+   so nbody's loop vectorizes. LLVM would also close knapsack's gap.
+3. Decide whether a counter that starts low and steps by one may go
+   unchecked, since overflowing it would take 2^62 iterations. This is
+   collatz's `k += 1`; no range bounds it. (Checking overflow once per loop,
+   the earlier plan, made knapsack slower: §33.)
 
 **Tokens, toward 0.4x Rust:**
 

@@ -696,6 +696,34 @@ static inline __attribute__((always_inline)) int64_t lc_ineg(int64_t a, const ch
     if (a == INT64_MIN) lc_panic("E0405", site, "integer overflow");
     return -a;
 }
+/* `a op b` in a loop whose ranges, tested as it starts, prove it can't
+ * overflow when `ok` is set (`ranges.rs` in cgen): wrapping then, checked
+ * otherwise. The C compiler makes two loops of the one that tests `ok`. */
+static inline __attribute__((always_inline)) int64_t lc_iadd_p(bool ok, int64_t a, int64_t b, const char *site) {
+    return ok ? (int64_t)((uint64_t)a + (uint64_t)b) : lc_iadd(a, b, site);
+}
+static inline __attribute__((always_inline)) int64_t lc_isub_p(bool ok, int64_t a, int64_t b, const char *site) {
+    return ok ? (int64_t)((uint64_t)a - (uint64_t)b) : lc_isub(a, b, site);
+}
+static inline __attribute__((always_inline)) int64_t lc_imul_p(bool ok, int64_t a, int64_t b, const char *site) {
+    return ok ? (int64_t)((uint64_t)a * (uint64_t)b) : lc_imul(a, b, site);
+}
+/* An endpoint of such a range: `a op b`, clearing `*ok` if it overflows. */
+static inline __attribute__((always_inline)) int64_t lc_radd(bool *ok, int64_t a, int64_t b) {
+    int64_t r;
+    if (__builtin_add_overflow(a, b, &r)) *ok = false;
+    return r;
+}
+static inline __attribute__((always_inline)) int64_t lc_rsub(bool *ok, int64_t a, int64_t b) {
+    int64_t r;
+    if (__builtin_sub_overflow(a, b, &r)) *ok = false;
+    return r;
+}
+static inline __attribute__((always_inline)) int64_t lc_rmul(bool *ok, int64_t a, int64_t b) {
+    int64_t r;
+    if (__builtin_mul_overflow(a, b, &r)) *ok = false;
+    return r;
+}
 
 /* ----- packed lists -----
  *
@@ -785,6 +813,23 @@ LC_VIEW_GET(lc_view_int, int64_t, lc_get_int)
 LC_VIEW_GET(lc_view_bool, bool, lc_get_bool)
 LC_VIEW_GET(lc_view_num, double, lc_get_num)
 #undef LC_VIEW_GET
+/* The same through a view a loop found valid as it started (cgen's
+ * `versioned`): the list has the view's kind, and the loop keeps it so, so
+ * a miss is an index out of range, which `get` reports. Nothing then
+ * returns into the loop, so the loop's values needn't survive a call, and
+ * the C compiler keeps them in registers. */
+_Noreturn void lc_view_lost(const char *site);
+#define LC_VIEW_GET_T(name, type, get)                                                                  \
+    static inline __attribute__((always_inline)) type name(lc_view w, int64_t i, lc_v *o, const char *site) { \
+        uint64_t k = lc_pos(i, w.len);                                                                   \
+        if (__builtin_expect(k < (uint64_t)w.len, 1)) return ((type *)w.data)[k];                         \
+        get(*o, i, site);                                                                                \
+        lc_view_lost(site);                                                                              \
+    }
+LC_VIEW_GET_T(lc_view_int_t, int64_t, lc_get_int)
+LC_VIEW_GET_T(lc_view_bool_t, bool, lc_get_bool)
+LC_VIEW_GET_T(lc_view_num_t, double, lc_get_num)
+#undef LC_VIEW_GET_T
 
 /* `xs.push(x)` for an unboxed value: in place when the list is packed as
  * that kind and has room, else the general case. */

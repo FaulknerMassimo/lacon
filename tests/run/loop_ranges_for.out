@@ -1,0 +1,3 @@
+[9223372036854775806, 9223372036854775807]
+E0405 loop_ranges_for.lc:12:14 integer overflow in `+`
+[exit 1]

@@ -1,0 +1,71 @@
+# A loop whose ranges prove its `+`, `-` and `*` by a literal can't
+# overflow tests that once as it starts, and computes them unchecked; near
+# the ends of the int range the test fails and they are checked as usual.
+# Either way the results and the error are the interpreter's.
+
+fn best_value(w [int], v [int], cap int) int =
+  var best = [0] * (cap + 1)
+  for i in 0..w.len:
+    wi = w[i]
+    vi = v[i]
+    var c = cap
+    while c >= wi:
+      cand = best[c - wi] + vi
+      if cand > best[c]: best[c] = cand
+      c -= 1
+  best[cap]
+
+# Down from `top` while above `lo`, the step not a literal. The test fails
+# when the step could turn the loop around, or `top - lo` overflows.
+fn down(top int, lo int, k int) int =
+  var c = top
+  var n = 0
+  var s = 0
+  while c > lo:
+    n += 1
+    if n > 5: break
+    s += top - c
+    c -= k
+  s
+
+# Up to `hi`, with what follows the step.
+fn up(i0 int, hi int) [int] =
+  var out = []
+  var i = i0
+  while i <= hi:
+    if out.len >= 4: break
+    out.push(hi - i)
+    i += 1
+    out.push(i - i0)
+  out
+
+fn ranges(n int, k int) [int] =
+  var out = []
+  for i in 0..n:
+    out.push(n - 1 - i + k)
+    out.push(-3 * i + k)
+    out.push(i * 2 - k)
+    for j in i..n:
+      if j - i == 1: out.push(i + j)
+  out
+
+fn mixed(xs [int], lim int) int =
+  var i = 0
+  var s = 0
+  while i < xs.len and xs[i] < lim:
+    s += xs[i] - i
+    i += 1
+  s
+
+fn main() =
+  big = 9223372036854775807
+  small = -big - 1
+  print(best_value([3, 4, 5, 2], [30, 50, 60, 10], 9))
+  print(down(10, 0, 3), down(small + 2, small, 1), down(10, small, 2), down(3, 0, -1), down(big, big - 4, 2))
+  print(up(1, 4), up(big - 2, big), up(small, small + 1))
+  print(ranges(3, 5), ranges(2, big - 1), ranges(2, small / 2))
+  print(mixed([1, 2, 3, 9, 4], 5), mixed([big - 1, -5], big))
+  var c = small + 3
+  while c >= small:
+    c -= 1
+  print(c)

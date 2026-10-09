@@ -1,0 +1,13 @@
+# A `for` loop's variable is between the range's bounds, not its value
+# before the loop: `big - 2 + i` overflows at i = 3, though not at i = 0.
+
+fn main() =
+  big = 9223372036854775807
+  var i = 0
+  var out = []
+  for k in 0..2:
+    out.push(big - 1 + k)
+  print(out)
+  for i in 0..4:
+    out.push(big - 2 + i)
+  print(out)

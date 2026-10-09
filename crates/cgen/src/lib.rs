@@ -22,6 +22,7 @@ use lacon_syntax::fmtspec::FmtSpec;
 use lacon_syntax::{Source, Span};
 
 mod moves;
+mod ranges;
 
 pub const HEADER: &str = include_str!("../runtime/lacon.h");
 pub const RUNTIME: &[(&str, &str)] = &[
@@ -129,6 +130,11 @@ struct Cx {
     /// trust: slot and struct. Its list and elements were found clean
     /// when it started, and it keeps them so (`keeps_clean`).
     clean: Vec<(u32, u32)>,
+    /// The views of lists of ints, bools or floats that the loop being
+    /// generated may trust as valid: the list had the view's kind when it
+    /// started, and nothing in it is written but the view's elements, so a
+    /// miss is an index out of range (`keeps_valid`).
+    valid: Vec<u32>,
     /// Inside a loop generated twice (`versioned`), which isn't done again.
     versioned: bool,
     /// The checker's type of each slot, in a sound program.
@@ -144,6 +150,22 @@ struct Cx {
     clean_before: Vec<CleanFact>,
     /// The C bools those facts test, declared with the unboxed slots.
     flags: Vec<String>,
+    /// The int operations the enclosing loops' ranges prove can't
+    /// overflow (`ranges`), by address, with the C bool that says so.
+    proven: HashMap<usize, Rc<str>>,
+}
+
+/// The `Cx::proven` entries a loop replaced, to put back after it.
+type Proven = Vec<(usize, Option<Rc<str>>)>;
+
+/// What a loop may trust when tests pass as it starts (`open_views`): the
+/// views of lists of structs it keeps clean, each with its slot, struct,
+/// whether it writes them, and the C test that finds them clean; and the
+/// views of lists of scalars it keeps valid, with slot and test.
+#[derive(Default)]
+struct Trust {
+    cleans: Vec<(u32, u32, bool, String)>,
+    valids: Vec<(u32, String)>,
 }
 
 /// A loop's clean test passed when C bool `flag` is set: list slot `slot`
@@ -166,6 +188,7 @@ impl Cx {
             viewable: HashMap::new(),
             views: Vec::new(),
             clean: Vec::new(),
+            valid: Vec::new(),
             versioned: false,
             tys,
             moves: Rc::default(),
@@ -173,6 +196,7 @@ impl Cx {
             clean_after: Vec::new(),
             clean_before: Vec::new(),
             flags: Vec::new(),
+            proven: HashMap::new(),
         }
     }
 }
@@ -1741,10 +1765,17 @@ impl<'p> Gen<'p> {
         match view {
             // The view's bounds test, then its element: a pointer the
             // C compiler can't prove non-null would cost a second test.
-            Some((_, w, kind)) if kind == vrep => {
+            Some((s, w, kind)) if kind == vrep => {
                 let j = self.t();
+                // Through a valid view a miss is an index out of range,
+                // which `slow` reports, and the loop's test found the list
+                // writable, so `len` is `wlen`: one value fewer to hold.
+                let (wl, after) = match self.cx.valid.contains(&s) {
+                    true => ("len", format!("lc_view_lost({lsite}); ")),
+                    false => ("wlen", reread),
+                };
                 Some(format!(
-                    "{{ {ct} {v} = {vv}; {kc}int64_t {k} = {kv}; {walk}uint64_t {j} = lc_pos({k}, {w}.wlen); {ct} *{e}; if ({j} < (uint64_t){w}.wlen) {{ {e} = ({ct} *){w}.data + {j}; *{e} = {new}; }} else {{ {e} = {at}({ptr}, {k}); {fdecl}if ({e}) *{e} = {new}; {also}else {slow}; {reread}}} {rk}}} "
+                    "{{ {ct} {v} = {vv}; {kc}int64_t {k} = {kv}; {walk}uint64_t {j} = lc_pos({k}, {w}.{wl}); {ct} *{e}; if ({j} < (uint64_t){w}.{wl}) {{ {e} = ({ct} *){w}.data + {j}; *{e} = {new}; }} else {{ {e} = {at}({ptr}, {k}); {fdecl}if ({e}) *{e} = {new}; {also}else {slow}; {after}}} {rk}}} "
                 ))
             }
             _ => Some(format!(
@@ -2355,13 +2386,12 @@ impl<'p> Gen<'p> {
     /// Views (`lc_view`) of the list slots a loop only reads and assigns
     /// elements of, for `elem`, `assign_elem` and `len_fast` to use: the C
     /// that reads them, to run before the loop, and how many views to drop
-    /// after it (`close_views`). Last, the views of lists of structs the
-    /// loop keeps clean, each with its slot, struct and the C test that
-    /// finds it clean, for `versioned`.
-    fn open_views(&mut self, cond: Option<&Ex>, body: &[St]) -> (String, usize, Vec<(u32, u32, bool, String)>) {
+    /// after it (`close_views`). Last, what `versioned` may test to trust
+    /// them.
+    fn open_views(&mut self, cond: Option<&Ex>, body: &[St]) -> (String, usize, Trust) {
         let mut code = String::new();
         let mut n = 0;
-        let mut cleans = Vec::new();
+        let mut trust = Trust::default();
         for s in view_slots(cond, body) {
             let Some(&kind) = self.cx.viewable.get(&s) else { continue };
             if self.slot_rep(s) != Rep::Boxed || self.view_of(s).is_some() {
@@ -2372,14 +2402,48 @@ impl<'p> Gen<'p> {
             if let Some(T::List(e)) = self.cx.tys.get(s as usize) {
                 if let T::Struct(id, _) = **e {
                     if let Some(writes) = self.keeps_clean(id, s, cond, body) {
-                        cleans.push((s, id, writes, format!("lc_view_clean({w}, {id}, {writes})")));
+                        trust.cleans.push((s, id, writes, format!("lc_view_clean({w}, {id}, {writes})")));
                     }
+                }
+            }
+            if kind != Rep::Boxed {
+                if let Some(writes) = self.keeps_valid(s, kind, cond, body) {
+                    trust.valids.push((s, if writes { format!("({w}.data && {w}.wlen == {w}.len)") } else { format!("{w}.data") }));
                 }
             }
             self.cx.views.push((s, w, kind));
             n += 1;
         }
-        (code, n, cleans)
+        (code, n, trust)
+    }
+
+    /// Whether a loop (its condition and body) keeps list slot `s`, viewed
+    /// as `kind`, of that kind: every assignment to it is to an element by
+    /// an int index, of a value of `kind`, by an operation `assign_elem`
+    /// does on the view. And if so whether it assigns any, for which the
+    /// list must be one nothing else holds. `None` otherwise.
+    fn keeps_valid(&self, s: u32, kind: Rep, cond: Option<&Ex>, body: &[St]) -> Option<bool> {
+        let (mut writes, mut bad) = (false, false);
+        let mut f = |n: Node, _: u32| {
+            if let Node::St(St::Assign { place: Place { root: Root::Local(x), path, .. }, op, value, .. }) = n {
+                if *x == s {
+                    let index = matches!(&path[..], [Seg::Index(i, _)] if self.rep(i) == Rep::Int);
+                    let op_ok = match (op, kind) {
+                        (None, _) => true,
+                        (Some(op), Rep::Int) => int_op(*op).is_some(),
+                        (Some(op), Rep::Float) => matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Pow),
+                        _ => false,
+                    };
+                    writes = true;
+                    bad |= !(index && op_ok && self.rep(value) == kind);
+                }
+            }
+        };
+        if let Some(c) = cond {
+            walk_ex(c, 0, &mut f);
+        }
+        walk_stmts(body, 0, &mut f);
+        (!bad).then_some(writes)
     }
 
     /// Whether a loop (its condition and body) uses list slot `s`, of
@@ -2417,39 +2481,43 @@ impl<'p> Gen<'p> {
     }
 
     /// The C of a loop, from `make`, which generates it with the views
-    /// just opened. When some of them are of structs the loop keeps clean
-    /// (`cleans`, from `open_views`), it is generated twice: trusting
-    /// them, for when the tests find them clean as the loop starts, and as
-    /// usual. A loop inside one so generated, or with a lambda in it, is
-    /// generated once.
+    /// just opened. When some of them are of structs the loop keeps clean,
+    /// or of scalars it keeps valid (`trust`, from `open_views`), it is
+    /// generated twice: trusting them, for when the tests pass as the loop
+    /// starts, and as usual. A loop inside one so generated, or with a
+    /// lambda in it, is generated once.
     ///
     /// The tests' result goes in a flag, which the next statement of the
     /// block, if it is such a loop of the same lists, tests first: nbody's
     /// `advance` runs two loops over its bodies, and the second needn't look
     /// at them again. `consume` says whether anything the loop runs before
     /// its tests leaves the lists as the last loop left them.
-    fn versioned(&mut self, cleans: &[(u32, u32, bool, String)], lambdas: bool, consume: bool, make: &mut dyn FnMut(&mut Gen<'p>) -> String) -> String {
+    fn versioned(&mut self, trust: &Trust, lambdas: bool, consume: bool, make: &mut dyn FnMut(&mut Gen<'p>) -> String) -> String {
         let before = std::mem::take(&mut self.cx.clean_before);
         self.cx.clean_after.clear();
-        if cleans.is_empty() || lambdas || self.cx.versioned {
+        let cleans = &trust.cleans;
+        if (cleans.is_empty() && trust.valids.is_empty()) || lambdas || self.cx.versioned {
             let code = make(self);
             self.cx.clean_after.clear();
             return code;
         }
         self.cx.versioned = true;
-        let n = self.cx.clean.len();
+        let (n, nv) = (self.cx.clean.len(), self.cx.valid.len());
         self.cx.clean.extend(cleans.iter().map(|(s, id, ..)| (*s, *id)));
+        self.cx.valid.extend(trust.valids.iter().map(|(s, _)| *s));
         let fast = make(self);
         self.cx.clean.truncate(n);
+        self.cx.valid.truncate(nv);
         let slow = make(self);
         self.cx.versioned = false;
-        let tests: Vec<String> = cleans
+        let mut tests: Vec<String> = cleans
             .iter()
             .map(|(s, id, writes, test)| match before.iter().find(|f| consume && f.slot == *s && f.id == *id && (f.writes || !*writes)) {
                 Some(f) => format!("({} || {test})", f.flag),
                 None => test.clone(),
             })
             .collect();
+        tests.extend(trust.valids.iter().map(|(_, t)| t.clone()));
         self.tmp += 1;
         let flag = format!("_c{}", self.tmp);
         self.cx.flags.push(flag.clone());
@@ -2461,6 +2529,32 @@ impl<'p> Gen<'p> {
     /// clean list of structs `id`.
     fn clean_view(&self, s: u32, id: u32) -> bool {
         self.cx.clean.contains(&(s, id))
+    }
+
+    /// The C bool that says the int operation at `key` can't overflow, if
+    /// an enclosing loop's ranges prove it.
+    fn proven_op(&self, key: usize, op: BinOp) -> Option<Rc<str>> {
+        matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul).then(|| self.cx.proven.get(&key).cloned()).flatten()
+    }
+
+    /// What the ranges of a loop about to be generated prove (`ranges`):
+    /// C to run as it starts, and what to give `unprove` after it.
+    fn prove_loop(&mut self, lp: ranges::Loop, body: &[St]) -> (String, Proven) {
+        let (flag, start) = (self.t(), self.t());
+        let proof = ranges::prove(lp, body, &flag, &start, &|s| self.slot_rep(s) == Rep::Int);
+        let Some(p) = proof else { return (String::new(), Vec::new()) };
+        let flag: Rc<str> = flag.into();
+        let saved = p.ops.iter().map(|&k| (k, self.cx.proven.insert(k, flag.clone()))).collect();
+        (p.pre, saved)
+    }
+
+    fn unprove(&mut self, saved: Proven) {
+        for (k, old) in saved.into_iter().rev() {
+            match old {
+                Some(g) => self.cx.proven.insert(k, g),
+                None => self.cx.proven.remove(&k),
+            };
+        }
     }
 
     fn close_views(&mut self, n: usize) {
@@ -2513,8 +2607,9 @@ impl<'p> Gen<'p> {
                 Rep::Bool => "lc_view_bool",
                 _ => "lc_view_num",
             };
+            let t = if self.cx.valid.contains(&s) { "_t" } else { "" };
             let i = self.int(index);
-            return format!("{get}({w}, {i}, &{}, {site})", self.slot(0, s));
+            return format!("{get}{t}({w}, {i}, &{}, {site})", self.slot(0, s));
         }
         let get = match rep {
             Rep::Int => "lc_get_int",
@@ -2551,7 +2646,12 @@ impl<'p> Gen<'p> {
                 let site = self.site(*span);
                 let f = int_op(*op).unwrap_or("+");
                 let (a, b) = (self.int(l), self.int(r));
-                let apply = |x: &str, y: &str| if f.len() == 1 { format!("({x} {f} {y})") } else { format!("{f}({x}, {y}, {site})") };
+                let ok = self.proven_op(moves::ex_key(e), *op);
+                let apply = |x: &str, y: &str| match &ok {
+                    Some(g) => format!("{f}_p({g}, {x}, {y}, {site})"),
+                    None if f.len() == 1 => format!("({x} {f} {y})"),
+                    None => format!("{f}({x}, {y}, {site})"),
+                };
                 if self.simple(l) || self.simple(r) {
                     apply(&a, &b)
                 } else {
@@ -3681,8 +3781,8 @@ impl<'p> Gen<'p> {
         code
     }
 
-    fn stmt_inner(&mut self, s: &St) -> String {
-        match s {
+    fn stmt_inner(&mut self, st: &St) -> String {
+        match st {
             St::Expr(e, span) if self.typed => {
                 let site = self.site(*span);
                 self.effect(e, &site)
@@ -3773,7 +3873,11 @@ impl<'p> Gen<'p> {
                             format!("N{s} = N{s} {f} ({v}); ")
                         } else {
                             let t = self.t();
-                            format!("{{ int64_t {t} = {v}; N{s} = {f}(N{s}, {t}, {site}); }} ")
+                            let call = match self.proven_op(ranges::st_key(st), *op) {
+                                Some(g) => format!("{f}_p({g}, N{s}, {t}, {site})"),
+                                None => format!("{f}(N{s}, {t}, {site})"),
+                            };
+                            format!("{{ int64_t {t} = {v}; N{s} = {call}; }} ")
                         }
                     }
                     Some(op) => {
@@ -3859,6 +3963,12 @@ impl<'p> Gen<'p> {
                 if *inclusive {
                     let _ = write!(code, "{b} = (int64_t)((uint64_t){b} + 1); ");
                 }
+                let iv = match pat {
+                    PatIr::Bind(slot) if self.slot_rep(*slot) == Rep::Int => Some(*slot),
+                    _ => None,
+                };
+                let (pre, proven) = self.prove_loop(ranges::Loop::Range { slot: iv, a: &a, b: &b }, body);
+                code.push_str(&pre);
                 let bind = match pat {
                     PatIr::Bind(slot) => match self.slot_rep(*slot) {
                         Rep::Int => format!("N{slot} = {i}; "),
@@ -3876,6 +3986,7 @@ impl<'p> Gen<'p> {
                     format!("for (int64_t {i} = {a}; {i} < {b}; {i}++) {{ {bind}{bd}}} ")
                 });
                 self.close_views(nv);
+                self.unprove(proven);
                 let _ = write!(code, "{views}{lp}}} ");
                 code
             }
@@ -3928,6 +4039,7 @@ impl<'p> Gen<'p> {
             }
             St::While { cond, body, .. } => {
                 let site = self.site(cond.span());
+                let (pre, proven) = self.prove_loop(ranges::Loop::While(cond), body);
                 let (views, nv, cleans) = self.open_views(Some(cond), body);
                 let lambdas = has_lambda(cond) || stmts_have_lambda(body);
                 let lp = self.versioned(&cleans, lambdas, true, &mut |g| {
@@ -3939,7 +4051,8 @@ impl<'p> Gen<'p> {
                     format!("while (1) {{ if (!{c}) break; {b}}} ")
                 });
                 self.close_views(nv);
-                format!("{{ {views}{lp}}} ")
+                self.unprove(proven);
+                format!("{{ {pre}{views}{lp}}} ")
             }
             St::Break(_) => "break; ".into(),
             St::Continue(_) => "continue; ".into(),

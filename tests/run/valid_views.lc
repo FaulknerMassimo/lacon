@@ -1,0 +1,45 @@
+# A loop that keeps its lists of ints, bools or floats packed runs a copy
+# that trusts their views in native code, when as it starts they are packed
+# and, for those it writes, nothing else holds them. A miss through a
+# trusted view is an index out of range, reported as usual.
+
+fn fill(mut xs [int], n int) =
+  for i in 0..n:
+    xs[i] = xs[i] + i
+
+fn main() =
+  # written, and nothing else holds it
+  var a = [1, 2, 3, 4]
+  for i in 0..4:
+    a[i] += a[3 - i]
+  print(a)
+  # shared: copied by the first assignment, as usual
+  var b = [1, 2, 3]
+  c = b
+  for i in 0..3:
+    b[i] *= 2
+  print(b, c)
+  # read from a list another variable holds
+  var s = 0
+  for i in 0..3:
+    s += c[i] * b[i]
+  print(s)
+  # floats and bools
+  var fs = [1.5, 2.5]
+  var bs = [true, false]
+  for i in 0..2:
+    fs[i] = fs[1 - i] * 2.0
+    bs[i] = !bs[1 - i]
+  print(fs, bs)
+  # a `mut` parameter
+  var m = [5, 5, 5]
+  fill(m, 3)
+  print(m)
+  # out of range through a trusted view, after reads counted from the end
+  var t = 0
+  for i in 0..4:
+    t += a[-i - 1]
+  print(t)
+  for i in 0..5:
+    t += a[i]
+  print(t)

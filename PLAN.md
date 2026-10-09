@@ -2789,3 +2789,120 @@ outline is there, not yet that 0.36x holds.
 
 Next: a second large edit task of another kind; `lacon-outline` on the
 four mid-size tasks; and Python with an outline and edit-by-name tool.
+
+---
+
+## 33. Phase 2: overflow checks a loop's ranges prove, and trusted views
+
+The README's first step toward 1.0x Rust was to check overflow once per
+loop: compute with wrapping arithmetic, gather the overflow flags, and
+trap before anything observable, so that GCC could vectorize. Measured
+first on knapsack (1.83x), by hand-editing its generated C, pinned, best
+of seven:
+
+| knapsack's inner loop | Time |
+|---|---|
+| Checked at each operation, as generated | 0.326 s |
+| No checks at all | 0.255 s |
+| Flags gathered, tested once an iteration | 0.404 s |
+| Flags gathered, tested once a loop | 0.612 s |
+| `c - wi` and `c -= 1` unchecked, `+ vi` checked | 0.238 s |
+| Rust | 0.178 s |
+
+**Gathering flags is slower.** A `jo` costs little: what the check costs
+is that it doesn't fuse with the `add` or `sub` before it, and that a
+checked `c - wi` can't be folded into an address. A flag adds a `seto`
+and an `or` per operation, and a flag carried across iterations adds a
+dependency. Flags would pay only if the loop then vectorized, and
+knapsack's doesn't even unchecked (`best[c - wi]` and the conditional
+store to `best[c]`). The idea is dropped.
+
+**Proving checks away does as well as removing them.** Of knapsack's
+three checks, two can't fail: in `while c >= wi: ...; c -= 1`, `c` stays
+between `wi` and its value as the loop starts, so `c - wi` and `c - 1`
+overflow only if `c0 - wi` or `wi - 1` does. One test of those before the
+loop stands for the checks. The third, `best[c - wi] + vi`, can fail and
+stays; it costs nothing measurable.
+
+**`ranges.rs`** is interval arithmetic over a loop's `+`, `-` and `*` by a
+literal, whose leaves are literals, ints the loop never writes, and its
+induction variable:
+
+- a `for` loop's variable over a range, between the range's bounds;
+- a `while` loop's variable `c` whose only write is one `c -= k` or
+  `c += k` among the body's own statements, `k` a literal or an int the
+  loop never writes, when the condition (or a side of an `and` in it)
+  bounds it the other way: `c >= lo` or `c > lo` going down, `c < hi` or
+  `c <= hi` going up. Before the step `c` lies between the bound and its
+  start; the step and what follows are shifted by `k`. A step that isn't
+  a literal is tested to be at least zero.
+
+Each operation's interval comes from its operands', its endpoints
+computed with checked arithmetic (`lc_radd`, `lc_rsub`, `lc_rmul`), which
+clear the loop's flag on overflow. The exact results lie between the
+endpoints, so if those fit, every result does. A proven operation is
+emitted as `lc_iadd_p(ok, ...)`, wrapping when the flag is set and checked
+as before when it isn't, and GCC's `-O3` unswitching makes two loops of
+the one that tests `ok` (0.237 s, against 0.238 s for two loops written
+out). Operations in a nested loop are left to it, which treats the outer
+variable as fixed; the condition's own operations aren't touched. A first
+version missed that a `for` loop writes its variable, outside the body,
+and tested its value from before the loop; `loop_ranges_for.lc` now
+catches that.
+
+**Trusted views.** Generated, knapsack took 0.268 s, not 0.237 s: GCC
+kept the list's data pointer on the stack and loaded it twice an
+iteration. The loop's slow paths, for a list that isn't packed or a
+store that copies a shared list, call the runtime and return into the
+loop, so every value the loop holds must survive a call: six registers
+rather than fifteen. `versioned` (§27) now also runs a copy of a loop
+that trusts the views of its lists of ints, bools and floats, when as it
+starts each is packed and, if the loop writes it, nothing else holds it
+(`keeps_valid`: every store to it is to an element by an int index, of
+its kind, by an operation the view does). Through such a view a miss can
+only be an index out of range: the copy reports it as before
+(`lc_get_int`, `lc_store_index`) and then calls `lc_view_lost`, which
+never returns and would abort if the list had changed under the loop.
+Nothing returns into the loop, so its values stay in registers: 0.253 s.
+Stores through a trusted view also test `len` rather than `wlen`, which
+the test found equal, one value fewer to hold: 0.230 s. The same C
+written by hand takes 0.222 s with GCC and 0.177 s with clang, so what's
+left of knapsack's gap is GCC's.
+
+**Results.** Each benchmark built by the last commit's compiler and by
+this one, run alternately on one core, best of nine:
+
+| Program | Before | After | After / before |
+|---|---|---|---|
+| knapsack | 0.327 s | 0.231 s | 0.71 |
+| sieve | 0.328 s | 0.334 s | 1.00-1.02 |
+| the other nine | | | 0.998-1.006 |
+
+The suite is at 1.16x Rust (geometric mean, `bench/perf/run.py`, best of
+seven, pinned), from 1.17x; knapsack is at 1.30x, from 1.83x. Run to run,
+concat moves between 1.37x and 1.49x with the same code.
+
+- **Where it applies.** Of the 533 distinct agent programs in
+  `bench/results`, 105 have proven operations (361 in all). Their C is
+  2% larger in all, and a program with trusted loops builds in up to
+  1.56x the time (0.37 s to 0.59 s), since its loop nests are generated
+  twice; the median build time of 60 agent programs is unchanged.
+- **What it doesn't reach.** collatz's `k += 1` (0.027 s of its 0.33 s)
+  counts steps of a loop that runs while `n != 1`: nothing bounds it, so
+  the check stays. fib's checks are on results of calls. nbody's gap is
+  vectorization.
+
+`tests/run/loop_ranges.lc` runs each kind of loop near the ends of the int
+range, where tests fail and the checked copy runs, and ends on an
+overflow the test couldn't rule out; `loop_ranges_for.lc` a `for`
+variable whose value before the loop would pass; `valid_views.lc` trusted
+and untrusted views of each kind, a `mut` parameter, and an index out of
+range through a trusted view. Verified as before: the golden tests,
+typed and native, also under AddressSanitizer and
+UndefinedBehaviorSanitizer; `bench/tasks/check.py --native` on both
+suites; and the 533 agent programs, typed, with `LACON_BOXED=1` and under
+both sanitizers, give the interpreter's output on all their tasks'
+inputs.
+
+Next: fib's call records (error traces from frame pointers or unwind
+tables instead), and nbody's loop.
