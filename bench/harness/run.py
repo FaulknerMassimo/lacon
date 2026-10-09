@@ -12,6 +12,7 @@ tokens it spends getting to passing tests (tokens-to-green).
     uv run bench/harness/run.py --langs lacon --primer docs/primer-short.md   # try another primer (or `none`)
     uv run bench/harness/run.py --agent claude-code --langs lacon,lacon-write,lacon-tools   # how the program is written
     uv run bench/harness/run.py --agent claude-code --suite edits   # change an existing program
+    uv run bench/harness/run.py --agent claude-code --suite edits --langs lacon-tools,lacon-outline   # read all of it, or by signature
     uv run bench/harness/report.py bench/results/<run>         # summarize a run
 
 In each episode the model gets the task prompt, one example, and two tools:
@@ -35,7 +36,10 @@ Claude Code's check for a brace before a quote refused most of them.)
 The `edits` suite (bench/edits/) has tasks that change an existing program
 rather than write one: the episode starts with the task's `start<ext>` as
 `main<ext>`, and the prompt asks for a change. Without file tools, `./show`
-prints the program. Edit tasks need Claude Code (or replay).
+prints the program. `lacon-outline` is `lacon-tools` with a `./show` that
+prints the program's signatures and docs (`lacon sig`), and `./show NAME...`
+those items in full (`lacon q def`), to see whether an agent that starts
+from the outline reads less. Edit tasks need Claude Code (or replay).
 
 Agents:
 - `claude` calls the Messages API (needs ANTHROPIC_API_KEY or similar).
@@ -241,6 +245,8 @@ def system_prompt(lang: L.Lang, agent: str = "claude", primer: Path | None = PRI
     template = {"write": SYSTEM_CC_WRITE, "tools": SYSTEM_CC_TOOLS}.get(lang.edit, SYSTEM_CC if agent == "claude-code" else SYSTEM)
     goal = (GOAL_EDIT if edit_task else GOAL_NEW).format(lang=lang.name, ext=lang.ext)
     show = {"write": " `./show` prints it.", "tools": " `./show` prints all of it."}.get(lang.edit, "") if edit_task else ""
+    if edit_task and lang.outline:
+        show = " `./show` prints the program's outline: its types, constants and function signatures, with their docs but no bodies. `./show NAME...` prints those items in full."
     own = "`./show`, " if edit_task else ""
     lacon = isinstance(lang, L.Lacon)
     environment = NO_PRIMER if lacon and primer is None else lang.environment
@@ -482,10 +488,22 @@ def tool_main(tool: str, task_name: str, lang_key: str, events: str) -> int:
     src = Path.cwd() / f"main{lang.ext}"
     ep = Episode(Task.load(task_name), lang, 0, Path.cwd())
     if tool == "show":
+        # In lacon-outline, `./show` is the outline and `./show NAME...`
+        # those items; elsewhere, the whole program.
+        names = sys.argv[1:] if lang.outline else []
         with open(events, "a") as f:
-            f.write(json.dumps({"tool": "show", "command": "show", "build_ok": None, "passed": False}) + "\n")
-        sys.stdout.write(src.read_text() if src.exists() else f"there is no {src.name}\n")
-        return 0
+            f.write(json.dumps({"tool": "show", "command": "show NAME" if names else "show", "build_ok": None, "passed": False}) + "\n")
+        if not src.exists():
+            print(f"there is no {src.name}")
+            return 0
+        if not lang.outline:
+            sys.stdout.write(src.read_text())
+            return 0
+        r = lang.command(["q", "def", src.name, *names] if names else ["sig", src.name], Path.cwd(), "")
+        sys.stdout.write(r.stdout)
+        sys.stdout.flush()
+        sys.stderr.write(r.stderr if r.exit_code is not None else f"timed out after {L.BUILD_TIMEOUT}s\n")
+        return 1 if r.exit_code is None else r.exit_code
     if tool == "write":
         # `./write FILE` saves FILE as the program; `./write` alone, stdin.
         if len(sys.argv) > 1:

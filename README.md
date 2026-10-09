@@ -11,7 +11,7 @@ The name comes from *laconic*: saying a lot in few words.
 | | Goal | Now |
 |---|---|---|
 | Native speed | at or under 1.0x Rust | 1.17x (geometric mean of 11 programs); 4 of them already beat Rust |
-| Tokens-to-green, changing a large program | 0.4x Rust | 0.50x with Lacon's own tools; 0.90x with the same file tools Rust gets |
+| Tokens-to-green, changing a large program | 0.4x Rust | 0.36x with Lacon's own tools, reading by signature (two episodes); 0.90x with the same file tools Rust gets |
 | Tokens-to-green, writing a small program | below Rust | 1.30x Rust's tokens, 0.85x its cost |
 | First attempts that build | 90% or more | 97% |
 | The primer an agent reads | 3,000 tokens or fewer | 1,356 |
@@ -23,7 +23,7 @@ That is the metric, rather than how short the code looks.
 ## Benchmarks
 
 Agent results are from Opus 5.5 through Claude Code, October 2026. The
-details are in [PLAN.md](PLAN.md) §26, §30 and §31.
+details are in [PLAN.md](PLAN.md) §26, §30, §31 and §32.
 
 ### Speed
 
@@ -62,7 +62,8 @@ and 1,290 of Rust. Two trials each; every episode passed:
 | Rust (Read, Edit) | 137,633 | 1.00x | $0.343 | 5.5 |
 | Lacon (Read, Edit) | 123,386 | 0.90x | $0.277 | 6 |
 | Python (Read, Edit) | 90,039 | 0.65x | $0.238 | 5 |
-| **Lacon's own tools** | **68,449** | **0.50x** | **$0.231** | **4** |
+| Lacon's own tools | 68,449 | 0.50x | $0.231 | 4 |
+| **Lacon's own tools, reading by signature** | **49,650** | **0.36x** | **$0.185** | **4.5** |
 
 On four smaller programs to change (about 100–250 lines), Lacon's tools take 0.71x
 Rust's tokens and 0.81x its cost; with Rust's file tools Lacon takes 1.15x,
@@ -74,9 +75,14 @@ and Python 0.98x.
   definitions in its context.
 - **With the same tools, Lacon trails Python.** Each call also reads the
   primer, and agents still run and submit in separate calls in Lacon.
-- **No agent has used `sig` or `q`.** Every episode read the whole program,
-  which is about 12,000 of each call's 20,000 tokens. Reading signatures
-  first and then only the functions to change is the lever left for 0.4x.
+- **Reading by signature takes it under 0.4x.** When `./show` prints the
+  outline (`sig`) rather than the whole program, both agents read it, then
+  printed the 13 or 14 items they needed by name: 0.46x of the program's
+  tokens, and 8,000–15,000 tokens a call where reading all of it took
+  17,000–21,000. That is two episodes on one task, and it relies on the
+  program's doc comments, which the outline shows.
+- **None of this needs Lacon's syntax.** An outline and edits by name for
+  Python or Rust would save the same reading.
 
 ### Tokens: writing a small program
 
@@ -182,10 +188,11 @@ solutions use list methods, so their Lacon is 1.35x the size of the reference.
 
 **Tokens, toward 0.4x Rust:**
 
-1. Read less: run `sql-groups` with Lacon's tools and an instruction to read
-   with `sig` and `q def` rather than the whole program.
-2. Add a second large edit task of another kind (business rules rather than
-   a parser), to check `sql-groups` isn't a one-off.
+1. Add a second large edit task of another kind (business rules rather than
+   a parser), to check that 0.36x on `sql-groups` isn't a one-off.
+2. Run reading by signature on the four mid-size edit tasks, and give
+   Python the same outline and edit-by-name tools, to see how much of the
+   saving is Lacon's own.
 3. Test the example-based primer ([`docs/primer-idioms.md`](docs/primer-idioms.md))
    on the write tasks, to see whether agents' code shrinks toward the
    reference solutions.
@@ -229,7 +236,9 @@ uv run bench/harness/report.py bench/results/<run>   # tokens-to-green per langu
 
 `<lang>` gets Claude Code's Read, Write and Edit; `<lang>-write` only Write,
 saving the program with `./write`; `lacon-tools` Write and Lacon's own
-`put`, `fix`, `q` and `sig`. `--primer none` runs Lacon with no primer.
+`put`, `fix`, `q` and `sig`; `lacon-outline` the same, but in an edit
+task its `./show` prints the program's signatures rather than all of it,
+and `./show NAME...` those items. `--primer none` runs Lacon with no primer.
 Model-written programs run under `bwrap` when it's installed (read-only
 filesystem, no network). A run of 30 small tasks costs about $1.20 at API
 prices; one `sql-groups` episode about $0.30.

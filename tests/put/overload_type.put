@@ -1,0 +1,1 @@
+fn size(b Bag) int = b.items.len * 10

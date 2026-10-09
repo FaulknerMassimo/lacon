@@ -2725,3 +2725,67 @@ Next: lacon-tools on sql-groups told to read with `sig` and `q def`; a
 second large task of another kind (business rules rather than a
 parser); the example-based primer on the write tasks; and the separate
 run and submit calls.
+
+---
+
+## 32. Phase 2: reading a large program by signature
+
+§31 found that every `sql-groups` episode read the whole program, about
+12k of each call's 20k tokens, and that no agent had used `sig` or `q`.
+This section changes what the agent sees first, rather than telling it
+what to read.
+
+**`lacon-outline`** is a harness variant: `lacon-tools`, except that in
+an edit task `./show` prints the program's outline (`lacon sig`: types,
+constants and function signatures with their docs, no bodies) and
+`./show NAME...` those items in full (`lacon q def`). The prompt says
+only that; there is no instruction to read less. On `sql-groups` the
+outline is 1,840 tokens by `o200k_base`, against 8,128 for the program.
+
+**A `put` bug the replay found.** Replaying the reference solution
+through `lacon-tools` failed on `sql-groups`: it has two functions named
+`names`, one taking a `Parser` and one a `Table`, and `put` told
+functions of one name apart only by their parameter counts, so it wrote
+the `Table` one over the `Parser` one. A call picks among them by its
+first argument, so `put` now matches the first parameter's type, then
+the count, then all the types. No agent episode hit this, since they put
+only the items they changed; reading by name makes it likelier.
+`tests/put/overload_type.lc` is new.
+
+**Results** (`bench/results/20261009-sql-outline`, not committed): two
+episodes, Opus 5.5 through Claude Code with §31's settings (the short
+primer and the chaining hint), against §31's runs:
+
+| | Rust | Python | lacon-tools | lacon-outline |
+|---|---|---|---|---|
+| Tokens-to-green (mean) | 137,633 | 90,039 | 68,449 | 49,650 |
+| Against Rust | 1.00x | 0.65x | 0.50x | 0.36x |
+| Mean cost | $0.343 | $0.238 | $0.231 | $0.185 |
+| Mean API calls | 5.5 | 5 | 4 | 4.5 |
+| Context a call after reading | 25-31k | 18-22k | 17-21k | 8-15k |
+
+Both episodes passed and built first time (42,006 and 57,294 tokens).
+
+- **Both read the same way.** `./show`, then one `./show` of 13 or 14
+  items (`KEYWORDS`, `parse_select`, `run_select`, the query, aggregate
+  and checking functions: 180 of 870 lines, 1,901 tokens), then a
+  Write of six items and one command that put, ran and submitted. With
+  the outline they read 0.46x of the program's tokens, and each later
+  call carries the difference.
+- **Reading took two calls where `./show` took one.** The first
+  episode made it back by sending the Write and the command in the same
+  call; the second sent them in two, and that call's 14k tokens are most
+  of the 15k between the episodes.
+- **The outline is only as good as its docs.** §31 gave `sql-groups`'
+  functions doc comments when it fixed `sig`'s docs, and the agents
+  chose what to read from them. A program without docs would show bare
+  signatures.
+- **Nothing here needs Lacon's syntax.** An outline and an edit by name
+  for Python or Rust would save the same reading. The comparison that
+  would say how much is Lacon's own is Python with the same tools.
+
+Two episodes on one task: this says reading by signature works when the
+outline is there, not yet that 0.36x holds.
+
+Next: a second large edit task of another kind; `lacon-outline` on the
+four mid-size tasks; and Python with an outline and edit-by-name tool.

@@ -91,22 +91,29 @@ pub fn put(path: &str, from: Option<&str>) -> ExitCode {
 }
 
 /// The item in `text` that `it` (whose source is `new`) replaces: the one of
-/// the same kind and name, or for a function defined more than once, the
-/// one with as many parameters.
+/// the same kind and name. For a function defined more than once, the first
+/// whose first parameter has the same type, then as many parameters, then
+/// the same types throughout, since a call picks among them by its first
+/// argument.
 fn find(text: &str, it: &ItemSpan, new: &str) -> Option<ItemSpan> {
     let same: Vec<ItemSpan> = scan(text).into_iter().filter(|o| o.kind == it.kind && o.name == it.name).collect();
     if same.len() <= 1 || it.kind != "fn" {
         return same.into_iter().next();
     }
-    let want = arity(new);
-    same.iter().find(|o| arity(&text[o.start..o.end]) == want).or(same.first()).cloned()
+    let want = params(new);
+    let fit = |o: &ItemSpan| match (&want, params(&text[o.start..o.end])) {
+        (Some(w), Some(h)) => (w.first() == h.first(), w.len() == h.len(), *w == h),
+        _ => (false, false, false),
+    };
+    // `max_by_key` keeps the last of equals, so look from the end.
+    same.iter().rev().max_by_key(|o| fit(o)).cloned()
 }
 
-/// How many parameters the function in `src` declares, if it parses.
-fn arity(src: &str) -> Option<usize> {
+/// The parameter types of the function in `src`, if it parses.
+fn params(src: &str) -> Option<Vec<String>> {
     let (m, _) = lacon_syntax::parse(src);
     m.items.iter().find_map(|i| match i {
-        lacon_syntax::ast::Item::Fn(f) => Some(f.params.len()),
+        lacon_syntax::ast::Item::Fn(f) => Some(f.params.iter().map(|p| p.ty.to_string()).collect()),
         _ => None,
     })
 }

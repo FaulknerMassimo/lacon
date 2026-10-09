@@ -19,8 +19,9 @@ from collections import defaultdict
 from pathlib import Path
 
 ORDER = ["lacon", "python", "rust", "go"]
-# How the program was written: `python`, `python-write`, `lacon-tools`.
-EDITS = ["", "write", "tools"]
+# How the program was written: `python`, `python-write`, `lacon-tools`,
+# `lacon-outline`.
+EDITS = ["", "write", "tools", "outline"]
 
 
 def order(key: str) -> tuple[int, int]:

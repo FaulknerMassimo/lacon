@@ -87,6 +87,9 @@ class Lang:
     # Read, Write and Edit), `write` (Bash only: `./write` saves stdin as the
     # program) or `tools` (Bash only, with Lacon's own tools; Lacon only).
     edit = "files"
+    # `lacon-outline`: a `tools` episode whose `./show` prints signatures,
+    # and items in full only by name.
+    outline = False
 
     def unavailable(self) -> str | None:
         """Why this language can't run here, or None."""
@@ -191,18 +194,20 @@ LANGS: dict[str, type[Lang]] = {"lacon": Lacon, "python": Python, "rust": Rust, 
 
 def make(key: str, build: bool = True) -> Lang:
     """A language by key: `python`, or `python-write` for Python written
-    with `./write` and no file tools, or `lacon-tools`. Raises KeyError."""
+    with `./write` and no file tools, or `lacon-tools` or `lacon-outline`.
+    Raises KeyError."""
     base, _, edit = key.partition("-")
     cls = LANGS[base]
-    if edit not in ("", "write", "tools") or (edit == "tools" and cls is not Lacon):
+    if edit not in ("", "write", "tools", "outline") or (edit in ("tools", "outline") and cls is not Lacon):
         raise KeyError(key)
     lang = cls(build=build) if cls is Lacon else cls()
-    lang.key, lang.edit = key, edit or "files"
+    lang.key, lang.edit = key, {"": "files", "outline": "tools"}.get(edit, edit)
+    lang.outline = edit == "outline"
     return lang
 
 
 def keys() -> list[str]:
-    return [*LANGS, *(f"{k}-write" for k in LANGS), "lacon-tools"]
+    return [*LANGS, *(f"{k}-write" for k in LANGS), "lacon-tools", "lacon-outline"]
 
 
 def norm(s: str) -> str:

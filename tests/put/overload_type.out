@@ -1,0 +1,16 @@
+replaced fn size
+ok
+[exit 0]
+--- overload_type.lc
+# Functions of one name and as many parameters are told apart by the type
+# of the first, which picks among them at a call.
+
+type Box {w int}
+type Bag {items [int]}
+
+fn size(b Box) int = b.w
+
+fn size(b Bag) int = b.items.len * 10
+
+fn main() =
+  print(Box{3}.size(), Bag{[1, 2]}.size())
